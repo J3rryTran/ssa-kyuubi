@@ -7,11 +7,13 @@ FROM ${PYTHON_IMAGE}
 
 ARG HADOOP_PRESENT=false
 
-RUN apt update && \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' \
+      /etc/apt/sources.list.d/debian.sources && \
+    apt-get update -o Acquire::Retries=3 && \
     apt-get install -y --no-install-recommends \
         curl bash tini libc6 libpam-modules libnss3 \
         procps net-tools ca-certificates unzip krb5-user && \
-    apt clean && \
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=java17 /usr/bin/jdk-17.0.12 /opt/java17
