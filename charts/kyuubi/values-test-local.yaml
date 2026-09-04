@@ -1,0 +1,80 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+image:
+  repository: localhost/kyuubi-custom
+  tag: dev
+  pullPolicy: Never
+
+kyuubiConf:
+  kyuubiDefaults: |
+    kyuubi.frontend.bind.host=0.0.0.0
+    kyuubi.authentication=NONE
+    kyuubi.session.engine.spark.main.resource=local:///opt/spark/jars/kyuubi-spark-sql-engine_2.12-1.10.3.jar
+    kyuubi.engine.share.level=USER
+    kyuubi.frontend.thrift.binary.ssl.enabled=false
+    kyuubi.frontend.ssl.keystore.path=/opt/kyuubi/keystore/kyuubi.p12
+    kyuubi.frontend.ssl.keystore.password=ZK4UTOyFesHuyvPM4hbUDd3j
+    kyuubi.frontend.ssl.keystore.type=PKCS12
+
+sparkConf:
+  sparkDefaults: |
+    spark.master=k8s://https://kubernetes.default.svc:443
+    spark.submit.deployMode=cluster
+    spark.kubernetes.namespace=kyuubi
+    spark.kubernetes.container.image=localhost/kyuubi-spark-engine:dev
+    spark.kubernetes.container.image.pullPolicy=Never
+    spark.kubernetes.authenticate.driver.serviceAccountName=kyuubi
+    spark.executor.instances=1
+    spark.driver.cores=1
+    spark.driver.memory=1g
+    spark.executor.cores=1
+    spark.executor.memory=2g
+    spark.dynamicAllocation.enabled=false
+    spark.kubernetes.file.upload.path=file:///opt/runtime/uploads
+    spark.kubernetes.driver.volumes.persistentVolumeClaim.runtime.options.claimName=kyuubi-runtime
+    spark.kubernetes.driver.volumes.persistentVolumeClaim.runtime.mount.path=/opt/runtime
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.runtime.options.claimName=kyuubi-runtime
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.runtime.mount.path=/opt/runtime
+    spark.kubernetes.driver.secretKeyRef.AWS_ACCESS_KEY_ID=lakehouse-s3:AWS_ACCESS_KEY_ID
+    spark.kubernetes.driver.secretKeyRef.AWS_SECRET_ACCESS_KEY=lakehouse-s3:AWS_SECRET_ACCESS_KEY
+    spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID=lakehouse-s3:AWS_ACCESS_KEY_ID
+    spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY=lakehouse-s3:AWS_SECRET_ACCESS_KEY
+    spark.jars=local:///opt/runtime/jars/iceberg-spark-runtime-3.5_2.12-1.10.1.jar,local:///opt/runtime/jars/iceberg-aws-bundle-1.10.1.jar,local:///opt/runtime/jars/hadoop-aws-3.3.4.jar,local:///opt/runtime/jars/aws-java-sdk-bundle-1.12.262.jar
+    spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+    spark.sql.catalog.lakehouse=org.apache.iceberg.spark.SparkCatalog
+    spark.sql.catalog.lakehouse.type=hive
+    spark.sql.catalog.lakehouse.uri=thrift://hive-metastore.metastore.svc.cluster.local:9083
+    spark.sql.catalog.lakehouse.warehouse=s3a://warehouse/
+    spark.sql.catalog.lakehouse.io-impl=org.apache.iceberg.aws.s3.S3FileIO
+    spark.sql.catalog.lakehouse.s3.endpoint=http://lakehouse-seaweedfs-s3.seaweedfs.svc.cluster.local:8333
+    spark.sql.catalog.lakehouse.s3.path-style-access=true
+    spark.sql.catalog.lakehouse.client.region=us-east-1
+    spark.sql.hive.metastore.jars=path
+    spark.sql.hive.metastore.jars.path=/opt/spark/jars/*
+
+rbac:
+  create: true
+  rules:
+    # - apiGroups: [""]
+    #   resources: ["pods"]
+    #   verbs: ["create", "get", "list", "watch", "patch", "delete"]
+    # - apiGroups: [""]
+    #   resources: ["services"]
+    #   verbs: ["create", "get", "list", "watch", "patch", "delete"]
+    - apiGroups: [""]
+      resources: ["configmaps", "pods", "services", "persistentvolumeclaims"]
+      verbs: ["create", "get", "list", "watch", "patch", "delete", "deletecollection"]

@@ -82,7 +82,7 @@
     </el-tree>
 
     <el-dialog v-model="notebookDialog" title="New notebook" width="460px">
-      <el-form label-width="90px">
+      <el-form label-width="90px" @submit.prevent>
         <el-form-item label="Name">
           <el-input
             v-model="notebookName"
