@@ -224,7 +224,8 @@ class NotebookSessionService(
 class NotebookRuntimeService(
     store: NotebookStore,
     registry: RuntimeAdapterRegistry,
-    instanceUri: () => String) extends Logging {
+    instanceUri: () => String,
+    engineProfiles: Option[NotebookEngineProfileService] = None) extends Logging {
 
   def specs: Seq[RuntimeSpec] = registry.specs
 
@@ -260,9 +261,53 @@ class NotebookRuntimeService(
       requestedSpecId: Option[String],
       configuration: Map[String, String]): NotebookRuntime = {
     val specId = requestedSpecId.getOrElse(registry.defaultSpecFor(language).id)
+    val notebook = store.getNotebook(session.notebookId)
+    val latestNotebookProfile = notebook.flatMap(_.runtimeProfile)
+    val notebookUpdatedAt = notebook.map(_.updatedAt).getOrElse(0L)
+
+    val effectiveProfile = latestNotebookProfile.orElse(session.runtimeProfile)
+    // ===== DEBUG ENGINE SUBDOMAIN TRACING =====
+    val debugSubdomain = effectiveProfile.getOrElse("default")
+    warn(s"[NOTEBOOK-ENGINE-DEBUG] ensureFor: notebookId=${session.notebookId}" +
+      s" sessionId=${session.id}" +
+      s" session.runtimeProfile=${session.runtimeProfile}" +
+      s" latestNotebookProfile=${latestNotebookProfile}" +
+      s" effectiveProfile=${effectiveProfile}")
+    // ==========================================
+    val sessionOverlay = effectiveProfile
+      .map(profile =>
+        Map(
+          "kyuubi.engine.share.level.subdomain" -> profile,
+          "kyuubi.engine.share.level.sub.domain" -> profile))
+      .getOrElse(Map.empty)
+    // Merge engine profile Spark configs (driver/executor memory, cores, etc.) so that
+    // they actually reach the Spark engine JVM. Profile config has lowest priority: an
+    // explicit configuration key in `configuration` always wins.
+    val profileSparkConfig = effectiveProfile
+      .flatMap(profile => engineProfiles.map(_.resolveSparkConfig(profile)))
+      .getOrElse(Map.empty)
+    val mergedConfig = profileSparkConfig ++ sessionOverlay ++ configuration
+    warn(
+      s"[NOTEBOOK-ENGINE-DEBUG] mergedConfig subdomain=$debugSubdomain " +
+        s"profileSparkConfig=$profileSparkConfig")
+
     listFor(session).find(runtime => runtime.runtimeSpecId == specId) match {
-      case Some(runtime) => runtime
-      case None => create(session, specId, configuration)
+      case Some(runtime) if notebookUpdatedAt > runtime.createdAt =>
+        warn(
+          s"[NOTEBOOK-ENGINE-DEBUG] Notebook ${session.notebookId} settings updated " +
+            s"after runtime ${runtime.id} was created. Recreating runtime.")
+        stop(runtime)
+        create(session, specId, mergedConfig)
+      case Some(runtime) =>
+        warn(
+          s"[NOTEBOOK-ENGINE-DEBUG] Reusing existing runtime ${runtime.id} " +
+            s"for session ${session.id}")
+        runtime
+      case None =>
+        warn(
+          s"[NOTEBOOK-ENGINE-DEBUG] No existing runtime found. Creating new runtime " +
+            s"for session ${session.id}")
+        create(session, specId, mergedConfig)
     }
   }
 

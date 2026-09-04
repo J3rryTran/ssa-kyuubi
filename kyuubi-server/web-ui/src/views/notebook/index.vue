@@ -37,6 +37,32 @@
             <span class="notebook-path">{{ notebook.path }}</span>
           </div>
           <div class="notebook-header-actions">
+            <el-select
+              v-model="currentEngineProfile"
+              size="small"
+              style="width: 200px"
+              placeholder="Select Engine"
+              clearable
+              @change="onEngineProfileChange">
+              <el-option
+                v-for="profile in engineProfiles"
+                :key="profile.subdomain"
+                :label="profile.name || profile.subdomain"
+                :value="profile.subdomain">
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%">
+                  <span>{{ profile.name || profile.subdomain }}</span>
+                  <span style="font-size: 11px; color: var(--el-text-color-secondary); margin-left: 8px">
+                    ({{ profile.driverMemory || '2g' }}/{{ profile.executorMemory || '4g' }})
+                  </span>
+                </div>
+              </el-option>
+            </el-select>
+            <el-button
+              size="small"
+              icon="Setting"
+              title="Custom Engine Configuration"
+              @click="engineConfigDialogVisible = true" />
+
             <el-tag v-if="notebook.role" size="small" effect="plain">
               {{ notebook.role }}
             </el-tag>
@@ -154,17 +180,24 @@
         <el-button type="primary" @click="savePermissions">Save</el-button>
       </template>
     </el-dialog>
+
+    <EngineConfigDialog
+      v-model:visible="engineConfigDialogVisible"
+      @save="onEngineProfileSave"
+      @change="refreshEngineProfiles" />
   </div>
 </template>
 
 <script setup lang="ts">
-  import { onBeforeUnmount, onMounted, ref } from 'vue'
+  import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import NotebookSidebar from './components/NotebookSidebar.vue'
   import NotebookCellItem from './components/NotebookCellItem.vue'
+  import EngineConfigDialog from './components/EngineConfigDialog.vue'
   import { useNotebook } from './use-notebook'
   import * as api from '@/api/notebook'
   import type {
+    EngineProfile,
     NotebookPermission,
     NotebookRevision
   } from '@/api/notebook/types'
@@ -198,6 +231,104 @@
   const revisions = ref<NotebookRevision[]>([])
   const permissionsDialog = ref(false)
   const permissions = ref<NotebookPermission[]>([])
+
+  const parseProfile = (apiProfile: EngineProfile): EngineProfile => {
+    const sparkConfig = apiProfile.sparkConfig || {}
+    return {
+      ...apiProfile,
+      name: apiProfile.subdomain,
+      driverMemory: sparkConfig['spark.driver.memory'] || apiProfile.driverMemory || '2g',
+      executorMemory: sparkConfig['spark.executor.memory'] || apiProfile.executorMemory || '4g'
+    }
+  }
+
+  const engineConfigDialogVisible = ref(false)
+  const engineProfiles = ref<EngineProfile[]>([
+    { name: 'default', subdomain: 'default', driverMemory: '2g', executorMemory: '4g' }
+  ])
+
+  const refreshEngineProfiles = async () => {
+    try {
+      const res = await api.listEngineProfiles()
+      if (Array.isArray(res) && res.length > 0) {
+        engineProfiles.value = res.map(parseProfile)
+      } else {
+        engineProfiles.value = [
+          { name: 'default', subdomain: 'default', driverMemory: '2g', executorMemory: '4g' }
+        ]
+      }
+    } catch (e) {
+      console.error('Failed to load engine profiles from backend:', e)
+    }
+
+    // If the currently selected profile was deleted, reset selection to empty string
+    if (notebook.value && notebook.value.runtimeProfile) {
+      const exists = engineProfiles.value.some((p) => p.subdomain === notebook.value?.runtimeProfile)
+      if (!exists) {
+        onEngineProfileChange('')
+      }
+    }
+  }
+
+  const currentEngineProfile = computed({
+    get: () => {
+      const profile = notebook.value?.runtimeProfile || ''
+      if (profile) {
+        const exists = engineProfiles.value.some((p) => p.subdomain === profile)
+        if (!exists) return ''
+      }
+      return profile
+    },
+    set: (val) => {
+      if (notebook.value) {
+        notebook.value.runtimeProfile = val
+      }
+    }
+  })
+
+  watch(
+    () => notebook.value?.id,
+    () => {
+      if (notebook.value && notebook.value.runtimeProfile) {
+        const exists = engineProfiles.value.some((p) => p.subdomain === notebook.value?.runtimeProfile)
+        if (!exists) {
+          onEngineProfileChange('')
+        }
+      }
+    },
+    { immediate: true }
+  )
+
+  const onEngineProfileChange = async (newSubdomain: string) => {
+    if (!notebook.value) return
+    try {
+      const updated = await api.updateNotebook(notebook.value.id, {
+        runtimeProfile: newSubdomain
+      })
+      notebook.value = updated
+      if (newSubdomain) {
+        ElMessage.success(`Engine profile changed to '${newSubdomain}'`)
+      }
+      if (session.value && session.value.state !== 'STOPPED') {
+        await stopSession()
+      }
+      session.value = null
+    } catch (error) {
+      reportError(error, 'Failed to update engine profile')
+    }
+  }
+
+  const onEngineProfileSave = (profile: EngineProfile) => {
+    const existingIndex = engineProfiles.value.findIndex(
+      (p) => p.subdomain === profile.subdomain
+    )
+    if (existingIndex >= 0) {
+      engineProfiles.value[existingIndex] = profile
+    } else {
+      engineProfiles.value.push(profile)
+    }
+    onEngineProfileChange(profile.subdomain)
+  }
 
   const openNotebook = (notebookId: string) => open(notebookId)
 
@@ -271,7 +402,10 @@
     }
   }
 
-  onMounted(loadRuntimeSpecs)
+  onMounted(() => {
+    loadRuntimeSpecs()
+    refreshEngineProfiles()
+  })
   onBeforeUnmount(dispose)
 </script>
 

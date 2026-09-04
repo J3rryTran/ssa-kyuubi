@@ -120,6 +120,10 @@
       </template>
     </el-dialog>
 
+    <EngineConfigDialog
+      v-model:visible="engineConfigDialogVisible"
+      @save="onEngineProfileSave" />
+
     <el-dialog v-model="importDialog" title="Import notebook" width="520px">
       <el-input v-model="importName" placeholder="Name (optional)" />
       <el-input
@@ -143,7 +147,9 @@
   import { ElMessageBox } from 'element-plus'
   import * as api from '@/api/notebook'
   import { reportError } from '../use-notebook'
+  import EngineConfigDialog from './EngineConfigDialog.vue'
   import type {
+    EngineProfile,
     Notebook,
     NotebookFolder,
     NotebookLanguage
@@ -166,9 +172,25 @@
     pythonEnabled: false
   })
 
+  const LOCAL_STORAGE_KEY = 'kyuubi_notebook_engine_profiles'
+
+  const loadEngineProfiles = (): EngineProfile[] => {
+    try {
+      const cached = localStorage.getItem(LOCAL_STORAGE_KEY)
+      if (cached) {
+        const parsed = JSON.parse(cached)
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      }
+    } catch (e) {}
+    return [{ name: 'default', subdomain: 'default' }]
+  }
+
   const notebookDialog = ref(false)
   const notebookName = ref('')
   const notebookLanguage = ref<NotebookLanguage>('SQL')
+  const notebookEngineProfile = ref('default')
+  const engineConfigDialogVisible = ref(false)
+  const engineProfiles = ref<EngineProfile[]>(loadEngineProfiles())
 
   const folders = ref<NotebookFolder[]>([])
   const notebooks = ref<Notebook[]>([])
@@ -256,6 +278,21 @@
     notebookDialog.value = true
   }
 
+  const onEngineProfileSave = (profile: EngineProfile) => {
+    const existingIndex = engineProfiles.value.findIndex(
+      (p) => p.subdomain === profile.subdomain
+    )
+    if (existingIndex >= 0) {
+      engineProfiles.value[existingIndex] = profile
+    } else {
+      engineProfiles.value.push(profile)
+    }
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(engineProfiles.value))
+    } catch (e) {}
+    notebookEngineProfile.value = profile.subdomain
+  }
+
   const createNotebook = async () => {
     const name = notebookName.value.trim()
     if (!name || !NAME_RULES.inputPattern.test(name)) {
@@ -266,7 +303,12 @@
       return
     }
     try {
-      await api.createNotebook(name, null, notebookLanguage.value)
+      await api.createNotebook(
+        name,
+        null,
+        notebookLanguage.value,
+        null
+      )
       notebookDialog.value = false
       await reload()
     } catch (error) {

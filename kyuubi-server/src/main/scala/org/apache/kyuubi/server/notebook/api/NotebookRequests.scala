@@ -139,3 +139,15 @@ class SetScheduleRequest {
   @BeanProperty var overlapPolicy: String = _
   @BeanProperty var version: java.lang.Long = _
 }
+
+/**
+ * PUT /api/v1/engine-profiles/{subdomain}
+ *
+ * `sparkConfig` is a map of Spark property keys to values
+ * (e.g. `{"spark.driver.memory":"4g","spark.executor.memory":"8g"}`).
+ * The subdomain comes from the path parameter, never from the body.
+ * `owner` is always derived from the authenticated caller.
+ */
+class UpsertEngineProfileRequest {
+  @BeanProperty var sparkConfig: java.util.Map[String, String] = _
+}

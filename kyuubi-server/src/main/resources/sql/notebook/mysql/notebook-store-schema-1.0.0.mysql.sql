@@ -118,3 +118,12 @@ CREATE TABLE IF NOT EXISTS notebook_schedule(
     version bigint NOT NULL,
     UNIQUE KEY notebook_schedule_notebook_index(notebook_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS notebook_engine_profile(
+    subdomain varchar(128) PRIMARY KEY NOT NULL,
+    owner varchar(255) NOT NULL,
+    spark_config mediumtext NOT NULL,
+    created_at bigint NOT NULL,
+    updated_at bigint NOT NULL,
+    KEY notebook_engine_profile_owner_index(owner)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
