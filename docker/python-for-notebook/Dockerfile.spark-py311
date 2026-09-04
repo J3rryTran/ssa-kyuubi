@@ -58,6 +58,7 @@ RUN cd ${SPARK_HOME}/jars && \
     curl -fSL -O https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar && \
     curl -fSL -O https://repo1.maven.org/maven2/org/apache/solr/solr-solrj/9.10.1/solr-solrj-9.10.1.jar && \
     curl -fSL -O https://repo1.maven.org/maven2/org/apache/httpcomponents/httpmime/4.5.14/httpmime-4.5.14.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/calcite/calcite-core/1.16.0/calcite-core-1.16.0.jar && \
     curl -fSL -O https://repo1.maven.org/maven2/org/graalvm/js/js/22.3.5/js-22.3.5.jar && \
     curl -fSL -O https://repo1.maven.org/maven2/org/graalvm/js/js-scriptengine/22.3.5/js-scriptengine-22.3.5.jar && \
     curl -fSL -O https://repo1.maven.org/maven2/org/graalvm/sdk/graal-sdk/22.3.5/graal-sdk-22.3.5.jar && \

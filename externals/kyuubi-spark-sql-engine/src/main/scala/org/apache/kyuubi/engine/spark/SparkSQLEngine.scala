@@ -400,6 +400,14 @@ object SparkSQLEngine extends Logging {
     } else {
       var spark: SparkSession = null
       try {
+        // Workaround for Hive SessionState ClassCastException on Java 11/17
+        val ccl = Thread.currentThread().getContextClassLoader
+        if (ccl == null || !ccl.isInstanceOf[java.net.URLClassLoader]) {
+          val parent = if (ccl != null) ccl else classOf[SparkSQLEngine].getClassLoader
+          Thread.currentThread().setContextClassLoader(
+            new java.net.URLClassLoader(Array.empty, parent))
+        }
+
         startInitTimeoutChecker(submitTime, initTimeout)
         spark = createSpark()
         sparkSessionCreated.set(true)
