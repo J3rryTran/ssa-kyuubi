@@ -137,12 +137,22 @@ export function useNotebook() {
 
   const ensureSession = async (): Promise<NotebookSession> => {
     if (session.value && session.value.state !== 'STOPPED') return session.value
-    const created = await api.createSession(notebook.value!.id)
+    const created = await api.createSession(
+      notebook.value!.id,
+      notebook.value?.runtimeProfile || null
+    )
     session.value = created
     return created
   }
 
   const runCell = async (cell: NotebookCell, source: string) => {
+    if (!notebook.value?.runtimeProfile) {
+      reportError(
+        new Error('Please select an Engine profile from the top header bar before running cells.'),
+        'No Engine Selected'
+      )
+      return
+    }
     try {
       const active = await ensureSession()
       const execution = await api.submitExecution(active.id, {

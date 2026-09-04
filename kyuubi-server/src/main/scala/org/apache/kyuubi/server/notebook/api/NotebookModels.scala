@@ -147,3 +147,18 @@ object NotebookDocument {
   /** Bumped when the document layout changes in a way importers must branch on. */
   val CURRENT_FORMAT_VERSION: Int = 1
 }
+
+/**
+ * An engine profile stores the Spark configuration that should be applied whenever a runtime is
+ * started under the named subdomain. `sparkConfig` is a flat map of Spark property keys to
+ * values (e.g. `"spark.driver.memory" -> "4g"`); it is serialised as JSON in the database.
+ *
+ * `owner` is the principal who created the profile and is derived from the authenticated caller
+ * on write; it is never accepted from the request body.
+ */
+case class EngineProfile(
+    subdomain: String,
+    owner: String,
+    sparkConfig: Map[String, String],
+    createdAt: Long,
+    updatedAt: Long)

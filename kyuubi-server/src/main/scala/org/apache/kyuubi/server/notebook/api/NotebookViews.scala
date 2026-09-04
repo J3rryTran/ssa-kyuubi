@@ -219,3 +219,19 @@ case class NotebookStatusView(
     activeSessions: Int,
     activeRuntimes: Int,
     queuedExecutions: Int)
+
+/**
+ * Browser-safe projection of an [[EngineProfile]].  The internal model is a flat case class;
+ * this view exposes the same fields without any server-only bookkeeping.
+ */
+case class EngineProfileView(
+    subdomain: String,
+    owner: String,
+    sparkConfig: Map[String, String],
+    createdAt: Long,
+    updatedAt: Long)
+
+object EngineProfileView {
+  def apply(p: EngineProfile): EngineProfileView =
+    EngineProfileView(p.subdomain, p.owner, p.sparkConfig, p.createdAt, p.updatedAt)
+}

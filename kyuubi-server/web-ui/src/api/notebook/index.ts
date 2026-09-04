@@ -30,7 +30,8 @@ import type {
   NotebookRevision,
   NotebookSession,
   ExecutionOutputPage,
-  RuntimeSpec
+  RuntimeSpec,
+  EngineProfile
 } from './types'
 
 /**
@@ -89,12 +90,13 @@ export const getNotebook = (notebookId: string) =>
 export const createNotebook = (
   name: string,
   folderId: string | null,
-  language: NotebookLanguage = 'SQL'
+  language: NotebookLanguage = 'SQL',
+  runtimeProfile?: string | null
 ) =>
   call<Notebook>({
     url: 'api/v1/notebooks',
     method: 'post',
-    data: { name, folderId, language }
+    data: { name, folderId, language, runtimeProfile }
   })
 
 export const updateNotebook = (
@@ -170,11 +172,14 @@ export const reorderCells = (notebookId: string, cellIds: string[]) =>
 
 // Sessions and executions -------------------------------------------------------------------
 
-export const createSession = (notebookId: string) =>
+export const createSession = (
+  notebookId: string,
+  runtimeProfile?: string | null
+) =>
   call<NotebookSession>({
     url: `api/v1/notebooks/${notebookId}/sessions`,
     method: 'post',
-    data: {}
+    data: runtimeProfile ? { runtimeProfile } : {}
   })
 
 export const listSessions = (notebookId: string) =>
@@ -308,3 +313,21 @@ export const getExecutionOutputs = (
     method: 'get',
     params: { afterSequence, limit: 200 }
   })
+
+// Engine Profiles ---------------------------------------------------------------------------
+
+export const listEngineProfiles = () =>
+  call<EngineProfile[]>({ url: 'api/v1/engine-profiles', method: 'get' })
+
+export const getEngineProfile = (subdomain: string) =>
+  call<EngineProfile>({ url: `api/v1/engine-profiles/${subdomain}`, method: 'get' })
+
+export const upsertEngineProfile = (subdomain: string, sparkConfig: Record<string, string>) =>
+  call<EngineProfile>({
+    url: `api/v1/engine-profiles/${subdomain}`,
+    method: 'put',
+    data: { sparkConfig }
+  })
+
+export const deleteEngineProfile = (subdomain: string) =>
+  call<void>({ url: `api/v1/engine-profiles/${subdomain}`, method: 'delete' })
