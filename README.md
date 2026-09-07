@@ -24,10 +24,10 @@ If specfic version spark, flink, and hive use:
 The following command creates:
 
 ```bash
-./bin/docker-image-tool.sh -r <name_repo_docker> -i vtnet-custom -t <tag> -S /opt/spark -b BASE_IMAGE=eclipse-temurin:17-jdk-focal build
+./dist/bin/docker-image-tool.sh -r <name_repo_docker> -i vtnet-kyuubi -t <tag> -S /opt/spark -b BASE_IMAGE=eclipse-temurin:17-jdk-focal build
 ```
 
-### 3. Test 
+## Test 
 Localhost:
 
 ```bash
@@ -44,11 +44,7 @@ Options:
 - `-r`: Docker repository or registry namespace. For Docker Hub, use `docker.io/<username>`.
 - `-i`: Docker image name. Defaults to `kyuubi` if omitted.
 - `-t`: Docker image tag.
-- `-b KEY=VALUE`: Docker build argument. This option can be specified multiple times.
-- `-s <path>`: Copy a local Spark installation into the image and use it as `SPARK_HOME`.
-- `-S <path>`: Declare the Spark installation path inside the image without copying Spark. The base image must already contain Spark at this path.
-- `-n`: Build the image without using the Docker build cache.
-- `-X`: Build and push a multi-platform image using Docker Buildx.
+- `-b BASE_IMAGE`: Docker build env.
 
 ## Build spark with packages python 
 
@@ -66,4 +62,5 @@ docker push <images>:<tag>
 ### The list of module added and contributed:
 - OIDC Authentication - Trungtm8
 - Ranger Authorization - Hieunm29
-- Notebook and Python for notebook - Trungtm8
+- Notebook + Python packages into Spark engine - Trungtm8
+- Custom UI + reallocate resources at the user level - Khoa
