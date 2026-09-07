@@ -1,0 +1,111 @@
+ARG JAVA_IMAGE=trungtmba11093/java_env:java17-v0
+ARG PYTHON_IMAGE=python:3.11-slim
+ARG SPARK_VERSION=3.5.5
+
+FROM ${JAVA_IMAGE} AS java17
+FROM ${PYTHON_IMAGE}
+
+ARG HADOOP_PRESENT=false
+
+RUN apt update && \
+    apt-get install -y --no-install-recommends \
+        curl bash tini libc6 libpam-modules libnss3 \
+        procps net-tools ca-certificates unzip krb5-user && \
+    apt clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=java17 /usr/bin/jdk-17.0.12 /opt/java17
+
+ENV JAVA_HOME=/opt/java17 \
+    SPARK_HOME=/opt/spark \
+    HADOOP_HOME=/opt/hadoop
+
+RUN mkdir -p ${SPARK_HOME} \
+        ${SPARK_HOME}/work-dir \
+        ${HADOOP_HOME}
+
+COPY spark/ ${SPARK_HOME}/
+
+COPY hadoop/ ${HADOOP_HOME}/
+
+RUN cp ${SPARK_HOME}/kubernetes/dockerfiles/spark/entrypoint.sh /opt/entrypoint.sh && \
+    cp ${SPARK_HOME}/kubernetes/dockerfiles/spark/decom.sh /opt/decom.sh && \
+	chmod a+rx -R ${SPARK_HOME}/bin ${SPARK_HOME}/sbin || true && \
+    chmod +x /opt/entrypoint.sh /opt/decom.sh && \
+    chmod g+w ${SPARK_HOME}/work-dir
+
+
+RUN cd ${SPARK_HOME}/jars && \
+    curl -fSL -O https://repo1.maven.org/maven2/com/starrocks/starrocks-connector-j/1.1.1/starrocks-connector-j-1.1.1.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-common/3.1.3/hive-common-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-exec/3.1.3/hive-exec-3.1.3-core.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-metastore/3.1.3/hive-metastore-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-serde/3.1.3/hive-serde-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-standalone-metastore/3.1.3/hive-standalone-metastore-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-classification/3.1.3/hive-classification-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-upgrade-acid/3.1.3/hive-upgrade-acid-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-vector-code-gen/3.1.3/hive-vector-code-gen-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-llap-common/3.1.3/hive-llap-common-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-llap-client/3.1.3/hive-llap-client-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-llap-tez/3.1.3/hive-llap-tez-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/hive-shims/3.1.3/hive-shims-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/shims/hive-shims-common/3.1.3/hive-shims-common-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/shims/hive-shims-0.23/3.1.3/hive-shims-0.23-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hive/shims/hive-shims-scheduler/3.1.3/hive-shims-scheduler-3.1.3.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/1.10.0/iceberg-aws-bundle-1.10.0.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.10.0/iceberg-spark-runtime-3.5_2.12-1.10.0.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/solr/solr-solrj/9.10.1/solr-solrj-9.10.1.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/apache/httpcomponents/httpmime/4.5.14/httpmime-4.5.14.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/graalvm/js/js/22.3.5/js-22.3.5.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/graalvm/js/js-scriptengine/22.3.5/js-scriptengine-22.3.5.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/graalvm/sdk/graal-sdk/22.3.5/graal-sdk-22.3.5.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/graalvm/truffle/truffle-api/22.3.5/truffle-api-22.3.5.jar && \
+	curl -fSL -O https://repo1.maven.org/maven2/org/apache/calcite/calcite-core/1.16.0/calcite-core-1.16.0.jar && \
+    curl -fSL -O https://repo1.maven.org/maven2/org/graalvm/regex/regex/22.3.5/regex-22.3.5.jar
+
+# COPY python-requirements.txt /tmp/python-requirements.txt
+
+# RUN python3 -m pip install \
+#         --no-cache-dir \
+#         --upgrade pip setuptools wheel && \
+#     EXTRA=""; \
+#     for u in ${PIP_EXTRA_INDEX_URLS}; do \
+#         EXTRA="$EXTRA --extra-index-url $u"; \
+#     done; \
+#     python3 -m pip install \
+#         --no-cache-dir \
+#         ${PIP_INDEX_URL:+--index-url "$PIP_INDEX_URL"} \
+#         ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"} \
+#         $EXTRA \
+#         -r /tmp/python-requirements.txt && \
+#     rm -f /tmp/python-requirements.txt
+
+
+ENV SPARK_DIST_CLASSPATH=/opt/hadoop/conf
+
+ENV HADOOP_CONF_DIR=/opt/hadoop/conf \
+    YARN_CONF_DIR=/opt/hadoop/conf \
+    LD_LIBRARY_PATH=/opt/hadoop/lib/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
+    PYTHON_HOME=/usr/local \
+    PATH="/opt/java17/bin:/opt/spark/bin:/opt/spark/sbin:/usr/local/bin:${PATH}" \
+    PYSPARK_PYTHON=/usr/local/bin/python3 \
+    PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3 \
+    MPLBACKEND=Agg \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    JAVA_TOOL_OPTIONS="--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+    --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+    --add-opens=java.security.jgss/sun.security.jgss=ALL-UNNAMED \
+    -Dio.netty.tryReflectionSetAccessible=true \
+    --add-opens=java.base/java.nio=ALL-UNNAMED \
+    --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
+    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
+    -Djava.security.krb5.conf=/etc/krb5.conf \
+    -Djava.security.krb5.realm=KNAB.COM \
+    -Djava.security.krb5.kdc=krb5-kdc.hdfs.svc.cluster.local"
+
+WORKDIR ${SPARK_HOME}
+
+ENTRYPOINT ["/opt/entrypoint.sh"]
