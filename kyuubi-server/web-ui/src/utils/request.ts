@@ -20,17 +20,28 @@ import { useAuthStore } from '@/pinia/auth/auth'
 
 // create an axios instance
 const service = axios.create({
-  baseURL: '/' // url = base url + request url
-  // withCredentials: true, // send cookies when cross-domain requests
+  baseURL: '/', // url = base url + request url
+  // The BFF flow authenticates with an HttpOnly session cookie, which must ride along.
+  withCredentials: true
 })
 
 // request interceptor
 service.interceptors.request.use(
-  (config) => {
+  async (config) => {
     // do something before request is sent
     const authStore = useAuthStore()
+    // Under the BFF flow the browser holds no token: the cookie is the credential, and
+    // attaching an Authorization header would take precedence over it on the server.
+    if (authStore.isBffFlow) {
+      return config
+    }
     if (authStore.isAuthenticated) {
-      config.headers.Authorization = authStore.authToken
+      // Renew a bearer token that is expired or close to it, so the request below
+      // is not spent just to discover the token went stale.
+      await authStore.refreshIfNeeded()
+      if (authStore.isAuthenticated) {
+        config.headers.Authorization = authStore.authToken
+      }
     }
     return config
   },
@@ -57,10 +68,32 @@ service.interceptors.response.use(
     }
     return response.data
   },
-  (error) => {
+  async (error) => {
     // for debug
     // do something when error
-    if (error.response && error.response.status === 401) {
+    const status = error.response?.status
+    const authStore = useAuthStore()
+    if (authStore.isBffFlow) {
+      // Only 401 means "sign in again"; a 403 here is the cross-origin guard rejecting the
+      // request, and bouncing to the provider for that would just loop.
+      if (status === 401) {
+        authStore.clearUser()
+        authStore.startBffLogin()
+      }
+      return Promise.reject(error)
+    }
+    // 403 is what the server returns when a bearer token is rejected, e.g. expired.
+    if (status === 401 || status === 403) {
+      const config = error.config
+      // Give a stale bearer token exactly one chance to be renewed silently.
+      if (
+        config &&
+        !config.__authRetried &&
+        (await authStore.refreshIfNeeded(true))
+      ) {
+        config.__authRetried = true
+        return service(config)
+      }
       window.dispatchEvent(new CustomEvent('auth-required'))
     }
     return Promise.reject(error)

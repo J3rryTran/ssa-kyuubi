@@ -21,6 +21,7 @@ import managementRoutes from './management'
 import detailRoutes from './detail'
 import swaggerRoutes from './swagger'
 import editorRoutes from './editor'
+import notebookRoutes from './notebook'
 
 const routes = [
   {
@@ -29,6 +30,12 @@ const routes = [
     redirect: {
       name: 'layout'
     }
+  },
+  {
+    // OIDC redirect target; outside the layout so it renders before authentication.
+    path: '/callback',
+    name: 'callback',
+    component: () => import('@/views/callback/index.vue')
   },
   {
     path: '/layout',
@@ -40,7 +47,8 @@ const routes = [
       ...managementRoutes,
       ...detailRoutes,
       ...swaggerRoutes,
-      ...editorRoutes
+      ...editorRoutes,
+      ...notebookRoutes
     ]
   }
 ]

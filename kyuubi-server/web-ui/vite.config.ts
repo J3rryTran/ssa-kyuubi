@@ -37,6 +37,11 @@ export default defineConfig(({ mode }) => {
         }
       ]
     },
+    build: {
+      // Notebook is a lazy route. Keep its SFC styles in the entry stylesheet so the packaged
+      // Web UI cannot ship the route JavaScript without the matching CSS chunk.
+      cssCodeSplit: false
+    },
     server: {
       proxy: {
         '/api': {
