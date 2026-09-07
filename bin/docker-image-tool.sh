@@ -16,7 +16,7 @@
 # limitations under the License.
 #
 
-# This script builds and pushes docker images when run from a release of Kyuubi
+# This script builds docker images when run from a release of Kyuubi
 # with Kubernetes support.
 
 function error {
@@ -57,28 +57,6 @@ function image_ref {
   echo "$image"
 }
 
-function docker_push {
-  local image_name="$1"
-  if [ ! -z $(docker images -q "$(image_ref ${image_name})") ]; then
-    docker push "$(image_ref ${image_name})"
-    if [ $? -ne 0 ]; then
-      error "Failed to push $image_name Docker image."
-    fi
-  else
-    echo "$(image_ref ${image_name}) image not found. Skipping push for this image."
-  fi
-}
-
-function resolve_file {
-  local FILE=$1
-  if [ -n "$FILE" ]; then
-    local DIR=$(dirname $FILE)
-    DIR=$(cd $DIR && pwd)
-    FILE="${DIR}/$(basename $FILE)"
-  fi
-  echo $FILE
-}
-
 function img_ctx_dir {
   echo "$KYUUBI_HOME"
 }
@@ -87,31 +65,6 @@ function build {
   local BUILD_ARGS
   local KYUUBI_ROOT="$KYUUBI_HOME"
   local BUILD_ARGS=(${BUILD_PARAMS})
-
-  # mkdir spark-binary to cache spark
-  # clean cache if spark-binary exists
-  if [[ ! -d "$KYUUBI_ROOT/spark-binary" ]]; then
-    mkdir "$KYUUBI_ROOT/spark-binary"
-  else
-    rm -rf "$KYUUBI_ROOT/spark-binary/*"
-  fi
-
-  # If SPARK_HOME_IN_DOCKER configured,
-  # Kyuubi won't copy local spark into docker image.
-  # Use SPARK_HOME_IN_DOCKER as SPARK_HOME in docker image.
-  if [[ -n "${SPARK_HOME_IN_DOCKER}" ]]; then
-    BUILD_ARGS+=(--build-arg spark_home_in_docker=$SPARK_HOME_IN_DOCKER)
-    BUILD_ARGS+=(--build-arg spark_provided="spark_provided")
-  else
-    if [[ ! -d "$SPARK_HOME" ]]; then
-      if [[ -d "$KYUUBI_ROOT/externals/spark-*" ]]; then
-        SPARK_HOME="$(find "$KYUUBI_ROOT/externals" -name 'spark-*' -type d)"
-      else
-        error "Cannot found dir SPARK_HOME $SPARK_HOME, you must configure SPARK_HOME correct."
-      fi
-    fi
-    cp -r "$SPARK_HOME"/* "$KYUUBI_ROOT"/spark-binary/
-  fi
 
   # Verify that the Docker image content directory is present
   if [ ! -d "$KYUUBI_ROOT/docker" ]; then
@@ -130,7 +83,6 @@ function build {
   fi
 
   local BASEDOCKERFILE=${BASEDOCKERFILE:-"docker/Dockerfile"}
-  local ARCHS=${ARCHS:-"--platform linux/amd64,linux/arm64"}
 
   (cd $(img_ctx_dir base) && docker build $NOCACHEARG "${BUILD_ARGS[@]}" \
     -t $(image_ref $KYUUBI_IMAGE_NAME) \
@@ -138,64 +90,34 @@ function build {
   if [ $? -ne 0 ]; then
     error "Failed to build Kyuubi JVM Docker image, please refer to Docker build output for details."
   fi
-  if [ "${CROSS_BUILD}" != "false" ]; then
-  (cd $(img_ctx_dir base) && docker buildx build $ARCHS $NOCACHEARG "${BUILD_ARGS[@]}" --push \
-    -t $(image_ref $KYUUBI_IMAGE_NAME) \
-    -f "$BASEDOCKERFILE" .)
-  fi
-}
 
-function push {
-  docker_push $KYUUBI_IMAGE_NAME
+  echo "Build complete: $(image_ref $KYUUBI_IMAGE_NAME)"
 }
 
 function usage {
   cat <<EOF
-Usage: $0 [options] [command]
-Builds or pushes the built-in Kyuubi Docker image.
+Usage: $0 [options]
 
-Commands:
-  build       Build image. Requires a repository address to be provided if the image will be
-              pushed to a different registry.
-  push        Push a pre-built image to a registry. Requires a repository address to be provided.
+Builds the built-in Kyuubi Docker image.
 
 Options:
   -f                    Dockerfile to build for JVM based Jobs. By default builds the Dockerfile shipped with Kyuubi.
   -r                    Repository address.
-  -t                    Tag to apply to the built image, or to identify the image to be pushed.
+  -i                    Image name. Defaults to "kyuubi".
+  -t                    Tag to apply to the built image.
   -n                    Build docker image with --no-cache
   -u                    UID to use in the USER directive to set the user the main Kyuubi process runs as inside the
                         resulting container
-  -X                    Use docker buildx to cross build. Automatically pushes.
-                        See https://docs.docker.com/buildx/working-with-buildx/ for steps to setup buildx.
   -b                    Build arg to build or push the image. For multiple build args, this option needs to
                         be used separately for each build arg.
-  -s                    Put the specified Spark into the Kyuubi image to be used as the internal SPARK_HOME
-                        of the container.
-  -S                    Declare SPARK_HOME in Docker Image. When you configured -S, you need to provide an image
-                        with Spark as BASE_IMAGE.
 
 Examples:
 
-  - Build and push image with tag "v1.8.1" to docker.io/myrepo
-    $0 -r docker.io/myrepo -t v1.8.1 build
-    $0 -r docker.io/myrepo -t v1.8.1 push
+  - Build image with tag "v1.8.1" to docker.io/myrepo
+    $0 -r docker.io/myrepo -t v1.8.1
 
-  - Build and push with tag "v1.8.1" and Spark-3.5.2 as base image to docker.io/myrepo
-    $0 -r docker.io/myrepo -t v1.8.1 -b BASE_IMAGE=repo/spark:3.5.2 build
-    $0 -r docker.io/myrepo -t v1.8.1 push
-
-  - Build and push for multiple archs to docker.io/myrepo
-    $0 -r docker.io/myrepo -t v1.8.1 -X build
-
-    # Note: buildx, which does cross building, needs to do the push during build
-    # So there is no separate push step with -X
-
-  - Build with Spark placed "/path/spark"
-    $0 -s /path/spark build
-
-  - Build with Spark Image myrepo/spark:3.4.2
-    $0 -S /opt/spark -b BASE_IMAGE=myrepo/spark:3.4.2 build
+  - Build with custom base image
+    $0 -r docker.io/myrepo -t v1.8.1 -b BASE_IMAGE=eclipse-temurin:17-jdk-focal
 
 EOF
 }
@@ -211,38 +133,19 @@ BASEDOCKERFILE=
 NOCACHEARG=
 BUILD_PARAMS=
 KYUUBI_UID=
-CROSS_BUILD="false"
-SPARK_HOME_IN_DOCKER=
-while getopts f:r:t:Xnb:u:s:S: option
+while getopts f:r:t:i:nb:u: option
 do
  case "${option}"
  in
  f) BASEDOCKERFILE=$(resolve_file ${OPTARG});;
  r) REPO=${OPTARG};;
  t) TAG=${OPTARG};;
+ i) KYUUBI_IMAGE_NAME=${OPTARG};;
  n) NOCACHEARG="--no-cache";;
  b) BUILD_PARAMS=${BUILD_PARAMS}" --build-arg "${OPTARG};;
- X) CROSS_BUILD=1;;
  u) KYUUBI_UID=${OPTARG};;
- s) SPARK_HOME=${OPTARG};;
- S) SPARK_HOME_IN_DOCKER=${OPTARG};;
  esac
 done
 
 . "${KYUUBI_HOME}/bin/load-kyuubi-env.sh"
-case "${@: -1}" in
-  build)
-    build
-    ;;
-  push)
-    if [ -z "$REPO" ]; then
-      usage
-      exit 1
-    fi
-    push
-    ;;
-  *)
-    usage
-    exit 1
-    ;;
-esac
+build

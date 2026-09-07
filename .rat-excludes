@@ -32,6 +32,8 @@
 NOTICE*
 docs/**
 build/apache-maven-*/**
+build/archive-cache/**
+dist/**
 build/scala-*/**
 **/**/operation_logs/**/**
 **/**/server_operation_logs/**/**
@@ -54,3 +56,8 @@ build/scala-*/**
 **/BeeLine.properties
 **/sql-keywords.properties
 **/python/**
+hadoop/**
+spark/**
+docker/python-for-notebook/**
+bin/build-spark-image.sh
+docker/build-spark-image.sh

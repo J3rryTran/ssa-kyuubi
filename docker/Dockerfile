@@ -15,12 +15,6 @@
 # limitations under the License.
 #
 
-# It's recommended to use ./bin/docker-image-tool.sh to build the image rather than the vanilla docker command.
-
-# Usage (use vanilla docker command):
-#   1. use ./build/dist to make binary tarball of Kyuubi or download an official binary tarball
-#   2. untar it and run the docker command below
-#      docker build -f docker/Dockerfile -t <private-repo>/kyuubi:<tag> .
 
 ARG BASE_IMAGE=eclipse-temurin:8-jdk-focal
 ARG spark_provided="spark_builtin"
@@ -47,19 +41,31 @@ ENV KYUUBI_WORK_DIR_ROOT=${KYUUBI_HOME}/work
 
 RUN set -ex && \
     sed -i 's/http:\/\/deb.\(.*\)/https:\/\/deb.\1/g' /etc/apt/sources.list && \
-    apt-get update && \
-    apt-get install -y bash tini libc6 libpam-modules krb5-user libnss3 procps && \
+    apt update && \
+    apt install -y bash tini libc6 libpam-modules krb5-user libnss3 procps && \
     ln -snf /bin/bash /bin/sh && \
     useradd -u ${kyuubi_uid} -g root kyuubi -d /home/kyuubi -m && \
     mkdir -p ${KYUUBI_HOME} ${KYUUBI_LOG_DIR} ${KYUUBI_PID_DIR} ${KYUUBI_WORK_DIR_ROOT} && \
     rm -rf /var/cache/apt/*
 
-COPY LICENSE NOTICE RELEASE ${KYUUBI_HOME}/
+COPY LICENSE ${KYUUBI_HOME}/
+COPY NOTICE ${KYUUBI_HOME}/
+COPY RELEASE ${KYUUBI_HOME}/
 COPY bin ${KYUUBI_HOME}/bin
 COPY jars ${KYUUBI_HOME}/jars
 COPY beeline-jars ${KYUUBI_HOME}/beeline-jars
 COPY web-ui ${KYUUBI_HOME}/web-ui
 COPY externals/engines/spark ${KYUUBI_HOME}/externals/engines/spark
+COPY externals/engines/jdbc ${KYUUBI_HOME}/externals/engines/jdbc
+RUN curl -fL -o ${KYUUBI_HOME}/jars/mysql-connector-j-8.3.0.jar \
+      https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.3.0/mysql-connector-j-8.3.0.jar && \
+    ln -s ../../../jars/mysql-connector-j-8.3.0.jar \
+      ${KYUUBI_HOME}/externals/engines/jdbc/mysql-connector-j-8.3.0.jar
+
+
+# Fail the image build if the packaged Web UI ever loses the notebook result-pane styles.
+RUN grep -Rqs --include='*.css' '\.cell-stream-output' ${KYUUBI_HOME}/web-ui/dist/assets && \
+    grep -Rqs --include='*.css' '\.cell-result-log' ${KYUUBI_HOME}/web-ui/dist/assets
 
 WORKDIR ${KYUUBI_HOME}
 RUN chown -R kyuubi:root ${KYUUBI_HOME} && \
