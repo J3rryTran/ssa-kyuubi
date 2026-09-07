@@ -29,6 +29,7 @@ import io.swagger.v3.oas.annotations.tags.Tag
 
 import org.apache.kyuubi.{KyuubiSQLException, Logging}
 import org.apache.kyuubi.client.api.v1.dto._
+import org.apache.kyuubi.config.KyuubiConf.{ARROW_BASED_ROWSET_TIMESTAMP_AS_STRING, OPERATION_RESULT_FORMAT}
 import org.apache.kyuubi.operation.{FetchOrientation, KyuubiOperation, OperationHandle}
 import org.apache.kyuubi.server.api.{ApiRequestContext, ApiUtils}
 import org.apache.kyuubi.shaded.hive.service.rpc.thrift._
@@ -38,6 +39,29 @@ import org.apache.kyuubi.shaded.hive.service.rpc.thrift._
 @Consumes(Array(MediaType.APPLICATION_JSON))
 private[v1] class OperationsResource extends ApiRequestContext with Logging {
   import ApiUtils.logAndRefineErrorMsg
+
+  /**
+   * How the engine encoded this operation's results. Taken from the session the operation belongs
+   * to, falling back to the server default, so the answer is the same one the engine acted on.
+   */
+  private def resultFormatOf(operationHandle: OperationHandle): String =
+    sessionConfOf(operationHandle, OPERATION_RESULT_FORMAT.key)
+      .getOrElse(fe.getConf.get(OPERATION_RESULT_FORMAT))
+
+  private def timestampAsStringOf(operationHandle: OperationHandle): Boolean =
+    sessionConfOf(operationHandle, ARROW_BASED_ROWSET_TIMESTAMP_AS_STRING.key)
+      .map(_.trim.toBoolean)
+      .getOrElse(fe.getConf.get(ARROW_BASED_ROWSET_TIMESTAMP_AS_STRING))
+
+  private def sessionConfOf(operationHandle: OperationHandle, key: String): Option[String] =
+    try {
+      fe.be.sessionManager.operationManager.getOperation(operationHandle)
+        .getSession.conf.get(key)
+    } catch {
+      case NonFatal(e) =>
+        debug(s"Could not read $key for operation $operationHandle", e)
+        None
+    }
 
   @ApiResponse(
     responseCode = "200",
@@ -179,12 +203,26 @@ private[v1] class OperationsResource extends ApiRequestContext with Logging {
       @QueryParam("fetchorientation") @DefaultValue("FETCH_NEXT")
       fetchOrientation: String): ResultRowSet = {
     try {
+      val operationHandle = OperationHandle(operationHandleStr)
       val fetchResultsResp = fe.be.fetchResults(
-        OperationHandle(operationHandleStr),
+        operationHandle,
         FetchOrientation.withName(fetchOrientation),
         maxRows,
         fetchLog = false)
       val rowSet = fetchResultsResp.getResults
+      // Under kyuubi.operation.result.format=arrow a row set holds serialized Arrow batches
+      // instead of thrift rows. Decode them here so the response shape does not depend on a
+      // server-side setting the client cannot see. The format is read from configuration
+      // rather than guessed from the payload.
+      if (ArrowRowSetConverter.isArrowRowSet(resultFormatOf(operationHandle))) {
+        val schema = fe.be.getResultSetMetadata(operationHandle).getSchema
+        val arrowRows = ArrowRowSetConverter.toRows(
+          rowSet,
+          schema,
+          timestampAsStringOf(operationHandle),
+          maxRows)
+        return new ResultRowSet(arrowRows.asJava, arrowRows.size)
+      }
       val rows = rowSet.getRows.asScala.map(i => {
         new Row(i.getColVals.asScala.map(i => {
           new Field(

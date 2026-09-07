@@ -81,6 +81,22 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+          The REST /rowset endpoint decodes Arrow IPC batches when the engine uses
+          kyuubi.operation.result.format=arrow. Both arrive transitively through
+          kyuubi-hive-jdbc, but declaring them keeps that decoding from breaking silently if the
+          driver ever stops depending on Arrow.
+        -->
+        <dependency>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>arrow-vector</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>arrow-memory-netty</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.kyuubi</groupId>
             <artifactId>kyuubi-events_${scala.binary.version}</artifactId>
@@ -90,6 +106,12 @@
         <dependency>
             <groupId>org.apache.kyuubi</groupId>
             <artifactId>kyuubi-server-plugin</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.kyuubi</groupId>
+            <artifactId>kyuubi-oidc-auth_${scala.binary.version}</artifactId>
             <version>${project.version}</version>
         </dependency>
 
