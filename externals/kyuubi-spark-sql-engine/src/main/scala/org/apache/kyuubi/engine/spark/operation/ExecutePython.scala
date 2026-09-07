@@ -189,6 +189,10 @@ case class SessionPythonWorker(
     errorReader: Thread,
     pythonWorkerMonitor: Thread,
     workerProcess: Process) {
+
+  /** Whether this worker can still be used, or was killed and needs replacing. */
+  def isAlive: Boolean = workerProcess.isAlive
+
   private val stdin: PrintWriter = new PrintWriter(workerProcess.getOutputStream)
   private val stdout: BufferedReader =
     new BufferedReader(new InputStreamReader(workerProcess.getInputStream), 1)
@@ -209,8 +213,8 @@ case class SessionPythonWorker(
    */
   def runCode(code: String, internal: Boolean = false): Option[PythonResponse] = withLockRequired {
     if (!workerProcess.isAlive) {
-      throw KyuubiSQLException("Python worker process has been exited, please check the error log" +
-        " and re-create the session to run python code.")
+      throw KyuubiSQLException("python worker was killed (resource limit exceeded?); it will be" +
+        " restarted for the next cell, but names bound before this point are gone.")
     }
     val input = JsonUtils.toJson(Map("code" -> code, "cmd" -> "run_code"))
     // scalastyle:off println
@@ -262,6 +266,30 @@ object ExecutePython extends Logging {
   final val IS_PYTHON_APP_KEY = "spark.yarn.isPython"
   final val MAGIC_ENABLED = "MAGIC_ENABLED"
 
+  /**
+   * Optional notebook confs, as (spark conf, environment variable) pairs.
+   *
+   * The names are a contract with the Helm chart. Only the name is known here; what a value
+   * should be is an operator's decision, and an environment that reaches the package index
+   * directly sets none of them at all.
+   */
+  final val NOTEBOOK_WORKER_CONFS: Seq[(String, String)] = Seq(
+    "spark.kyuubi.notebook.pip.indexUrl" -> "KYUUBI_NOTEBOOK_PIP_INDEX_URL",
+    "spark.kyuubi.notebook.pip.trustedHost" -> "KYUUBI_NOTEBOOK_PIP_TRUSTED_HOST",
+    "spark.kyuubi.notebook.pip.timeout" -> "KYUUBI_NOTEBOOK_PIP_TIMEOUT",
+    "spark.kyuubi.notebook.python.memory.limit" -> "KYUUBI_NOTEBOOK_PY_MEMORY_LIMIT",
+    "spark.kyuubi.notebook.python.cpu.time.limit" -> "KYUUBI_NOTEBOOK_PY_CPU_TIME_LIMIT")
+
+  /**
+   * Both places a conf can come from: the runtime config a session may have set, and the
+   * `SparkConf` the engine was launched with, which is where a chart-rendered `--conf` lands.
+   */
+  private def notebookConf(spark: SparkSession, key: String): Option[String] =
+    spark.conf.getOption(key)
+      .orElse(spark.sparkContext.getConf.getOption(key))
+      .map(_.trim)
+      .filter(_.nonEmpty)
+
   private val isPythonGatewayStart = new AtomicBoolean(false)
   private val kyuubiPythonPath = Utils.createTempDir()
   def init(): Unit = {
@@ -309,6 +337,9 @@ object ExecutePython extends Logging {
     env.put("KYUUBI_SPARK_SESSION_UUID", sessionId)
     env.put("PYTHON_GATEWAY_CONNECTION_INFO", KyuubiPythonGatewayServer.CONNECTION_FILE_PATH)
     env.put(MAGIC_ENABLED, getSessionConf(ENGINE_SPARK_PYTHON_MAGIC_ENABLED, spark).toString)
+    NOTEBOOK_WORKER_CONFS.foreach { case (confKey, envKey) =>
+      notebookConf(spark, confKey).foreach(env.put(envKey, _))
+    }
     logger.info(
       s"""
          |launch python worker command: ${builder.command().asScala.mkString(" ")}
