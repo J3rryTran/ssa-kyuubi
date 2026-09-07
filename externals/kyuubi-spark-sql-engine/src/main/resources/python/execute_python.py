@@ -18,15 +18,30 @@
 import ast
 import datetime
 import decimal
+import importlib
 import io
 import json
 
 import os
 import re
+import subprocess
 import sys
 import traceback
 import base64
 from glob import glob
+
+if sys.version_info >= (3, 8):
+    from ast import Module
+else:
+    from ast import Module as OriginalModule
+    Module = lambda nodelist, type_ignores: OriginalModule(nodelist)
+
+import kyuubi_util
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 if sys.version_info[0] < 3:
     sys.exit("Python < 3 is unsupported.")
@@ -53,21 +68,8 @@ if "pyspark" not in sys.modules:
             )
         sys.path[:0] = sys_path = [spark_python, py4j]
 else:
-    # already imported, no need to patch sys.path
     sys_path = None
 
-# import kyuubi_util after preparing sys.path
-import kyuubi_util
-
-# ast api is changed after python 3.8, see https://github.com/ipython/ipython/pull/11593
-if sys.version_info >= (3, 8):
-    from ast import Module
-else:
-    # mock the new API, ignore second argument
-    # see https://github.com/ipython/ipython/issues/11590
-    from ast import Module as OriginalModule
-
-    Module = lambda nodelist, type_ignores: OriginalModule(nodelist)
 
 TOP_FRAME_REGEX = re.compile(r'\s*File "<stdin>".*in <module>')
 
@@ -94,13 +96,61 @@ class NormalNode(object):
                 code = compile(mod, "<stdin>", "single")
                 exec(code, global_dict)
         except Exception:
-            # We don't need to log the exception because we're just executing user
-            # code and passing the error along.
             raise ExecutionError(sys.exc_info())
 
 
 class UnknownMagic(Exception):
     pass
+
+
+class PipError(Exception):
+    """Raised for anything %pip refuses or pip itself reports, so the cell names the real cause."""
+    pass
+
+
+MEMORY_LIMIT = os.environ.get("KYUUBI_NOTEBOOK_PY_MEMORY_LIMIT", "").strip()
+CPU_TIME_LIMIT = os.environ.get("KYUUBI_NOTEBOOK_PY_CPU_TIME_LIMIT", "").strip()
+
+
+def _parse_memory(value):
+    text = value.lower().rstrip("b")
+    units = {"k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
+    multiplier = units.get(text[-1:], 1)
+    if multiplier != 1:
+        text = text[:-1]
+    return int(float(text) * multiplier)
+
+
+def _apply_resource_limits():
+    """Caps this worker so one cell cannot take the whole driver down with it.
+
+    All notebooks of a user share one engine, so an unbounded pandas frame here would OOM the
+    driver and kill that user's SQL as well. A limit that cannot be applied is reported and
+    ignored rather than fatal: refusing to start would be a worse outcome than running uncapped.
+    """
+    if resource is None:
+        return
+    if MEMORY_LIMIT:
+        try:
+            limit = _parse_memory(MEMORY_LIMIT)
+            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+        except (ValueError, OSError) as e:
+            print(
+                "WARN: could not apply memory limit %r: %s" % (MEMORY_LIMIT, e),
+                file=sys.stderr,
+            )
+    if CPU_TIME_LIMIT:
+        try:
+            seconds = int(float(CPU_TIME_LIMIT))
+            resource.setrlimit(resource.RLIMIT_CPU, (seconds, seconds))
+        except (ValueError, OSError) as e:
+            print(
+                "WARN: could not apply cpu time limit %r: %s" % (CPU_TIME_LIMIT, e),
+                file=sys.stderr,
+            )
+
+
+_apply_resource_limits()
 
 
 class MagicNode(object):
@@ -148,7 +198,22 @@ def clearOutputs():
     sys.stderr = UnicodeDecodingStringIO()
 
 
+def reject_shell_commands(code):
+    """`!pip install x` is a notebook habit this worker cannot serve.
+
+    The worker runs plain `exec()`, never a shell, so such a line is only ever a SyntaxError
+    pointing at the `!`. Saying what to use instead is far more useful than the parser's message.
+    """
+    for line in code.split("\n"):
+        if line.lstrip().startswith("!"):
+            raise SyntaxError(
+                "Shell commands are not supported. "
+                "Use %pip install <packages> to install libraries."
+            )
+
+
 def parse_code_into_nodes(code):
+    reject_shell_commands(code)
     nodes = []
     try:
         nodes.append(NormalNode(code))
@@ -212,11 +277,17 @@ def execute_reply_error(exc_type, exc_value, tb):
             formatted_tb = formatted_tb[:1] + formatted_tb[i + 1 :]
             break
 
+    evalue = str(exc_value)
+    if exc_type is MemoryError and MEMORY_LIMIT:
+        # A bare MemoryError leaves the user guessing whether the driver is out of memory or
+        # their own cell hit a ceiling somebody configured. Name the ceiling.
+        evalue = "python worker exceeded memory limit (%s)" % MEMORY_LIMIT
+
     return execute_reply(
         "error",
         {
             "ename": str(exc_type.__name__),
-            "evalue": str(exc_value),
+            "evalue": evalue,
             "traceback": formatted_tb,
         },
     )
@@ -441,10 +512,96 @@ def magic_matplot(name):
     }
 
 
+def _pip_target_dir():
+    """Where %pip installs land.
+
+    Kept under the driver's working directory on purpose: it dies with the driver pod, so a
+    session restart really does undo everything a user installed, and nothing ever reaches the
+    interpreter's own site-packages where it would outlive the session and leak to other users.
+    """
+    target = os.path.join(os.getcwd(), "kyuubi-session-pip")
+    os.makedirs(target, exist_ok=True)
+    return target
+
+
+def _pip_timeout():
+    raw = os.environ.get("KYUUBI_NOTEBOOK_PIP_TIMEOUT", "").strip()
+    try:
+        return int(float(raw)) if raw else 300
+    except ValueError:
+        return 300
+
+
+def magic_pip(rest=""):
+    """`%pip install <packages>` - install libraries for this session only.
+
+    Only `install` is accepted. Anything else gets a plain message rather than a pip error the
+    user would have to decode, because the other subcommands either do nothing useful against a
+    --target directory or would remove a library the image provides for everyone.
+    """
+    args = rest.split()
+    if not args:
+        raise PipError(
+            "%pip requires a subcommand. Use: %pip install <packages>")
+    if args[0] != "install":
+        raise PipError(
+            "Only '%%pip install' is supported, not '%%pip %s'. "
+            "Use: %%pip install <packages>" % args[0])
+    packages = args[1:]
+    if not packages:
+        raise PipError("No packages given. Use: %pip install <packages>")
+
+    target = _pip_target_dir()
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--target",
+        target,
+    ]
+    index_url = os.environ.get("KYUUBI_NOTEBOOK_PIP_INDEX_URL", "").strip()
+    if index_url:
+        command += ["--index-url", index_url]
+    trusted_host = os.environ.get("KYUUBI_NOTEBOOK_PIP_TRUSTED_HOST", "").strip()
+    if trusted_host:
+        command += ["--trusted-host", trusted_host]
+    command += packages
+
+    timeout = _pip_timeout()
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise PipError(
+            "pip install timed out after %d seconds. Raise "
+            "spark.kyuubi.notebook.pip.timeout if the mirror is slow." % timeout)
+    except FileNotFoundError:
+        raise PipError(
+            "pip is not available in this image: '%s -m pip' was not found. "
+            "The Spark image needs python3-pip." % sys.executable)
+
+    log = completed.stdout.decode("utf-8", "replace") if completed.stdout else ""
+    if completed.returncode != 0:
+        raise PipError(
+            "pip install failed with exit code %d:\n%s" % (completed.returncode, log))
+
+    if target not in sys.path:
+        sys.path.insert(0, target)
+    importlib.invalidate_caches()
+    return {"text/plain": log}
+
+
 magic_router = {
     "table": magic_table,
     "json": magic_json,
     "matplot": magic_matplot,
+    "pip": magic_pip,
 }
 
 
