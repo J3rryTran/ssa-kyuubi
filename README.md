@@ -24,7 +24,7 @@ If specfic version spark, flink, and hive use:
 The following command creates:
 
 ```bash
-./bin/docker-image-tool.sh -r <name_repo_docker> -i kyuubi-custom -t <tag> -S /opt/spark -b BASE_IMAGE=eclipse-temurin:17-jdk-focal build
+./bin/docker-image-tool.sh -r <name_repo_docker> -i vtnet-custom -t <tag> -S /opt/spark -b BASE_IMAGE=eclipse-temurin:17-jdk-focal build
 ```
 
 ### 3. Test 
@@ -39,12 +39,6 @@ Bash in images:
 docker run -it --rm <image>:<tag> /bin/bash
 ```
 
-### 4. Push the Docker image
-
-```bash
-docker push <images>:<tag>
-```
-
 Options:
 
 - `-r`: Docker repository or registry namespace. For Docker Hub, use `docker.io/<username>`.
@@ -53,13 +47,23 @@ Options:
 - `-b KEY=VALUE`: Docker build argument. This option can be specified multiple times.
 - `-s <path>`: Copy a local Spark installation into the image and use it as `SPARK_HOME`.
 - `-S <path>`: Declare the Spark installation path inside the image without copying Spark. The base image must already contain Spark at this path.
-- `-H <path>`: Copy Hadoop native libraries (`libhadoop.so`, compression codecs) into the image at `/opt/hadoop/lib/native` and set `LD_LIBRARY_PATH` to it. Accepts a Hadoop home such as `/path/hadoop-3.3.4` (its `lib/native` is used) or the native directory itself. For Spark engines, also set `spark.driver.extraLibraryPath` / `spark.executor.extraLibraryPath` to `/opt/hadoop/lib/native` in `spark-defaults.conf`; in cluster mode the same path must exist inside the image used by driver/executor pods (`spark.kubernetes.container.image`).
 - `-n`: Build the image without using the Docker build cache.
 - `-X`: Build and push a multi-platform image using Docker Buildx.
 
+## Build spark with packages python 
 
-### The list of module added:
-- OIDC: kyuubi-oidc-auth
-- Ranger Author
-- Notebook
-- Python for notebook into the spark image
+Add python packages into ***vtnet-kyuubi/docker/python-for-notebook/requirement.txt*** and then auto build in spark.
+
+``` bash
+bin/build-spark-image.sh -r docker.io/<name_user> -i <name_repo> -t <tag> -s /path/to/vtnet-kyuubi/spark/spark-3.5.5-bin-hadoop3 -d /path/to/vtnet-kyuubi/hadoop/3.3.4/lib/native
+```
+
+## Push the Docker image
+
+```bash
+docker push <images>:<tag>
+```
+### The list of module added and contributed:
+- OIDC Authentication - Trungtm8
+- Ranger Authorization - Hieunm29
+- Notebook and Python for notebook - Trungtm8
