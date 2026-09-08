@@ -61,3 +61,8 @@ spark/**
 docker/python-for-notebook/**
 bin/build-spark-image.sh
 docker/build-spark-image.sh
+extensions/server/kyuubi-oidc-auth/**
+extensions/spark/kyuubi-spark-authz/src/main/scala/org/apache/kyuubi/plugin/spark/authz/ranger/RangerServiceProfile.scala
+extensions/spark/kyuubi-spark-authz/src/test/scala/org/apache/kyuubi/plugin/spark/authz/ranger/RangerServiceProfileSuite.scala
+kyuubi-hive-jdbc/src/main/java/org/apache/kyuubi/jdbc/hive/auth/oidc/**
+kyuubi-hive-jdbc/src/test/java/org/apache/kyuubi/jdbc/hive/auth/oidc/**

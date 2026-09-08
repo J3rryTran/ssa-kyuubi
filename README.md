@@ -1,7 +1,7 @@
-# kyuubi-custom
-fork from https://github.com/apache/kyuubi.git
+# ssa-kyuubi
+Fork from https://github.com/apache/kyuubi.git
 
-version 1.10.3
+Version 1.10.3
 
 ## Build and publish
 
@@ -24,7 +24,7 @@ If specfic version spark, flink, and hive use:
 The following command creates:
 
 ```bash
-./dist/bin/docker-image-tool.sh -r <name_repo_docker> -i vtnet-kyuubi -t <tag> -S /opt/spark -b BASE_IMAGE=eclipse-temurin:17-jdk-focal build
+./dist/bin/docker-image-tool.sh -r <name_repo_docker> -i ssa-kyuubi -t <tag> -S /opt/spark -b BASE_IMAGE=eclipse-temurin:17-jdk-focal build
 ```
 
 ## Test 
@@ -48,10 +48,10 @@ Options:
 
 ## Build spark with packages python 
 
-Add python packages into ***vtnet-kyuubi/docker/python-for-notebook/requirement.txt*** and then auto build in spark.
+Add python packages into ***ssa-kyuubi/docker/python-for-notebook/requirement.txt*** and then auto build in spark.
 
 ``` bash
-bin/build-spark-image.sh -r docker.io/<name_user> -i <name_repo> -t <tag> -s /path/to/vtnet-kyuubi/spark/spark-3.5.5-bin-hadoop3 -d /path/to/vtnet-kyuubi/hadoop/3.3.4/lib/native
+bin/build-spark-image.sh -r docker.io/<name_user> -i <name_repo> -t <tag> -s /path/to/ssa-kyuubi/spark/spark-3.5.5-bin-hadoop3 -d /path/to/ssa-kyuubi/hadoop/3.3.4/lib/native
 ```
 
 ## Push the Docker image
@@ -59,8 +59,7 @@ bin/build-spark-image.sh -r docker.io/<name_user> -i <name_repo> -t <tag> -s /pa
 ```bash
 docker push <images>:<tag>
 ```
-### The list of module added and contributed:
-- OIDC Authentication - Trungtm8
-- Ranger Authorization - Hieunm29
-- Notebook + Python packages into Spark engine - Trungtm8
-- Custom UI + reallocate resources at the user level - Khoa
+### The list of module added:
+- OIDC Authentication
+- Ranger Authorization
+- Notebook + Python packages
