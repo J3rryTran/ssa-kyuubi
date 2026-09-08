@@ -30,6 +30,7 @@ class KyuubiConfSuite extends KyuubiFunSuite {
     assert(conf.get(SERVER_PRINCIPAL) === None)
     assert(conf.get(KINIT_MAX_ATTEMPTS) === 10)
     assert(conf.get(OPERATION_IDLE_TIMEOUT) === Duration.ofHours(3).toMillis)
+    assert(!conf.get(ENGINE_FORCE_EXIT_ON_STOP))
   }
 
   test("kyuubi conf w/ w/o no sys defaults") {

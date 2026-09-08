@@ -1514,6 +1514,15 @@ object KyuubiConf {
       .timeConf
       .createWithDefault(Duration.ofSeconds(60).toMillis)
 
+  val ENGINE_FORCE_EXIT_ON_STOP: ConfigEntry[Boolean] =
+    buildConf("kyuubi.engine.force.exit.on.stop")
+      .doc("Whether a Spark engine process exits after completing a graceful shutdown. " +
+        "This is intended for Kubernetes Spark driver pods whose JVM remains alive because " +
+        "of non-daemon threads after SparkContext has stopped.")
+      .version("1.10.3")
+      .booleanConf
+      .createWithDefault(false)
+
   val ENGINE_FLINK_MAIN_RESOURCE: OptionalConfigEntry[String] =
     buildConf("kyuubi.session.engine.flink.main.resource")
       .doc("The package used to create Flink SQL engine remote job. If it is undefined," +
