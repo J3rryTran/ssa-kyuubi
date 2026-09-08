@@ -47,6 +47,12 @@ const call = <T>(config: Record<string, unknown>): Promise<T> =>
 export const listFolders = () =>
   call<NotebookFolder[]>({ url: 'api/v1/notebook-folders', method: 'get' })
 
+export const getFolder = (folderId: string) =>
+  call<NotebookFolder>({
+    url: `api/v1/notebook-folders/${folderId}`,
+    method: 'get'
+  })
+
 export const createFolder = (name: string, parentId: string | null) =>
   call<NotebookFolder>({
     url: 'api/v1/notebook-folders',
@@ -59,6 +65,19 @@ export const renameFolder = (folderId: string, name: string, version: number) =>
     url: `api/v1/notebook-folders/${folderId}`,
     method: 'patch',
     data: { name, version }
+  })
+
+/** Move a folder (and its complete subtree) to another folder, or to the workspace root. */
+export const moveFolder = (
+  folderId: string,
+  parentId: string | null,
+  version: number
+) =>
+  call<NotebookFolder>({
+    url: `api/v1/notebook-folders/${folderId}`,
+    method: 'patch',
+    // The REST API uses an empty value to distinguish the workspace root from an omitted field.
+    data: { parentId: parentId || '', version }
   })
 
 export const deleteFolder = (folderId: string) =>
@@ -107,6 +126,19 @@ export const updateNotebook = (
     url: `api/v1/notebooks/${notebookId}`,
     method: 'patch',
     data
+  })
+
+/** Move a notebook to another folder, or to the workspace root. */
+export const moveNotebook = (
+  notebookId: string,
+  folderId: string | null,
+  version: number
+) =>
+  call<Notebook>({
+    url: `api/v1/notebooks/${notebookId}:move`,
+    method: 'post',
+    // As with folders, the server interprets an empty folder id as the workspace root.
+    data: { folderId: folderId || '', version }
   })
 
 export const deleteNotebook = (notebookId: string) =>

@@ -17,36 +17,14 @@
 
 export const MENUS = [
   {
-    label: 'Overview',
-    icon: 'Odometer',
-    router: '/overview'
+    label: 'Workspace',
+    icon: 'FolderOpened',
+    router: '/workspace'
   },
   {
-    label: 'Management',
-    icon: 'List',
-    children: [
-      {
-        label: 'Session',
-        router: '/management/session'
-      },
-      {
-        label: 'Operation',
-        router: '/management/operation'
-      },
-      {
-        label: 'Engine',
-        router: '/management/engine'
-      },
-      {
-        label: 'Server',
-        router: '/management/server'
-      }
-    ]
-  },
-  {
-    label: 'Swagger',
-    icon: 'List',
-    router: '/swagger'
+    label: 'Notebook',
+    icon: 'Notebook',
+    router: '/notebook'
   },
   {
     label: 'SQL Editor',
@@ -54,8 +32,30 @@ export const MENUS = [
     router: '/editor'
   },
   {
-    label: 'Notebook',
-    icon: 'Notebook',
-    router: '/notebook'
+    label: 'Management',
+    icon: 'Setting',
+    router: '/management/engine',
+    children: [
+      {
+        label: 'Engine',
+        icon: 'Operation',
+        router: '/management/engine'
+      },
+      {
+        label: 'Session',
+        icon: 'User',
+        router: '/management/session'
+      },
+      {
+        label: 'Operation',
+        icon: 'Finished',
+        router: '/management/operation'
+      },
+      {
+        label: 'Server',
+        icon: 'Monitor',
+        router: '/management/server'
+      }
+    ]
   }
 ]

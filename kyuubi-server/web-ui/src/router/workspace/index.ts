@@ -15,41 +15,12 @@
  * limitations under the License.
  */
 
-$--colors: (
-  'primary': (
-    'base': #ff3621,
-  ),
-  'success': (
-    'base': #10b981,
-  ),
-  'warning': (
-    'base': #f59e0b,
-  ),
-  'danger': (
-    'base': #ef4444,
-  ),
-  'error': (
-    'base': #ef4444,
-  ),
-  'info': (
-    'base': #0284c7,
-  ),
-);
+const routes = [
+  {
+    path: '/workspace',
+    name: 'workspace',
+    component: () => import('@/views/workspace/index.vue')
+  }
+]
 
-$--menus: (
-  'item-height': 40px,
-  'icon-width': 20px,
-  'text-color': #475569,
-  'hover-text-color': #0f172a,
-  'hover-bg-color': #f1f5f9,
-  'bg-color': #ffffff,
-  'active-color': #ff3621,
-);
-
-@forward 'element-plus/theme-chalk/src/common/var.scss' with (
-    // do not use same name, it will override.
-    $colors: $--colors,
-    $menu: $--menus
-  );
-
-@use "element-plus/theme-chalk/src/index.scss" as *;
+export default routes

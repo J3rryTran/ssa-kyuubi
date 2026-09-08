@@ -22,6 +22,7 @@ import detailRoutes from './detail'
 import swaggerRoutes from './swagger'
 import editorRoutes from './editor'
 import notebookRoutes from './notebook'
+import workspaceRoutes from './workspace'
 
 const routes = [
   {
@@ -41,14 +42,15 @@ const routes = [
     path: '/layout',
     name: 'layout',
     component: () => import('@/layout/index.vue'),
-    redirect: 'overview',
+    redirect: 'workspace',
     children: [
       ...overviewRoutes,
       ...managementRoutes,
       ...detailRoutes,
       ...swaggerRoutes,
       ...editorRoutes,
-      ...notebookRoutes
+      ...notebookRoutes,
+      ...workspaceRoutes
     ]
   }
 ]

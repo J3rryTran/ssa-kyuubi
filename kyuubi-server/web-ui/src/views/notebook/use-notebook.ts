@@ -72,7 +72,13 @@ export function useNotebook() {
   /** Latest execution per cell id, and the output collected for it. */
   const executions = reactive<Record<string, CellExecution>>({})
   const outputs = reactive<Record<string, CellOutput>>({})
+  // A Spark Driver may take some time to start. During that interval an execution does not exist
+  // yet, so this state keeps the initiating cell visibly busy and prevents a second submission.
+  const initializingCells = reactive<Record<string, boolean>>({})
   const pollers = new Map<string, number>()
+  const pollInFlight = new Set<string>()
+  const outputCollections = new Map<string, Promise<void>>()
+  const collectedOutputs = new Set<string>()
 
   const readOnly = () => notebook.value?.role === 'VIEWER'
 
@@ -92,6 +98,9 @@ export function useNotebook() {
     stopAllPolling()
     Object.keys(executions).forEach((key) => delete executions[key])
     Object.keys(outputs).forEach((key) => delete outputs[key])
+    Object.keys(initializingCells).forEach((key) => delete initializingCells[key])
+    outputCollections.clear()
+    collectedOutputs.clear()
     try {
       const loaded = await api.getNotebook(notebookId)
       notebook.value = loaded
@@ -153,6 +162,9 @@ export function useNotebook() {
       )
       return
     }
+    const current = executions[cell.id]
+    if (initializingCells[cell.id] || (current && !isTerminal(current))) return
+    initializingCells[cell.id] = true
     try {
       const active = await ensureSession()
       const execution = await api.submitExecution(active.id, {
@@ -177,6 +189,8 @@ export function useNotebook() {
       poll(cell.id, execution.id)
     } catch (error) {
       reportError(error, 'The cell could not be started')
+    } finally {
+      delete initializingCells[cell.id]
     }
   }
 
@@ -193,6 +207,10 @@ export function useNotebook() {
   const poll = (cellId: string, executionId: string) => {
     stopPolling(cellId)
     const timer = window.setInterval(async () => {
+      // setInterval does not await an async callback. Do not let slow polls overlap, otherwise
+      // they can fetch and append the same output page before its cursor has advanced.
+      if (pollInFlight.has(cellId)) return
+      pollInFlight.add(cellId)
       try {
         const execution = await api.getExecution(executionId)
         executions[cellId] = execution
@@ -204,6 +222,8 @@ export function useNotebook() {
       } catch (error) {
         stopPolling(cellId)
         reportError(error, 'The execution status could not be read')
+      } finally {
+        pollInFlight.delete(cellId)
       }
     }, POLL_INTERVAL_MS)
     pollers.set(cellId, timer)
@@ -215,11 +235,13 @@ export function useNotebook() {
       window.clearInterval(timer)
       pollers.delete(cellId)
     }
+    pollInFlight.delete(cellId)
   }
 
   const stopAllPolling = () => {
     pollers.forEach((timer) => window.clearInterval(timer))
     pollers.clear()
+    pollInFlight.clear()
   }
 
   const outputFor = (cellId: string): CellOutput => {
@@ -249,8 +271,14 @@ export function useNotebook() {
         output.outputSequence
       )
       if (page.outputs.length) {
-        output.outputs = output.outputs.concat(page.outputs)
-        output.outputSequence = page.lastSequence
+        const knownSequences = new Set(output.outputs.map((item) => item.sequence))
+        const newOutputs = page.outputs.filter((item) => {
+          if (knownSequences.has(item.sequence)) return false
+          knownSequences.add(item.sequence)
+          return true
+        })
+        if (newOutputs.length) output.outputs = output.outputs.concat(newOutputs)
+        output.outputSequence = Math.max(output.outputSequence, page.lastSequence)
       }
     } catch (error) {
       // A runtime without rich output simply has none; that is not worth a message.
@@ -272,16 +300,29 @@ export function useNotebook() {
   }
 
   const collectOutput = async (cellId: string, execution: CellExecution) => {
-    await appendOutputs(cellId, execution)
-    if (execution.state !== 'SUCCEEDED') return
-    const output = outputFor(cellId)
+    if (collectedOutputs.has(execution.id)) return
+    const inFlight = outputCollections.get(execution.id)
+    if (inFlight) return inFlight
+
+    const task = (async () => {
+      await appendOutputs(cellId, execution)
+      if (execution.state !== 'SUCCEEDED') return
+      const output = outputFor(cellId)
+      try {
+        output.schema = await api.getExecutionSchema(execution.id)
+      } catch (error) {
+        // A statement without a result set has no schema; the empty state covers it.
+        return
+      }
+      await loadMoreRows(cellId, execution)
+    })()
+    outputCollections.set(execution.id, task)
     try {
-      output.schema = await api.getExecutionSchema(execution.id)
-    } catch (error) {
-      // A statement without a result set has no schema; the empty state covers it.
-      return
+      await task
+      collectedOutputs.add(execution.id)
+    } finally {
+      outputCollections.delete(execution.id)
     }
-    await loadMoreRows(cellId, execution)
   }
 
   const loadMoreRows = async (cellId: string, execution?: CellExecution) => {
@@ -324,13 +365,18 @@ export function useNotebook() {
     }
   }
 
-  const addCell = async (cellType: 'CODE' | 'MARKDOWN') => {
+  const addCell = async (cellType: 'CODE' | 'MARKDOWN', afterCellId?: string) => {
     if (!notebook.value) return
+    let position: number | undefined = undefined
+    if (afterCellId) {
+      const idx = cells.value.findIndex((c) => c.id === afterCellId)
+      if (idx >= 0) position = idx + 1
+    }
     try {
-      // Only the type is chosen here; the server gives a CODE cell the notebook's language.
       await api.createCell(notebook.value.id, {
         cellType,
-        source: ''
+        source: '',
+        position
       })
       await reloadCells()
     } catch (error) {
@@ -347,6 +393,27 @@ export function useNotebook() {
       await reloadCells()
     } catch (error) {
       reportError(error, 'The cell could not be removed')
+    }
+  }
+
+  const moveCell = async (cell: NotebookCell, direction: 'up' | 'down') => {
+    const idx = cells.value.findIndex((c) => c.id === cell.id)
+    if (idx < 0) return
+    if (direction === 'up' && idx > 0) {
+      const temp = cells.value[idx]
+      cells.value[idx] = cells.value[idx - 1]
+      cells.value[idx - 1] = temp
+    } else if (direction === 'down' && idx < cells.value.length - 1) {
+      const temp = cells.value[idx]
+      cells.value[idx] = cells.value[idx + 1]
+      cells.value[idx + 1] = temp
+    }
+    try {
+      await api.reorderCells(cell.notebookId, cells.value.map((c) => c.id))
+      await reloadCells()
+    } catch (error) {
+      reportError(error, 'The cell could not be moved')
+      await reloadCells()
     }
   }
 
@@ -373,7 +440,11 @@ export function useNotebook() {
     }
   }
 
-  const dispose = () => stopAllPolling()
+  const dispose = () => {
+    stopAllPolling()
+    outputCollections.clear()
+    collectedOutputs.clear()
+  }
 
   return {
     notebook,
@@ -383,6 +454,7 @@ export function useNotebook() {
     pythonEnabled,
     executions,
     outputs,
+    initializingCells,
     readOnly,
     open,
     loadRuntimeSpecs,
@@ -392,6 +464,7 @@ export function useNotebook() {
     saveCell,
     addCell,
     removeCell,
+    moveCell,
     reloadCells,
     restartSession,
     stopSession,

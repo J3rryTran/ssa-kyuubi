@@ -35,12 +35,12 @@
         <el-table-column prop="subdomain" label="Engine Name" min-width="130" />
         <el-table-column label="Driver" width="100">
           <template #default="{ row }">
-            {{ row.driverMemory || '2g' }} / {{ row.driverCores || 1 }}c
+            {{ row.driverMemory || '1g' }} / {{ row.driverCores || 1 }}c
           </template>
         </el-table-column>
         <el-table-column label="Executor" width="110">
           <template #default="{ row }">
-            {{ row.executorMemory || '4g' }} / {{ row.executorCores || 2 }}c
+            {{ row.executorMemory || '2g' }} / {{ row.executorCores || 1 }}c
           </template>
         </el-table-column>
         <el-table-column label="Actions" width="120" align="center">
@@ -89,7 +89,7 @@
       <el-row :gutter="16">
         <el-col :span="12">
           <el-form-item label="Driver Memory" prop="driverMemory">
-            <el-input v-model="form.driverMemory" placeholder="2g or 1024m" />
+          <el-input v-model="form.driverMemory" placeholder="1g or 1024m" />
           </el-form-item>
         </el-col>
         <el-col :span="12">
@@ -107,7 +107,7 @@
       <el-row :gutter="16">
         <el-col :span="12">
           <el-form-item label="Executor Memory" prop="executorMemory">
-            <el-input v-model="form.executorMemory" placeholder="4g or 2048m" />
+          <el-input v-model="form.executorMemory" placeholder="2g or 2048m" />
           </el-form-item>
         </el-col>
         <el-col :span="12">
@@ -212,11 +212,11 @@
 
   const form = reactive({
     subdomain: '',
-    driverMemory: '2g',
+    driverMemory: '1g',
     driverCores: 1,
-    executorMemory: '4g',
-    executorCores: 2,
-    executorInstances: 2,
+    executorMemory: '2g',
+    executorCores: 1,
+    executorInstances: 1,
     customConfigs: [] as CustomConfigRow[]
   })
 
@@ -266,11 +266,11 @@
     return {
       ...apiProfile,
       name: apiProfile.subdomain,
-      driverMemory: sparkConfig['spark.driver.memory'] || apiProfile.driverMemory || '2g',
+      driverMemory: sparkConfig['spark.driver.memory'] || apiProfile.driverMemory || '1g',
       driverCores: sparkConfig['spark.driver.cores'] ? Number(sparkConfig['spark.driver.cores']) : (Number(apiProfile.driverCores) || 1),
-      executorMemory: sparkConfig['spark.executor.memory'] || apiProfile.executorMemory || '4g',
-      executorCores: sparkConfig['spark.executor.cores'] ? Number(sparkConfig['spark.executor.cores']) : (Number(apiProfile.executorCores) || 2),
-      executorInstances: sparkConfig['spark.executor.instances'] ? Number(sparkConfig['spark.executor.instances']) : (Number(apiProfile.executorInstances) || 2),
+      executorMemory: sparkConfig['spark.executor.memory'] || apiProfile.executorMemory || '2g',
+      executorCores: sparkConfig['spark.executor.cores'] ? Number(sparkConfig['spark.executor.cores']) : (Number(apiProfile.executorCores) || 1),
+      executorInstances: sparkConfig['spark.executor.instances'] ? Number(sparkConfig['spark.executor.instances']) : (Number(apiProfile.executorInstances) || 1),
       customConfigs: Object.keys(customConfigs).length > 0 ? customConfigs : apiProfile.customConfigs
     }
   }
@@ -287,7 +287,15 @@
     } catch (e) {
       console.error('Failed to load engine profiles from backend:', e)
     }
-    savedProfiles.value = [{ name: 'default', subdomain: 'default', driverMemory: '2g', executorMemory: '4g' }]
+    savedProfiles.value = [{
+      name: 'default',
+      subdomain: 'default',
+      driverMemory: '1g',
+      driverCores: 1,
+      executorMemory: '2g',
+      executorCores: 1,
+      executorInstances: 1
+    }]
   }
 
   watch(dialogVisible, (val) => {
@@ -297,11 +305,11 @@
   function loadProfileForEdit(profile: EngineProfile) {
     const parsed = parseProfileFromApi(profile)
     form.subdomain = parsed.subdomain || parsed.name || ''
-    form.driverMemory = parsed.driverMemory || '2g'
+    form.driverMemory = parsed.driverMemory || '1g'
     form.driverCores = Number(parsed.driverCores) || 1
-    form.executorMemory = parsed.executorMemory || '4g'
-    form.executorCores = Number(parsed.executorCores) || 2
-    form.executorInstances = parsed.executorInstances || 2
+    form.executorMemory = parsed.executorMemory || '2g'
+    form.executorCores = Number(parsed.executorCores) || 1
+    form.executorInstances = parsed.executorInstances || 1
     if (parsed.customConfigs) {
       form.customConfigs = Object.entries(parsed.customConfigs).map(([key, value]) => ({
         key,
@@ -337,11 +345,11 @@
 
   function resetForm() {
     form.subdomain = ''
-    form.driverMemory = '2g'
+    form.driverMemory = '1g'
     form.driverCores = 1
-    form.executorMemory = '4g'
-    form.executorCores = 2
-    form.executorInstances = 2
+    form.executorMemory = '2g'
+    form.executorCores = 1
+    form.executorInstances = 1
     form.customConfigs = []
   }
 
