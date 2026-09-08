@@ -22,7 +22,7 @@
     :close-on-click-modal="false"
     width="400px">
     <div class="dialog-header">
-      <img class="logo" src="@/assets/images/kyuubi-logo.svg" />
+      <img class="logo" src="@/assets/images/vtnexus-logo.svg" alt="VTNexus" />
     </div>
     <!--
       Under OIDC this dialog is only reached when the redirect to the provider
@@ -130,13 +130,16 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    margin-bottom: 20px;
+    margin-bottom: 24px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    padding: 16px 20px;
+    border-radius: 8px;
   }
 
   .logo {
-    width: 100px;
+    width: 170px;
     height: auto;
-    margin-bottom: 10px;
   }
 
   .login-form {
