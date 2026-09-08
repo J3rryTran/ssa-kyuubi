@@ -31,7 +31,7 @@ Formatting is enforced by Spotless (scalafmt + java + license headers). Apply be
 Binary distribution (see README for the full docker-image-tool flow):
 
 ```bash
-./build/dist --name <suffix> --tgz --web-ui --spark-provided --flink-provided --hive-provided
+./build/dist --tgz --web-ui --spark-provided --flink-provided --hive-provided
 ```
 
 Built jars land at `<module>/target/<artifact>-1.10.3.jar`.

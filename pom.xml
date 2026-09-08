@@ -54,6 +54,7 @@
     <modules>
         <module>dev/kyuubi-codecov</module>
         <module>extensions/server/kyuubi-server-plugin</module>
+        <module>extensions/server/kyuubi-oidc-auth</module>
         <module>extensions/flink/kyuubi-flink-token-provider</module>
         <module>extensions/spark/kyuubi-extension-spark-jdbc-dialect</module>
         <module>extensions/spark/kyuubi-spark-authz</module>
@@ -1683,6 +1684,11 @@
                                 <include>src/main/java/**/*.java</include>
                                 <include>src/test/java/**/*.java</include>
                             </includes>
+                            <excludes>
+                                <exclude>src/main/java/org/apache/kyuubi/jdbc/hive/auth/oidc/**/*.java</exclude>
+                                <exclude>src/test/java/org/apache/kyuubi/jdbc/hive/auth/oidc/**/*.java</exclude>
+                                <exclude>src/main/java/org/apache/kyuubi/jdbc/hive/KyuubiConnection.java</exclude>
+                            </excludes>
                             <googleJavaFormat>
                                 <version>${spotless.java.googlejavaformat.version}</version>
                                 <style>GOOGLE</style>
@@ -1697,6 +1703,10 @@
                                 <include>src/test/scala-*/**/*.scala</include>
                                 <include>src/test/gen/scala/**/*.scala</include>
                             </includes>
+                            <excludes>
+                                <exclude>src/main/scala/org/apache/kyuubi/auth/oidc/**/*.scala</exclude>
+                                <exclude>src/test/scala/org/apache/kyuubi/auth/oidc/**/*.scala</exclude>
+                            </excludes>
                             <scalafmt>
                                 <version>${spotless.scala.scalafmt.version}</version>
                                 <scalaMajorVersion>${scala.binary.version}</scalaMajorVersion>
@@ -1730,6 +1740,9 @@
                             </includes>
                             <excludes>
                                 <exclude>docs/*/lib/python*/**/*.md</exclude>
+                                <exclude>docs/plans/**/*.md</exclude>
+                                <exclude>docs/notebook/**/*.md</exclude>
+                                <exclude>docs/security/**/*.md</exclude>
                             </excludes>
                             <flexmark>
                                 <version>${flexmark.version}</version>
