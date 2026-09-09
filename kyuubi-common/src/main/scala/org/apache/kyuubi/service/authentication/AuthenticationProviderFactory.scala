@@ -29,6 +29,12 @@ import org.apache.kyuubi.util.ClassUtils
  * This class helps select a [[PasswdAuthenticationProvider]] for a given [[AuthMethods]]
  */
 object AuthenticationProviderFactory {
+
+  final val OIDC_PASSWD_PROVIDER_CLASS =
+    "org.apache.kyuubi.auth.oidc.DenyPasswordAuthenticationProvider"
+  final val OIDC_BEARER_PROVIDER_CLASS =
+    "org.apache.kyuubi.auth.oidc.JwtTokenAuthenticationProvider"
+
   @throws[AuthenticationException]
   def getAuthenticationProvider(
       method: AuthMethod,
