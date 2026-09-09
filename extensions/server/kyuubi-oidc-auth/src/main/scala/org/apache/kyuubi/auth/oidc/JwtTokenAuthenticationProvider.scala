@@ -21,7 +21,6 @@ import java.net.URL
 import java.security.Principal
 import java.text.ParseException
 import java.util.{Collections, Date}
-
 import javax.security.sasl.AuthenticationException
 
 import scala.collection.JavaConverters._
@@ -35,6 +34,7 @@ import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.proc.{ConfigurableJWTProcessor, DefaultJWTProcessor}
 
 import org.apache.kyuubi.Logging
+import org.apache.kyuubi.auth.oidc.JwtTokenAuthenticationProvider._
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.service.authentication.{TokenAuthenticationProvider, TokenCredential}
 
