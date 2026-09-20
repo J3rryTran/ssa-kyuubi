@@ -21,6 +21,25 @@ import org.apache.kyuubi.KyuubiFunSuite
 
 class SparkSQLEngineSuite extends KyuubiFunSuite {
 
+  test("force exit only after graceful Kubernetes driver shutdown when enabled") {
+    assert(SparkSQLEngine.shouldForceExitAfterGracefulStop(
+      gracefulShutdownCompleted = true,
+      forceExitOnStop = true,
+      onK8sClusterMode = true))
+    assert(!SparkSQLEngine.shouldForceExitAfterGracefulStop(
+      gracefulShutdownCompleted = false,
+      forceExitOnStop = true,
+      onK8sClusterMode = true))
+    assert(!SparkSQLEngine.shouldForceExitAfterGracefulStop(
+      gracefulShutdownCompleted = true,
+      forceExitOnStop = false,
+      onK8sClusterMode = true))
+    assert(!SparkSQLEngine.shouldForceExitAfterGracefulStop(
+      gracefulShutdownCompleted = true,
+      forceExitOnStop = true,
+      onK8sClusterMode = false))
+  }
+
   test("[KYUUBI #3385] generate executor pod name prefix with user or UUID") {
     val userName1 = "/kyuubi_user+-*"
     val executorPodNamePrefix1 = SparkSQLEngine.generateExecutorPodNamePrefixForK8s(userName1)

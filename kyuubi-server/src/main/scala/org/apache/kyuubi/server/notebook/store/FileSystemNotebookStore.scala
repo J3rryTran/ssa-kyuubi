@@ -679,6 +679,23 @@ class FileSystemNotebookStore(conf: KyuubiConf) extends NotebookStore with Loggi
     runtime.listRuns(notebookId, limit)
   override def updateRun(run: NotebookRun, expectedVersion: Long): Boolean =
     runtime.updateRun(run, expectedVersion)
+
+  // ---------------------------------------------------------------------------------------------
+  // Engine profiles are delegated to the embedded JDBC store so that all replicas see the same
+  // profiles regardless of which pod handles the request.
+  // ---------------------------------------------------------------------------------------------
+
+  override def upsertEngineProfile(profile: EngineProfile): Unit =
+    runtime.upsertEngineProfile(profile)
+
+  override def getEngineProfile(subdomain: String): Option[EngineProfile] =
+    runtime.getEngineProfile(subdomain)
+
+  override def listEngineProfiles(owner: String): Seq[EngineProfile] =
+    runtime.listEngineProfiles(owner)
+
+  override def deleteEngineProfile(subdomain: String, owner: String): Boolean =
+    runtime.deleteEngineProfile(subdomain, owner)
 }
 
 object FileSystemNotebookStore {

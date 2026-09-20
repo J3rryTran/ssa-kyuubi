@@ -20,6 +20,8 @@ interface IEngineSearch {
   sharelevel: null | string
   'hive.server2.proxy.user': null | string
   subdomain?: null | string
+  /** Also terminate the backing Spark application after removing its discovery node. */
+  kill?: boolean
 }
 
 export { IEngineSearch }

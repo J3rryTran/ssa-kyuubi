@@ -1428,6 +1428,69 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
     } == 1
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Engine profiles
+  // ---------------------------------------------------------------------------------------------
+
+  private def engineProfileMapper(rs: ResultSet): EngineProfile = {
+    val configJson = rs.getString("spark_config")
+    val configMap =
+      mapper.readValue(configJson, classOf[java.util.Map[String, String]])
+        .asScala
+        .toMap
+    EngineProfile(
+      subdomain = rs.getString("subdomain"),
+      owner = rs.getString("owner"),
+      sparkConfig = configMap,
+      createdAt = rs.getLong("created_at"),
+      updatedAt = rs.getLong("updated_at"))
+  }
+
+  /**
+   * INSERT OR REPLACE (SQLite) / REPLACE INTO (MySQL) / INSERT ON CONFLICT DO UPDATE (PG).
+   * Because all three dialects disagree on the upsert syntax we use a delete-then-insert
+   * pattern wrapped in a transaction instead. This avoids per-dialect branching here while
+   * remaining correct.
+   */
+  override def upsertEngineProfile(profile: EngineProfile): Unit = {
+    val configJson = mapper.writeValueAsString(profile.sparkConfig)
+    inTransaction { conn =>
+      update(conn, "DELETE FROM notebook_engine_profile WHERE subdomain = ?") { stmt =>
+        stmt.setString(1, profile.subdomain)
+      }
+      update(
+        conn,
+        """INSERT INTO notebook_engine_profile
+          |    (subdomain, owner, spark_config, created_at, updated_at)
+          |VALUES(?, ?, ?, ?, ?)""".stripMargin) { stmt =>
+        stmt.setString(1, profile.subdomain)
+        stmt.setString(2, profile.owner)
+        stmt.setString(3, configJson)
+        stmt.setLong(4, profile.createdAt)
+        stmt.setLong(5, profile.updatedAt)
+      }
+    }
+  }
+
+  override def getEngineProfile(subdomain: String): Option[EngineProfile] =
+    JdbcUtils.executeQueryWithRowMapper(
+      "SELECT * FROM notebook_engine_profile WHERE subdomain = ?") { stmt =>
+      stmt.setString(1, subdomain)
+    }(engineProfileMapper).headOption
+
+  override def listEngineProfiles(owner: String): Seq[EngineProfile] =
+    JdbcUtils.executeQueryWithRowMapper(
+      "SELECT * FROM notebook_engine_profile WHERE owner = ? ORDER BY subdomain") { stmt =>
+      stmt.setString(1, owner)
+    }(engineProfileMapper)
+
+  override def deleteEngineProfile(subdomain: String, owner: String): Boolean =
+    JdbcUtils.executeUpdate(
+      "DELETE FROM notebook_engine_profile WHERE subdomain = ? AND owner = ?") { stmt =>
+      stmt.setString(1, subdomain)
+      stmt.setString(2, owner)
+    } == 1
+
   private def setNullableLong(stmt: PreparedStatement, index: Int, value: Option[Long]): Unit =
     value match {
       case Some(v) => stmt.setLong(index, v)

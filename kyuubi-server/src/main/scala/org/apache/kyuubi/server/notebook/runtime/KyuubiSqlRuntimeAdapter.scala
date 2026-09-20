@@ -65,12 +65,18 @@ class KyuubiSqlRuntimeAdapter(
   override def startRuntime(
       runtime: NotebookRuntime,
       configuration: Map[String, String]): AdapterRuntime = {
+    val subdomain = configuration.get("kyuubi.engine.share.level.subdomain")
+      .orElse(configuration.get("kyuubi.engine.share.level.sub.domain"))
+      .getOrElse("default")
     val handle = backendService().openSession(
       TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V11,
       runtime.owner,
       "",
       LOCAL_IP,
-      configuration ++ Map(KYUUBI_SESSION_TAG -> s"notebook-runtime-${runtime.id}"))
+      configuration ++ Map(
+        KYUUBI_SESSION_TAG -> s"notebook-runtime-${runtime.id}",
+        "kyuubi.engine.share.level.subdomain" -> subdomain,
+        "kyuubi.engine.share.level.sub.domain" -> subdomain))
     AdapterRuntime(handle.identifier.toString, Some(instanceUri()))
   }
 

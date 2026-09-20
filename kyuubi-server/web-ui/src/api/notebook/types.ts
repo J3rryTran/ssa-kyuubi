@@ -70,6 +70,7 @@ export interface Notebook {
   description: string | null
   owner: string
   language: NotebookLanguage
+  runtimeProfile?: string | null
   role: string | null
   version: number
   cells?: NotebookCell[]
@@ -85,8 +86,24 @@ export interface NotebookSession {
   id: string
   notebookId: string
   owner: string
+  runtimeProfile?: string | null
   state: string
   version: number
+}
+
+export interface EngineProfile {
+  name?: string
+  subdomain: string
+  owner?: string
+  sparkConfig?: Record<string, string>
+  driverMemory?: string
+  driverCores?: number | string
+  executorMemory?: string
+  executorCores?: number | string
+  executorInstances?: number
+  customConfigs?: Record<string, string>
+  createdAt?: number
+  updatedAt?: number
 }
 
 export interface CellExecution {

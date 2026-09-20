@@ -50,6 +50,7 @@ class NotebookManager(
   @volatile private var _documents: NotebookDocumentService = _
   @volatile private var _content: NotebookContentService = _
   @volatile private var _schedules: NotebookScheduleService = _
+  @volatile private var _engineProfiles: NotebookEngineProfileService = _
   @volatile private var _registry: RuntimeAdapterRegistry = _
   @volatile private var _runtimes: NotebookRuntimeService = _
   @volatile private var _sessions: NotebookSessionService = _
@@ -90,6 +91,7 @@ class NotebookManager(
   def documents: NotebookDocumentService = _documents
   def content: NotebookContentService = _content
   def schedules: NotebookScheduleService = _schedules
+  def engineProfiles: NotebookEngineProfileService = _engineProfiles
   def registry: RuntimeAdapterRegistry = _registry
   def runtimes: NotebookRuntimeService = _runtimes
   def sessions: NotebookSessionService = _sessions
@@ -105,13 +107,14 @@ class NotebookManager(
     _documents = new NotebookDocumentService(conf, _store, _permissions, _revisions)
     _content = new NotebookContentService(conf, _store, _documents, _revisions, _permissions)
     _schedules = new NotebookScheduleService(_store, _permissions)
+    _engineProfiles = new NotebookEngineProfileService(_store)
     // Python runs in the Spark engine, never on this server: one notebook session is one engine,
     // and the engine's python worker is what makes a name bound in one cell outlive it.
     _registry = new RuntimeAdapterRegistry(Seq(
       new KyuubiSqlRuntimeAdapter(backendService, instanceUri, conf),
       new PySparkRuntimeAdapter(backendService, instanceUri, conf)))
     _sessionRegistry = new NotebookSessionRegistry(conf, () => discoveryClient)
-    _runtimes = new NotebookRuntimeService(_store, _registry, instanceUri)
+    _runtimes = new NotebookRuntimeService(_store, _registry, instanceUri, Some(_engineProfiles))
     _sessions =
       new NotebookSessionService(
         _store,

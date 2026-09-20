@@ -77,21 +77,52 @@
   .el-menu-container {
     padding: 16px 0;
     border-right: 0;
+    background: #ffffff;
+    color: #475569;
     &:not(.el-menu--collapse) {
       width: 260px;
     }
     .el-menu-item.is-active {
-      background: #1890ff;
-      color: #fff;
+      position: relative;
+      background: #fff4f2;
+      color: #ff3621;
+      font-weight: 600;
+
+      &::before {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 3px;
+        background: #ff3621;
+        content: '';
+      }
     }
     .el-sub-menu__title,
     .el-menu-item {
+      color: #475569;
+
       &:hover {
-        > i,
-        > span {
-          color: #fff;
-        }
+        background: #f1f5f9;
+        color: #0f172a;
       }
+
+      &:focus {
+        background: #ffffff;
+      }
+
+      > i,
+      > span {
+        color: inherit;
+      }
+    }
+
+    .el-sub-menu.is-active > .el-sub-menu__title {
+      color: #ff3621;
+    }
+
+    .el-menu--inline {
+      background: #ffffff;
     }
   }
 </style>

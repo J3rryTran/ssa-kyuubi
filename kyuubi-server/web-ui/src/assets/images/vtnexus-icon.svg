@@ -1,0 +1,46 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+  <defs>
+    <linearGradient id="vtnexus-icon-flame" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF5733" />
+      <stop offset="100%" stop-color="#FF3621" />
+    </linearGradient>
+    <linearGradient id="vtnexus-icon-amber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFA149" />
+      <stop offset="100%" stop-color="#FF3621" />
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(2, 2)">
+    <!-- Top Layer / Prism -->
+    <path d="M16 2 L29 9 L16 16 L3 9 Z" fill="url(#vtnexus-icon-amber)" />
+    <!-- Middle Left Facet -->
+    <path d="M3 11 L16 18 L16 22 L3 15 Z" fill="#FF3621" />
+    <!-- Middle Right Facet -->
+    <path d="M16 18 L29 11 L29 15 L16 22 Z" fill="#D92D20" />
+
+    <!-- Bottom Layer Slab -->
+    <path d="M3 18 L16 25 L29 18 L29 20 L16 27 L3 20 Z" fill="url(#vtnexus-icon-flame)" opacity="0.9" />
+    <path d="M3 23 L16 30 L29 23 L29 25 L16 32 L3 25 Z" fill="#0F172A" opacity="0.85" />
+
+    <!-- Nexus Center Node -->
+    <circle cx="16" cy="9" r="2.2" fill="#FFFFFF" />
+  </g>
+</svg>

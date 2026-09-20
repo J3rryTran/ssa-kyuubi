@@ -178,6 +178,29 @@ trait NotebookStore extends AutoCloseable {
   def getRun(id: String): Option[NotebookRun]
   def listRuns(notebookId: String, limit: Int): Seq[NotebookRun]
   def updateRun(run: NotebookRun, expectedVersion: Long): Boolean
+
+  // ---------------------------------------------------------------------------------------------
+  // Engine profiles
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Creates or replaces the engine profile for `subdomain`. The store treats this as a simple
+   * upsert: the caller (service layer) is responsible for any ownership check before invoking it.
+   */
+  def upsertEngineProfile(profile: EngineProfile): Unit
+
+  /** Returns the profile for `subdomain`, or `None` when no profile has been saved. */
+  def getEngineProfile(subdomain: String): Option[EngineProfile]
+
+  /** Lists all engine profiles owned by `owner`. */
+  def listEngineProfiles(owner: String): Seq[EngineProfile]
+
+  /**
+   * Deletes the profile for `subdomain`.
+   *
+   * @return true when a row was actually removed, false when nothing matched.
+   */
+  def deleteEngineProfile(subdomain: String, owner: String): Boolean
 }
 
 /**

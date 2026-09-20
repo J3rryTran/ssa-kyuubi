@@ -116,3 +116,13 @@ CREATE TABLE IF NOT EXISTS notebook_schedule(
     updated_by varchar(255) NOT NULL,
     version bigint NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS notebook_engine_profile(
+    subdomain varchar(128) PRIMARY KEY NOT NULL,
+    owner varchar(255) NOT NULL,
+    spark_config text NOT NULL,
+    created_at bigint NOT NULL,
+    updated_at bigint NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS notebook_engine_profile_owner_index ON notebook_engine_profile(owner);

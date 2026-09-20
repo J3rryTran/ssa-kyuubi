@@ -70,7 +70,8 @@ RUN grep -Rqs --include='*.css' '\.cell-stream-output' ${KYUUBI_HOME}/web-ui/dis
 WORKDIR ${KYUUBI_HOME}
 RUN chown -R kyuubi:root ${KYUUBI_HOME} && \
     chmod ug+rw -R ${KYUUBI_HOME} && \
-    chmod a+rwx -R ${KYUUBI_WORK_DIR_ROOT}
+    chmod a+rwx -R ${KYUUBI_WORK_DIR_ROOT} && \
+    chmod a+rx -R /opt/spark/bin /opt/spark/sbin || true
 
 CMD [ "./bin/kyuubi", "run" ]
 
