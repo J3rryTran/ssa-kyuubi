@@ -48,6 +48,11 @@ if sys.version_info[0] < 3:
 
 os.environ["PYSPARK_PYTHON"] = os.environ.get("PYSPARK_PYTHON", sys.executable)
 
+# add kyuubi-session-pip to sys.path if present
+session_pip_dir = os.path.join(os.getcwd(), "kyuubi-session-pip")
+if os.path.exists(session_pip_dir) and session_pip_dir not in sys.path:
+    sys.path.insert(0, session_pip_dir)
+
 # add pyspark to sys.path
 
 if "pyspark" not in sys.modules:
@@ -533,25 +538,56 @@ def _pip_timeout():
 
 
 def magic_pip(rest=""):
-    """`%pip install <packages>` - install libraries for this session only.
-
-    Only `install` is accepted. Anything else gets a plain message rather than a pip error the
-    user would have to decode, because the other subcommands either do nothing useful against a
-    --target directory or would remove a library the image provides for everyone.
-    """
+    """`%pip install <packages>` or `%pip list` - manage libraries for this session."""
     args = rest.split()
     if not args:
         raise PipError(
-            "%pip requires a subcommand. Use: %pip install <packages>")
-    if args[0] != "install":
+            "%pip requires a subcommand. Use: %pip install <packages> or %pip list")
+    subcommand = args[0]
+    if subcommand not in ("install", "list"):
         raise PipError(
-            "Only '%%pip install' is supported, not '%%pip %s'. "
-            "Use: %%pip install <packages>" % args[0])
+            "Only '%%pip install' and '%%pip list' are supported, not '%%pip %s'. "
+            "Use: %%pip install <packages> or %%pip list" % subcommand)
+
+    target = _pip_target_dir()
+
+    if subcommand == "list":
+        command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "list",
+            "--disable-pip-version-check",
+        ] + args[1:]
+
+        env = os.environ.copy()
+        if os.path.exists(target):
+            env["PYTHONPATH"] = target + os.pathsep + env.get("PYTHONPATH", "")
+
+        timeout = _pip_timeout()
+        try:
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            raise PipError("pip list timed out after %d seconds." % timeout)
+        except FileNotFoundError:
+            raise PipError(
+                "pip is not available in this image: '%s -m pip' was not found." % sys.executable)
+
+        log = completed.stdout.decode("utf-8", "replace") if completed.stdout else ""
+        if completed.returncode != 0:
+            raise PipError("pip list failed with exit code %d:\n%s" % (completed.returncode, log))
+        return {"text/plain": log}
+
     packages = args[1:]
     if not packages:
         raise PipError("No packages given. Use: %pip install <packages>")
 
-    target = _pip_target_dir()
     command = [
         sys.executable,
         "-m",

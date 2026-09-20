@@ -68,10 +68,16 @@ class PySparkRuntimeAdapter(
   override def startRuntime(
       runtime: NotebookRuntime,
       configuration: Map[String, String]): AdapterRuntime = {
-    // The output mode has to be set here rather than per execution. The engine reads it from the
-    // Spark session (`SparkOperation.outputMode` -> `getSessionConf`), and an operation's
-    // confOverlay is only consulted for the operation language, so a per-execution value would be
-    // silently dropped and the engine would fall back to AUTO.
+    val subdomain = configuration.get("kyuubi.engine.share.level.subdomain")
+      .orElse(configuration.get("kyuubi.engine.share.level.sub.domain"))
+      .getOrElse("default")
+    // ===== DEBUG ENGINE SUBDOMAIN TRACING =====
+    warn(s"[NOTEBOOK-ENGINE-DEBUG] PySparkAdapter.startRuntime: runtimeId=${runtime.id}" +
+      s" owner=${runtime.owner}" +
+      s" configKeys=${configuration.keys.mkString(",")}" +
+      s" subdomain_from_config=${configuration.get("kyuubi.engine.share.level.subdomain")}" +
+      s" subdomain_final=$subdomain")
+    // ==========================================
     val handle = backendService().openSession(
       TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V11,
       runtime.owner,
@@ -79,6 +85,8 @@ class PySparkRuntimeAdapter(
       LOCAL_IP,
       configuration ++ Map(
         KYUUBI_SESSION_TAG -> s"notebook-runtime-${runtime.id}",
+        "kyuubi.engine.share.level.subdomain" -> subdomain,
+        "kyuubi.engine.share.level.sub.domain" -> subdomain,
         ENGINE_SPARK_OUTPUT_MODE.key -> NOTEBOOK_OUTPUT_MODE))
     AdapterRuntime(handle.identifier.toString, Some(instanceUri()))
   }

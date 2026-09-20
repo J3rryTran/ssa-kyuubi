@@ -399,7 +399,16 @@ object SparkSQLEngine extends Logging {
         s" and submitted at $submitTime.")
     } else {
       var spark: SparkSession = null
+      var gracefulShutdownCompleted = false
       try {
+        // Workaround for Hive SessionState ClassCastException on Java 11/17
+        val ccl = Thread.currentThread().getContextClassLoader
+        if (ccl == null || !ccl.isInstanceOf[java.net.URLClassLoader]) {
+          val parent = if (ccl != null) ccl else classOf[SparkSQLEngine].getClassLoader
+          Thread.currentThread().setContextClassLoader(
+            new java.net.URLClassLoader(Array.empty, parent))
+        }
+
         startInitTimeoutChecker(submitTime, initTimeout)
         spark = createSpark()
         sparkSessionCreated.set(true)
@@ -407,6 +416,7 @@ object SparkSQLEngine extends Logging {
           startEngine(spark)
           // blocking main thread
           countDownLatch.await()
+          gracefulShutdownCompleted = true
         } catch {
           case e: KyuubiException =>
             currentEngine match {
@@ -438,8 +448,25 @@ object SparkSQLEngine extends Logging {
           spark.stop()
         }
       }
+      if (shouldForceExitAfterGracefulStop(
+          gracefulShutdownCompleted,
+          kyuubiConf.get(ENGINE_FORCE_EXIT_ON_STOP),
+          isOnK8sClusterMode)) {
+        info("Spark engine shutdown completed; exiting Kubernetes driver JVM.")
+        System.exit(0)
+      }
     }
   }
+
+  /**
+   * A driver may retain non-daemon threads after SparkContext.stop(). Keep the predicate separate
+   * from System.exit so it can be tested without terminating the test JVM.
+   */
+  private[spark] def shouldForceExitAfterGracefulStop(
+      gracefulShutdownCompleted: Boolean,
+      forceExitOnStop: Boolean,
+      onK8sClusterMode: Boolean): Boolean =
+    gracefulShutdownCompleted && forceExitOnStop && onK8sClusterMode
 
   private def startInitTimeoutChecker(startTime: Long, timeout: Long): Unit = {
     val mainThread = Thread.currentThread()

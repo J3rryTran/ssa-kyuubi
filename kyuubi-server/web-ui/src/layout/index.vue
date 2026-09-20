@@ -59,7 +59,8 @@
       ::v-deep(.el-aside) {
         width: auto;
         position: relative;
-        background: #001529;
+        background: #ffffff;
+        border-right: 1px solid #e2e8f0;
       }
 
       .el-header {

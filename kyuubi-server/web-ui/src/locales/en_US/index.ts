@@ -20,7 +20,7 @@ export default {
   user: 'User',
   client_ip: 'Client IP',
   server_ip: 'Server IP',
-  kyuubi_instance: 'Kyuubi Instance',
+  kyuubi_instance: 'Server Instance',
   session_id: 'Session ID',
   operation_id: 'Operation ID',
   create_time: 'Create Time',
