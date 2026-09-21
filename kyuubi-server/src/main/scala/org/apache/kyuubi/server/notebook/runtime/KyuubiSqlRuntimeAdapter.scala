@@ -163,9 +163,11 @@ class KyuubiSqlRuntimeAdapter(
     }
   }
 
-  override def restartRuntime(runtime: NotebookRuntime): AdapterRuntime = {
+  override def restartRuntime(
+      runtime: NotebookRuntime,
+      configuration: Map[String, String]): AdapterRuntime = {
     stopRuntime(runtime)
-    startRuntime(runtime, Map.empty)
+    startRuntime(runtime, configuration)
   }
 
   override def stopRuntime(runtime: NotebookRuntime): Unit = {

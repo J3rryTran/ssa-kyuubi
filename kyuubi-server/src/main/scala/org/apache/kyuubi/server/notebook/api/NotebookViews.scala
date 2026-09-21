@@ -225,13 +225,97 @@ case class NotebookStatusView(
  * this view exposes the same fields without any server-only bookkeeping.
  */
 case class EngineProfileView(
+    profileId: String,
+    name: String,
     subdomain: String,
     owner: String,
     sparkConfig: Map[String, String],
+    notebookRuntimeIdleTimeout: Option[String],
+    engineIdleTimeout: Option[String],
+    revision: Long,
     createdAt: Long,
-    updatedAt: Long)
+    updatedAt: Long,
+    pythonEnvironmentRevisionId: Option[String] = None)
 
 object EngineProfileView {
   def apply(p: EngineProfile): EngineProfileView =
-    EngineProfileView(p.subdomain, p.owner, p.sparkConfig, p.createdAt, p.updatedAt)
+    EngineProfileView(
+      p.profileId,
+      p.name,
+      p.subdomain,
+      p.owner,
+      p.sparkConfig,
+      p.notebookRuntimeIdleTimeout,
+      p.engineIdleTimeout,
+      p.revision,
+      p.createdAt,
+      p.updatedAt,
+      p.pythonEnvironmentRevisionId)
 }
+
+/** Browser-safe observed status of the current Engine Profile revision. */
+case class EngineProfileEngineStatusView(
+    profileId: String,
+    revision: Long,
+    state: String,
+    engineCount: Int,
+    errorSummary: Option[String] = None)
+
+/** Browser-safe lifecycle projection for one immutable Engine Profile revision. */
+case class EngineProfileRevisionView(
+    profileId: String,
+    revision: Long,
+    subdomain: String,
+    sparkConfig: Map[String, String],
+    notebookRuntimeIdleTimeout: Option[String],
+    engineIdleTimeout: Option[String],
+    state: String,
+    createdAt: Long,
+    pythonEnvironmentRevisionId: Option[String] = None)
+
+object EngineProfileRevisionView {
+  def apply(
+      revision: EngineProfileRevision,
+      currentRevision: Long): EngineProfileRevisionView =
+    EngineProfileRevisionView(
+      revision.profileId,
+      revision.revision,
+      revision.subdomain,
+      revision.sparkConfig,
+      revision.notebookRuntimeIdleTimeout,
+      revision.engineIdleTimeout,
+      if (revision.revision == currentRevision) "ACTIVE" else "DRAINING",
+      revision.createdAt,
+      revision.pythonEnvironmentRevisionId)
+}
+
+/** Browser-safe lifecycle projection for a persistent Python environment revision. */
+case class PythonEnvironmentRevisionView(
+    id: String,
+    profileId: String,
+    revision: Long,
+    state: String,
+    requirements: Seq[String],
+    createdAt: Long,
+    readyAt: Option[Long])
+
+object PythonEnvironmentRevisionView {
+  def apply(environment: PythonEnvironmentRevision): PythonEnvironmentRevisionView =
+    PythonEnvironmentRevisionView(
+      environment.id,
+      environment.profileId,
+      environment.revision,
+      environment.state,
+      environment.requirementsLock
+        .map(_.split("\\n").filter(_.nonEmpty).toSeq)
+        .getOrElse(Seq.empty),
+      environment.createdAt,
+      environment.readyAt)
+}
+
+/** Result of an explicit best-effort termination request for a draining engine revision. */
+case class EngineProfileRevisionTerminationView(
+    profileId: String,
+    revision: Long,
+    subdomain: String,
+    terminatedEngineNodes: Int)

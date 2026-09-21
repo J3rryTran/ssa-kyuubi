@@ -23,6 +23,10 @@ import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
 import org.apache.kyuubi.Logging
+import org.apache.kyuubi.server.engineprofile.EngineProfilePrincipal
+import org.apache.kyuubi.server.engineprofile.EngineProfileService
+import org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
+import org.apache.kyuubi.server.engineprofile.PythonEnvironmentService
 import org.apache.kyuubi.server.notebook.api._
 import org.apache.kyuubi.server.notebook.routing.NotebookSessionRegistry
 import org.apache.kyuubi.server.notebook.runtime.RuntimeAdapterRegistry
@@ -56,9 +60,12 @@ class NotebookSessionService(
       notebookId = notebookId,
       owner = principal.user,
       state = NotebookSessionState.IDLE,
-      runtimeProfile = Option(request).flatMap(r => Option(r.getRuntimeProfile))
-        .map(_.trim).filter(_.nonEmpty)
-        .orElse(notebook.runtimeProfile),
+      // A notebook's saved profile is the server-side source of truth. In particular, an old
+      // browser session can still send `default` after its runtime has stopped; allowing that
+      // request field to win would silently launch a different engine on the next execution.
+      runtimeProfile = notebook.runtimeProfile.orElse(
+        Option(request).flatMap(r => Option(r.getRuntimeProfile))
+          .map(_.trim).filter(_.nonEmpty)),
       createdAt = now,
       lastActivityAt = now,
       stoppedAt = None,
@@ -118,7 +125,7 @@ class NotebookSessionService(
 
   def restart(principal: NotebookPrincipal, sessionId: String): NotebookSession = {
     val session = require(principal, sessionId)
-    runtimes.listFor(session).foreach(runtime => runtimes.restart(runtime))
+    runtimes.listFor(session).foreach(runtime => runtimes.restart(principal, session, runtime))
     touch(session, NotebookSessionState.IDLE)
   }
 
@@ -126,7 +133,8 @@ class NotebookSessionService(
   def reset(principal: NotebookPrincipal, sessionId: String): NotebookSession = {
     val session = require(principal, sessionId)
     val resetting = touch(session, NotebookSessionState.RESETTING)
-    runtimes.listFor(resetting).foreach(runtime => runtimes.restart(runtime))
+    runtimes.listFor(resetting).foreach(runtime =>
+      runtimes.restart(principal, resetting, runtime))
     touch(resetting, NotebookSessionState.IDLE)
   }
 
@@ -172,12 +180,12 @@ class NotebookSessionService(
    */
   def reapIdle(idleTimeoutMillis: Long): Unit = {
     if (idleTimeoutMillis > 0) {
-      store.listLiveSessions().foreach { session =>
+      store.listLiveSessions().filter(isLocal).foreach { session =>
         try {
-          runtimes.reapIdle(session, idleTimeoutMillis)
+          val reclaimed = runtimes.reapIdle(session, idleTimeoutMillis)
           val remaining = runtimes.listFor(session)
-          if (remaining.isEmpty && session.lastActivityAt <
-              System.currentTimeMillis() - idleTimeoutMillis) {
+          if (remaining.isEmpty && (reclaimed.nonEmpty || session.lastActivityAt <
+              System.currentTimeMillis() - idleTimeoutMillis)) {
             val now = System.currentTimeMillis()
             val stopped = session.copy(
               state = NotebookSessionState.STOPPED,
@@ -190,6 +198,21 @@ class NotebookSessionService(
           case NonFatal(e) => warn(s"Failed to reap notebook session ${session.id}", e)
         }
       }
+    }
+  }
+
+  /**
+   * A runtime is an in-process Kyuubi session. With a shared metadata store every replica sees
+   * its row, but only the owning replica can close its session handle. Reaping a peer's row
+   * would mark it stopped while leaving the Spark engine's session alive indefinitely.
+   */
+  private def isLocal(session: NotebookSession): Boolean = {
+    val local = instanceUri()
+    registry().flatMap(_.ownerOf(session.id)) match {
+      case Some(owner) => owner == local
+      // Registry registration happens immediately after persistence, but keep the persisted
+      // owner as a short-lived fallback if ZooKeeper is unavailable during that narrow window.
+      case None => session.kyuubiInstance.contains(local)
     }
   }
 
@@ -225,7 +248,8 @@ class NotebookRuntimeService(
     store: NotebookStore,
     registry: RuntimeAdapterRegistry,
     instanceUri: () => String,
-    engineProfiles: Option[NotebookEngineProfileService] = None) extends Logging {
+    engineProfiles: Option[EngineProfileService] = None,
+    pythonEnvironments: Option[PythonEnvironmentService] = None) extends Logging {
 
   def specs: Seq[RuntimeSpec] = registry.specs
 
@@ -256,65 +280,46 @@ class NotebookRuntimeService(
 
   /** Reuses the session's live runtime for a language, starting one only when there is none. */
   def ensureFor(
+      principal: NotebookPrincipal,
       session: NotebookSession,
       language: CellLanguage.Value,
       requestedSpecId: Option[String],
       configuration: Map[String, String]): NotebookRuntime = {
     val specId = requestedSpecId.getOrElse(registry.defaultSpecFor(language).id)
-    val notebook = store.getNotebook(session.notebookId)
-    val latestNotebookProfile = notebook.flatMap(_.runtimeProfile)
-    val notebookUpdatedAt = notebook.map(_.updatedAt).getOrElse(0L)
 
-    val effectiveProfile = latestNotebookProfile.orElse(session.runtimeProfile)
-    // ===== DEBUG ENGINE SUBDOMAIN TRACING =====
-    val debugSubdomain = effectiveProfile.getOrElse("default")
-    warn(s"[NOTEBOOK-ENGINE-DEBUG] ensureFor: notebookId=${session.notebookId}" +
-      s" sessionId=${session.id}" +
-      s" session.runtimeProfile=${session.runtimeProfile}" +
-      s" latestNotebookProfile=${latestNotebookProfile}" +
-      s" effectiveProfile=${effectiveProfile}")
-    // ==========================================
-    val sessionOverlay = effectiveProfile
-      .map(profile =>
-        Map(
-          "kyuubi.engine.share.level.subdomain" -> profile,
-          "kyuubi.engine.share.level.sub.domain" -> profile))
-      .getOrElse(Map.empty)
-    // Merge engine profile Spark configs (driver/executor memory, cores, etc.) so that
-    // they actually reach the Spark engine JVM. Profile config has lowest priority: an
-    // explicit configuration key in `configuration` always wins.
-    val profileSparkConfig = effectiveProfile
-      .flatMap(profile => engineProfiles.map(_.resolveSparkConfig(profile)))
-      .getOrElse(Map.empty)
-    val mergedConfig = profileSparkConfig ++ sessionOverlay ++ configuration
-    warn(
-      s"[NOTEBOOK-ENGINE-DEBUG] mergedConfig subdomain=$debugSubdomain " +
-        s"profileSparkConfig=$profileSparkConfig")
+    val profileSnapshot = resolveProfileSnapshot(principal, session)
+    val profileConfig = profileSessionConfig(profileSnapshot)
+    val mergedConfig = (configuration -- profileConfig.keySet) ++ profileConfig
+    val runtimeIdleTimeoutMillis = profileSnapshot.flatMap(
+      EngineProfileSnapshot.notebookRuntimeIdleTimeoutMillis)
 
     listFor(session).find(runtime => runtime.runtimeSpecId == specId) match {
-      case Some(runtime) if notebookUpdatedAt > runtime.createdAt =>
-        warn(
-          s"[NOTEBOOK-ENGINE-DEBUG] Notebook ${session.notebookId} settings updated " +
-            s"after runtime ${runtime.id} was created. Recreating runtime.")
-        stop(runtime)
-        create(session, specId, mergedConfig)
       case Some(runtime) =>
-        warn(
-          s"[NOTEBOOK-ENGINE-DEBUG] Reusing existing runtime ${runtime.id} " +
-            s"for session ${session.id}")
+        // Editing, adding, moving or deleting a cell touches notebook.updatedAt for document
+        // optimistic locking. Those changes must not recreate a Python worker: its global
+        // namespace is the state shared by notebook cells. A selected Engine Profile is changed
+        // through the explicit UI/session lifecycle, which stops the session before its next
+        // runtime is created.
+        warn(s"Reusing existing runtime ${runtime.id} for session ${session.id}")
         runtime
       case None =>
-        warn(
-          s"[NOTEBOOK-ENGINE-DEBUG] No existing runtime found. Creating new runtime " +
-            s"for session ${session.id}")
-        create(session, specId, mergedConfig)
+        warn(s"No existing runtime found. Creating new runtime for session ${session.id}")
+        create(
+          session,
+          specId,
+          mergedConfig,
+          runtimeIdleTimeoutMillis,
+          profileSnapshot.flatMap(snapshot =>
+            pythonEnvironments.flatMap(_.environmentRevisionId(snapshot))))
     }
   }
 
   def create(
       session: NotebookSession,
       runtimeSpecId: String,
-      configuration: Map[String, String]): NotebookRuntime = {
+      configuration: Map[String, String],
+      runtimeIdleTimeoutMillis: Option[Long] = None,
+      environmentRevisionId: Option[String] = None): NotebookRuntime = {
     val adapter = registry.get(runtimeSpecId)
     val spec = adapter.runtimeSpec
     if (!spec.enabled) {
@@ -332,7 +337,8 @@ class NotebookRuntimeService(
       owner = session.owner,
       state = RuntimeState.CREATING,
       generation = 1L,
-      environmentRevisionId = None,
+      environmentRevisionId = environmentRevisionId,
+      runtimeIdleTimeoutMillis = runtimeIdleTimeoutMillis,
       createdAt = now,
       lastActivityAt = now,
       stoppedAt = None,
@@ -396,14 +402,22 @@ class NotebookRuntimeService(
     RuntimeState.IDLE)
 
   /** A restart clears variables, so the generation is bumped and old executions stay attributed. */
-  def restart(runtime: NotebookRuntime): NotebookRuntime = {
+  def restart(
+      principal: NotebookPrincipal,
+      session: NotebookSession,
+      runtime: NotebookRuntime): NotebookRuntime = {
     val adapter = registry.get(runtime.runtimeSpecId)
     val restarting = store.getRuntime(runtime.id).getOrElse(runtime)
+    val profileSnapshot = resolveProfileSnapshot(principal, session)
     try {
-      val started = adapter.restartRuntime(restarting)
+      val started = adapter.restartRuntime(restarting, profileSessionConfig(profileSnapshot))
       val updated = restarting.copy(
         state = RuntimeState.IDLE,
         generation = restarting.generation + 1,
+        environmentRevisionId = profileSnapshot.flatMap(snapshot =>
+          pythonEnvironments.flatMap(_.environmentRevisionId(snapshot))),
+        runtimeIdleTimeoutMillis = profileSnapshot.flatMap(
+          EngineProfileSnapshot.notebookRuntimeIdleTimeoutMillis),
         internalRuntimeHandle = Some(started.handle),
         internalRuntimeLocation = started.location.orElse(Some(instanceUri())),
         failureMessage = None,
@@ -416,6 +430,37 @@ class NotebookRuntimeService(
         warn(s"Failed to restart runtime ${runtime.id}", e)
         markFailed(restarting, "the runtime could not be restarted")
     }
+  }
+
+  private def resolveProfileSnapshot(
+      principal: NotebookPrincipal,
+      session: NotebookSession): Option[EngineProfileSnapshot] = {
+    val profileId = store.getNotebook(session.notebookId).flatMap(_.runtimeProfile)
+      .orElse(session.runtimeProfile)
+    // A completed Python environment build is deliberately not applied to a live engine. Doing
+    // so changes the profile subdomain and prevents another notebook from reusing that engine.
+    // Once Kyuubi has removed the current engine's discovery node, promote the READY
+    // environment before taking the launch snapshot for the next engine.
+    profileId.foreach(id =>
+      pythonEnvironments.foreach(_.promoteReadyEnvironmentIfEngineStopped(id)))
+    profileId.flatMap(id =>
+      engineProfiles.map(_.snapshotForUse(
+        id,
+        EngineProfilePrincipal(principal.user, principal.admin))))
+  }
+
+  /** Returns only server-owned profile settings to use when opening a Kyuubi session. */
+  private def profileSessionConfig(snapshot: Option[EngineProfileSnapshot]): Map[String, String] = {
+    val profileSparkConfig = snapshot.map(_.sparkConfig).getOrElse(Map.empty)
+    val engineTimeoutConfig = snapshot.map(EngineProfileSnapshot.engineSessionConfig)
+      .getOrElse(Map.empty)
+    val pythonEnvironmentConfig = snapshot.map(value =>
+      pythonEnvironments.map(_.launchConfig(value)).getOrElse(Map.empty)).getOrElse(Map.empty)
+    val sessionOverlay = snapshot.map(value =>
+      Map(
+        "kyuubi.engine.share.level.subdomain" -> value.subdomain,
+        "kyuubi.engine.share.level.sub.domain" -> value.subdomain)).getOrElse(Map.empty)
+    profileSparkConfig ++ engineTimeoutConfig ++ pythonEnvironmentConfig ++ sessionOverlay
   }
 
   /** Idempotent: stopping a stopped runtime is a no-op that still reports success. */
@@ -453,20 +498,19 @@ class NotebookRuntimeService(
    * process and its scratch directory. Variables and anything installed from inside a cell go
    * with it; a managed environment is on disk and is untouched.
    */
-  def reapIdle(session: NotebookSession, idleTimeoutMillis: Long): Seq[NotebookRuntime] = {
-    if (idleTimeoutMillis <= 0) {
-      Seq.empty
-    } else {
-      val deadline = System.currentTimeMillis() - idleTimeoutMillis
-      listFor(session)
-        .filter(runtime => runtime.state != RuntimeState.BUSY)
-        .filter(_.lastActivityAt < deadline)
-        .map { runtime =>
+  def reapIdle(session: NotebookSession, defaultIdleTimeoutMillis: Long): Seq[NotebookRuntime] =
+    listFor(session)
+      .filter(runtime => runtime.state != RuntimeState.BUSY)
+      .flatMap { runtime =>
+        val idleTimeoutMillis = runtime.runtimeIdleTimeoutMillis.getOrElse(defaultIdleTimeoutMillis)
+        if (idleTimeoutMillis > 0 &&
+          runtime.lastActivityAt < System.currentTimeMillis() - idleTimeoutMillis) {
           info(s"Reclaiming runtime ${runtime.id} after ${idleTimeoutMillis}ms idle")
-          stop(runtime)
+          Some(stop(runtime))
+        } else {
+          None
         }
-    }
-  }
+      }
 
   def markLost(runtime: NotebookRuntime): NotebookRuntime = {
     if (RuntimeState.terminal.contains(runtime.state)) {

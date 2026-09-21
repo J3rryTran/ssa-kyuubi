@@ -26,13 +26,25 @@
       </div>
       <div class="header-actions">
         <el-tooltip content="New Notebook" placement="top">
-          <el-button size="small" link icon="DocumentAdd" @click="openNewNotebookDialog(null)" />
+          <el-button
+            size="small"
+            link
+            icon="DocumentAdd"
+            @click="openNewNotebookDialog(null)" />
         </el-tooltip>
         <el-tooltip content="New Folder" placement="top">
-          <el-button size="small" link icon="FolderAdd" @click="openNewFolderDialog(null)" />
+          <el-button
+            size="small"
+            link
+            icon="FolderAdd"
+            @click="openNewFolderDialog(null)" />
         </el-tooltip>
         <el-tooltip content="Import" placement="top">
-          <el-button size="small" link icon="Upload" @click="importDialog = true" />
+          <el-button
+            size="small"
+            link
+            icon="Upload"
+            @click="importDialog = true" />
         </el-tooltip>
         <el-tooltip content="Refresh" placement="top">
           <el-button size="small" link icon="Refresh" @click="reload" />
@@ -78,10 +90,14 @@
               <span
                 v-else
                 class="lang-badge"
-                :class="data.language === 'PYTHON' ? 'lang-python' : 'lang-sql'">
+                :class="
+                  data.language === 'PYTHON' ? 'lang-python' : 'lang-sql'
+                ">
                 {{ data.language === 'PYTHON' ? 'PY' : 'SQL' }}
               </span>
-              <span class="node-label" :title="data.label">{{ data.label }}</span>
+              <span class="node-label" :title="data.label">{{
+                data.label
+              }}</span>
             </div>
 
             <!-- HOVER ACTIONS -->
@@ -136,7 +152,11 @@
     </div>
 
     <!-- CREATE NOTEBOOK DIALOG -->
-    <el-dialog v-model="notebookDialog" title="New Notebook" width="460px" destroy-on-close>
+    <el-dialog
+      v-model="notebookDialog"
+      title="New Notebook"
+      width="460px"
+      destroy-on-close>
       <el-form label-width="90px" @submit.prevent>
         <el-form-item label="Name">
           <el-input
@@ -153,14 +173,21 @@
       </el-form>
       <template #footer>
         <el-button @click="notebookDialog = false">Cancel</el-button>
-        <el-button type="primary" :disabled="!notebookName.trim()" @click="createNotebook">
+        <el-button
+          type="primary"
+          :disabled="!notebookName.trim()"
+          @click="createNotebook">
           Create
         </el-button>
       </template>
     </el-dialog>
 
     <!-- CREATE FOLDER DIALOG -->
-    <el-dialog v-model="folderDialog" title="New Folder" width="420px" destroy-on-close>
+    <el-dialog
+      v-model="folderDialog"
+      title="New Folder"
+      width="420px"
+      destroy-on-close>
       <el-form label-width="90px" @submit.prevent>
         <el-form-item label="Folder Name">
           <el-input
@@ -171,7 +198,10 @@
       </el-form>
       <template #footer>
         <el-button @click="folderDialog = false">Cancel</el-button>
-        <el-button type="primary" :disabled="!folderName.trim()" @click="createFolder">
+        <el-button
+          type="primary"
+          :disabled="!folderName.trim()"
+          @click="createFolder">
           Create
         </el-button>
       </template>
@@ -201,7 +231,15 @@
   import { computed, onMounted, ref } from 'vue'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import * as api from '@/api/notebook'
-  import type { Notebook, NotebookFolder, NotebookLanguage } from '@/api/notebook/types'
+  import type {
+    Notebook,
+    NotebookFolder,
+    NotebookLanguage
+  } from '@/api/notebook/types'
+  import {
+    defaultCloneNotebookName,
+    defaultNotebookName
+  } from '@/utils/notebook-name'
 
   const props = defineProps<{
     pythonEnabled?: boolean
@@ -243,8 +281,22 @@
   const LOCAL_STORAGE_NOTEBOOKS = 'kyuubi_mock_notebooks'
 
   const defaultMockFolders: NotebookFolder[] = [
-    { id: 'f-analytics', name: 'Analytics & Reporting', path: '/analytics', owner: 'user', parentId: null, version: 1 },
-    { id: 'f-etl', name: 'ETL Pipelines', path: '/etl', owner: 'user', parentId: null, version: 1 }
+    {
+      id: 'f-analytics',
+      name: 'Analytics & Reporting',
+      path: '/analytics',
+      owner: 'user',
+      parentId: null,
+      version: 1
+    },
+    {
+      id: 'f-etl',
+      name: 'ETL Pipelines',
+      path: '/etl',
+      owner: 'user',
+      parentId: null,
+      version: 1
+    }
   ]
 
   const defaultMockNotebooks: any[] = [
@@ -255,8 +307,21 @@
       language: 'SQL',
       version: 1,
       cells: [
-        { id: 'c1', cellType: 'MARKDOWN', language: 'MARKDOWN', source: '# Daily Revenue Analysis\nQuery revenue grouped by region.', position: 0 },
-        { id: 'c2', cellType: 'CODE', language: 'SQL', source: 'SELECT region, SUM(amount) AS total_sales\nFROM sales_mart\nGROUP BY region\nORDER BY total_sales DESC\nLIMIT 10;', position: 1 }
+        {
+          id: 'c1',
+          cellType: 'MARKDOWN',
+          language: 'MARKDOWN',
+          source: '# Daily Revenue Analysis\nQuery revenue grouped by region.',
+          position: 0
+        },
+        {
+          id: 'c2',
+          cellType: 'CODE',
+          language: 'SQL',
+          source:
+            'SELECT region, SUM(amount) AS total_sales\nFROM sales_mart\nGROUP BY region\nORDER BY total_sales DESC\nLIMIT 10;',
+          position: 1
+        }
       ]
     },
     {
@@ -266,8 +331,21 @@
       language: 'PYTHON',
       version: 1,
       cells: [
-        { id: 'c3', cellType: 'MARKDOWN', language: 'MARKDOWN', source: '## PySpark ETL & ML Feature Prep', position: 0 },
-        { id: 'c4', cellType: 'CODE', language: 'PYTHON', source: '%pip install pandas scikit-learn\n\nfrom pyspark.sql import functions as F\ndf = spark.read.table("customers")\ndf.groupBy("country").count().show(5)', position: 1 }
+        {
+          id: 'c3',
+          cellType: 'MARKDOWN',
+          language: 'MARKDOWN',
+          source: '## PySpark ETL & ML Feature Prep',
+          position: 0
+        },
+        {
+          id: 'c4',
+          cellType: 'CODE',
+          language: 'PYTHON',
+          source:
+            '%pip install pandas scikit-learn\n\nfrom pyspark.sql import functions as F\ndf = spark.read.table("customers")\ndf.groupBy("country").count().show(5)',
+          position: 1
+        }
       ]
     }
   ]
@@ -306,25 +384,39 @@
       if (parent) parent.children!.push(node)
       else roots.push(node)
     })
-    return [{
-      key: 'workspace-root',
-      label: 'Workspace',
-      isFolder: true,
-      isRoot: true,
-      id: 'workspace-root',
-      version: 0,
-      children: roots
-    }]
+    return [
+      {
+        key: 'workspace-root',
+        label: 'Workspace',
+        isFolder: true,
+        isRoot: true,
+        id: 'workspace-root',
+        version: 0,
+        children: roots
+      }
+    ]
   })
 
   const loadLocalMockData = () => {
     try {
       const savedFolders = localStorage.getItem(LOCAL_STORAGE_FOLDERS)
       const savedNotebooks = localStorage.getItem(LOCAL_STORAGE_NOTEBOOKS)
-      folders.value = savedFolders ? JSON.parse(savedFolders) : defaultMockFolders
-      notebooks.value = savedNotebooks ? JSON.parse(savedNotebooks) : defaultMockNotebooks
-      if (!savedFolders) localStorage.setItem(LOCAL_STORAGE_FOLDERS, JSON.stringify(folders.value))
-      if (!savedNotebooks) localStorage.setItem(LOCAL_STORAGE_NOTEBOOKS, JSON.stringify(notebooks.value))
+      folders.value = savedFolders
+        ? JSON.parse(savedFolders)
+        : defaultMockFolders
+      notebooks.value = savedNotebooks
+        ? JSON.parse(savedNotebooks)
+        : defaultMockNotebooks
+      if (!savedFolders)
+        localStorage.setItem(
+          LOCAL_STORAGE_FOLDERS,
+          JSON.stringify(folders.value)
+        )
+      if (!savedNotebooks)
+        localStorage.setItem(
+          LOCAL_STORAGE_NOTEBOOKS,
+          JSON.stringify(notebooks.value)
+        )
     } catch (e) {
       folders.value = defaultMockFolders
       notebooks.value = defaultMockNotebooks
@@ -333,7 +425,10 @@
 
   const saveLocalMockData = () => {
     localStorage.setItem(LOCAL_STORAGE_FOLDERS, JSON.stringify(folders.value))
-    localStorage.setItem(LOCAL_STORAGE_NOTEBOOKS, JSON.stringify(notebooks.value))
+    localStorage.setItem(
+      LOCAL_STORAGE_NOTEBOOKS,
+      JSON.stringify(notebooks.value)
+    )
   }
 
   const reload = async () => {
@@ -360,7 +455,9 @@
       notebooks.value = page.items
     } catch {
       const q = query.value.trim().toLowerCase()
-      notebooks.value = notebooks.value.filter((n) => n.name.toLowerCase().includes(q))
+      notebooks.value = notebooks.value.filter((n) =>
+        n.name.toLowerCase().includes(q)
+      )
     }
   }
 
@@ -377,11 +474,16 @@
     if (type !== 'inner' || !dropNode.data?.isFolder) return false
     const dragged = draggingNode.data as TreeNode
     const destination = dropNode.data as TreeNode
-    return dragged.id !== destination.id &&
+    return (
+      dragged.id !== destination.id &&
       (dragged.isFolder ? dragged.parentId !== destination.id : true)
+    )
   }
 
-  const moveTreeItem = async (item: TreeNode, destinationFolderId: string | null) => {
+  const moveTreeItem = async (
+    item: TreeNode,
+    destinationFolderId: string | null
+  ) => {
     try {
       if (item.isFolder) {
         // Opening the notebook can update its persisted runtime profile in another tab. Fetch a
@@ -394,7 +496,9 @@
         if ((notebook.folderId || null) === destinationFolderId) return
         await api.moveNotebook(item.id, destinationFolderId, notebook.version)
       }
-      ElMessage.success(`Moved ${item.isFolder ? 'folder' : 'notebook'} "${item.label}"`)
+      ElMessage.success(
+        `Moved ${item.isFolder ? 'folder' : 'notebook'} "${item.label}"`
+      )
       await reload()
     } catch (e: any) {
       console.error('Failed to move workspace item:', e)
@@ -404,12 +508,15 @@
 
   const onNodeDrop = async (draggingNode: any, dropNode: any) => {
     const destination = dropNode.data as TreeNode
-    await moveTreeItem(draggingNode.data as TreeNode, destination.isRoot ? null : destination.id)
+    await moveTreeItem(
+      draggingNode.data as TreeNode,
+      destination.isRoot ? null : destination.id
+    )
   }
 
   const openNewNotebookDialog = (folderId: string | null = null) => {
     currentParentId.value = folderId
-    notebookName.value = `New Notebook ${new Date().toISOString().slice(0, 10)}`
+    notebookName.value = defaultNotebookName()
     notebookLanguage.value = 'SQL'
     notebookDialog.value = true
   }
@@ -424,7 +531,11 @@
     const name = notebookName.value.trim()
     if (!name) return
     try {
-      const created = await api.createNotebook(name, currentParentId.value, notebookLanguage.value)
+      const created = await api.createNotebook(
+        name,
+        currentParentId.value,
+        notebookLanguage.value
+      )
       notebookDialog.value = false
       notebookName.value = ''
       ElMessage.success('Notebook created')
@@ -458,20 +569,31 @@
       openNewFolderDialog(data.id)
     } else if (command === 'rename') {
       try {
-        const { value } = await ElMessageBox.prompt('Enter new name', 'Rename', {
-          inputValue: data.label,
-          confirmButtonText: 'Rename',
-          cancelButtonText: 'Cancel'
-        })
+        const { value } = await ElMessageBox.prompt(
+          'Enter new name',
+          'Rename',
+          {
+            inputValue: data.label,
+            confirmButtonText: 'Rename',
+            cancelButtonText: 'Cancel'
+          }
+        )
         if (value && value.trim()) {
           if (data.isFolder) {
-            try { await api.renameFolder(data.id, value.trim(), data.version) } catch {
+            try {
+              await api.renameFolder(data.id, value.trim(), data.version)
+            } catch {
               const target = folders.value.find((f) => f.id === data.id)
               if (target) target.name = value.trim()
               saveLocalMockData()
             }
           } else {
-            try { await api.updateNotebook(data.id, { name: value.trim(), version: data.version }) } catch {
+            try {
+              await api.updateNotebook(data.id, {
+                name: value.trim(),
+                version: data.version
+              })
+            } catch {
               const target = notebooks.value.find((n) => n.id === data.id)
               if (target) target.name = value.trim()
               saveLocalMockData()
@@ -482,8 +604,9 @@
         }
       } catch {}
     } else if (command === 'clone') {
+      const cloneName = defaultCloneNotebookName(data.label)
       try {
-        await api.cloneNotebook(data.id, `${data.label} (Copy)`)
+        await api.cloneNotebook(data.id, cloneName)
         ElMessage.success('Notebook cloned')
         await reload()
       } catch {
@@ -491,7 +614,7 @@
         if (original) {
           const copy = JSON.parse(JSON.stringify(original))
           copy.id = `nb-${Date.now()}`
-          copy.name = `${original.name} (Copy)`
+          copy.name = cloneName
           notebooks.value.push(copy)
           saveLocalMockData()
           ElMessage.success('Notebook cloned (Local)')
@@ -500,7 +623,9 @@
     } else if (command === 'export') {
       try {
         const exported = await api.exportNotebook(data.id, 'IPYNB')
-        const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' })
+        const blob = new Blob([JSON.stringify(exported, null, 2)], {
+          type: 'application/json'
+        })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
@@ -512,18 +637,26 @@
       }
     } else if (command === 'delete') {
       try {
-        await ElMessageBox.confirm(`Delete "${data.label}"?`, 'Confirm Delete', {
-          type: 'warning',
-          confirmButtonText: 'Delete',
-          confirmButtonClass: 'el-button--danger'
-        })
+        await ElMessageBox.confirm(
+          `Delete "${data.label}"?`,
+          'Confirm Delete',
+          {
+            type: 'warning',
+            confirmButtonText: 'Delete',
+            confirmButtonClass: 'el-button--danger'
+          }
+        )
         if (data.isFolder) {
-          try { await api.deleteFolder(data.id) } catch {
+          try {
+            await api.deleteFolder(data.id)
+          } catch {
             folders.value = folders.value.filter((f) => f.id !== data.id)
             saveLocalMockData()
           }
         } else {
-          try { await api.deleteNotebook(data.id) } catch {
+          try {
+            await api.deleteNotebook(data.id)
+          } catch {
             notebooks.value = notebooks.value.filter((n) => n.id !== data.id)
             saveLocalMockData()
           }
@@ -676,6 +809,8 @@
 
         .node-left {
           display: flex;
+          flex: 1;
+          min-width: 0;
           align-items: center;
           gap: 6px;
           overflow: hidden;

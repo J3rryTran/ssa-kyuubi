@@ -28,20 +28,26 @@
       @click="isFocused = true">
       <!-- LEFT GUTTER -->
       <div class="db-cell-gutter">
-        <el-tooltip v-if="isInitializing" content="Starting Engine..." placement="right">
-          <span class="gutter-starting-indicator">
+        <el-tooltip v-if="isInitializing" content="Interrupt cell startup" placement="right">
+          <el-button
+            circle
+            size="small"
+            type="danger"
+            class="gutter-run-btn"
+            title="Interrupt cell startup"
+            @click.stop="$emit('stop', cell)">
             <el-icon class="is-loading"><Loading /></el-icon>
-          </span>
+          </el-button>
         </el-tooltip>
         <el-button
           v-else-if="isRunning"
           circle
           size="small"
-          type="warning"
+          type="danger"
           class="gutter-run-btn"
-          title="Stop execution"
+          title="Interrupt cell"
           @click.stop="$emit('stop', cell)">
-          <el-icon class="is-loading"><Loading /></el-icon>
+          <el-icon><VideoPause /></el-icon>
         </el-button>
         <el-button
           v-else-if="isExecutable"
@@ -72,6 +78,16 @@
             </span>
           </div>
           <div class="bar-right">
+            <el-button
+              v-if="isRunning || isInitializing"
+              link
+              size="small"
+              type="danger"
+              icon="VideoPause"
+              title="Interrupt cell"
+              @click.stop="$emit('stop', cell)">
+              Interrupt
+            </el-button>
             <el-button
               link
               size="small"

@@ -71,13 +71,6 @@ class PySparkRuntimeAdapter(
     val subdomain = configuration.get("kyuubi.engine.share.level.subdomain")
       .orElse(configuration.get("kyuubi.engine.share.level.sub.domain"))
       .getOrElse("default")
-    // ===== DEBUG ENGINE SUBDOMAIN TRACING =====
-    warn(s"[NOTEBOOK-ENGINE-DEBUG] PySparkAdapter.startRuntime: runtimeId=${runtime.id}" +
-      s" owner=${runtime.owner}" +
-      s" configKeys=${configuration.keys.mkString(",")}" +
-      s" subdomain_from_config=${configuration.get("kyuubi.engine.share.level.subdomain")}" +
-      s" subdomain_final=$subdomain")
-    // ==========================================
     val handle = backendService().openSession(
       TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V11,
       runtime.owner,
@@ -222,9 +215,11 @@ class PySparkRuntimeAdapter(
     }
   }
 
-  override def restartRuntime(runtime: NotebookRuntime): AdapterRuntime = {
+  override def restartRuntime(
+      runtime: NotebookRuntime,
+      configuration: Map[String, String]): AdapterRuntime = {
     stopRuntime(runtime)
-    startRuntime(runtime, Map.empty)
+    startRuntime(runtime, configuration)
   }
 
   override def stopRuntime(runtime: NotebookRuntime): Unit = {

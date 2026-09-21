@@ -127,3 +127,65 @@ CREATE TABLE IF NOT EXISTS notebook_engine_profile(
     updated_at bigint NOT NULL,
     KEY notebook_engine_profile_owner_index(owner)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS notebook_engine_profile_v2(
+    profile_id varchar(64) PRIMARY KEY NOT NULL,
+    owner varchar(255) NOT NULL,
+    name varchar(128) NOT NULL,
+    subdomain varchar(128) NOT NULL,
+    spark_config mediumtext NOT NULL,
+    notebook_runtime_idle_timeout varchar(32),
+    engine_idle_timeout varchar(32),
+    python_environment_revision_id varchar(64),
+    revision bigint NOT NULL,
+    created_at bigint NOT NULL,
+    updated_at bigint NOT NULL,
+    UNIQUE KEY notebook_engine_profile_v2_owner_name_index(owner, name),
+    UNIQUE KEY notebook_engine_profile_v2_subdomain_index(subdomain),
+    KEY notebook_engine_profile_v2_owner_index(owner)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS notebook_engine_profile_revision(
+    profile_id varchar(64) NOT NULL,
+    revision bigint NOT NULL,
+    subdomain varchar(128) NOT NULL,
+    spark_config mediumtext NOT NULL,
+    notebook_runtime_idle_timeout varchar(32),
+    engine_idle_timeout varchar(32),
+    python_environment_revision_id varchar(64),
+    created_at bigint NOT NULL,
+    PRIMARY KEY(profile_id, revision),
+    UNIQUE KEY notebook_engine_profile_revision_subdomain_index(subdomain)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS notebook_python_environment_revision(
+    id varchar(64) PRIMARY KEY NOT NULL,
+    profile_id varchar(64) NOT NULL,
+    revision bigint NOT NULL,
+    pvc_name varchar(128) NOT NULL,
+    relative_path varchar(255) NOT NULL,
+    state varchar(16) NOT NULL,
+    requirements_lock mediumtext,
+    metadata mediumtext,
+    content_checksum varchar(128),
+    base_image varchar(512) NOT NULL,
+    created_at bigint NOT NULL,
+    ready_at bigint,
+    retired_at bigint,
+    UNIQUE KEY notebook_python_environment_revision_profile_revision(profile_id, revision)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS notebook_python_environment_change_request(
+    id varchar(64) PRIMARY KEY NOT NULL,
+    profile_id varchar(64) NOT NULL,
+    requested_by varchar(255) NOT NULL,
+    operation varchar(16) NOT NULL,
+    requested_packages mediumtext NOT NULL,
+    expected_profile_revision bigint NOT NULL,
+    state varchar(16) NOT NULL,
+    hot_install_state varchar(16) NOT NULL,
+    resulting_environment_revision_id varchar(64),
+    error_summary mediumtext,
+    created_at bigint NOT NULL,
+    updated_at bigint NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

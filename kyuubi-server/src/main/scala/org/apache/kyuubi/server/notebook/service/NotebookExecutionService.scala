@@ -25,6 +25,7 @@ import scala.util.control.NonFatal
 
 import org.apache.kyuubi.Logging
 import org.apache.kyuubi.config.KyuubiConf
+import org.apache.kyuubi.server.engineprofile.{EngineProfilePrincipal, PythonEnvironmentService}
 import org.apache.kyuubi.server.notebook.NotebookConf._
 import org.apache.kyuubi.server.notebook.api._
 import org.apache.kyuubi.server.notebook.runtime.RichOutputSanitizer
@@ -46,7 +47,8 @@ class NotebookExecutionService(
     permissions: NotebookPermissionService,
     sessions: NotebookSessionService,
     runtimes: NotebookRuntimeService,
-    registry: RuntimeAdapterRegistry) extends Logging {
+    registry: RuntimeAdapterRegistry,
+    pythonEnvironments: Option[PythonEnvironmentService] = None) extends Logging {
   import NotebookExecutionService._
 
   private val maxPageSize = conf.get(NOTEBOOK_MAX_PAGE_SIZE)
@@ -85,7 +87,30 @@ class NotebookExecutionService(
     if (alreadySubmitted.isDefined) {
       alreadySubmitted.get
     } else {
+      persistPythonEnvironmentIntent(principal, session, notebook.runtimeProfile, language, source)
       startExecution(principal, session, request, source, cell, language, requestId)
+    }
+  }
+
+  private def persistPythonEnvironmentIntent(
+      principal: NotebookPrincipal,
+      session: NotebookSession,
+      notebookProfile: Option[String],
+      language: CellLanguage.Value,
+      source: String): Unit = {
+    if (language == CellLanguage.PYTHON && pythonEnvironments.exists(_.isEnabled)) {
+      PythonEnvironmentIntent.parse(source).foreach { intent =>
+        val profileId = notebookProfile.orElse(session.runtimeProfile).getOrElse {
+          throw NotebookException.invalid(
+            "%pip install/uninstall requires a selected Engine Profile so its environment can " +
+              "persist")
+        }
+        pythonEnvironments.foreach(_.requestPackageChange(
+          EngineProfilePrincipal(principal.user, principal.admin),
+          profileId,
+          intent.operation,
+          intent.packages))
+      }
     }
   }
 
@@ -99,6 +124,7 @@ class NotebookExecutionService(
       requestId: Option[String]): CellExecution = {
     val configuration = Option(request.getConfiguration).map(_.asScala.toMap).getOrElse(Map.empty)
     val runtime = runtimes.ensureFor(
+      principal,
       session,
       language,
       Option(request.getRuntimeId).flatMap {
@@ -485,6 +511,34 @@ class NotebookExecutionService(
 }
 
 object NotebookExecutionService {
+
+  private case class PythonEnvironmentIntent(operation: String, packages: Seq[String])
+
+  private object PythonEnvironmentIntent {
+    private val Pip = "(?s)^\\s*%pip\\s+(.+?)\\s*$".r
+
+    def parse(source: String): Option[PythonEnvironmentIntent] = {
+      if (source.trim.startsWith("%pip") && source.trim.split("\\r?\\n").length != 1) {
+        throw NotebookException.invalid(
+          "%pip install/uninstall must be in a standalone cell")
+      }
+      source match {
+        case Pip(arguments) =>
+          val tokens = arguments.trim.split("\\s+").toSeq
+          tokens match {
+            case "install" +: packages if packages.nonEmpty =>
+              Some(PythonEnvironmentIntent("INSTALL", packages))
+            case "uninstall" +: packages if packages.nonEmpty =>
+              Some(PythonEnvironmentIntent("UNINSTALL", packages))
+            case "list" +: Nil => None
+            case _ =>
+              throw NotebookException.invalid(
+                "%pip cells must be a standalone install/uninstall with package names only")
+          }
+        case _ => None
+      }
+    }
+  }
 
   /** One page already handed to a client, kept so the same cursor returns the same rows. */
   private case class DeliveredPage(

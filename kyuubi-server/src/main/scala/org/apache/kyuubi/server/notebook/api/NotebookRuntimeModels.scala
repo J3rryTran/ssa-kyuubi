@@ -57,6 +57,7 @@ case class NotebookRuntime(
     state: RuntimeState,
     generation: Long,
     environmentRevisionId: Option[String],
+    runtimeIdleTimeoutMillis: Option[Long],
     createdAt: Long,
     lastActivityAt: Long,
     stoppedAt: Option[Long],

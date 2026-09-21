@@ -70,7 +70,9 @@ trait NotebookRuntimeAdapter {
   /** Releases whatever the adapter holds for this execution; must be idempotent. */
   def closeExecution(execution: CellExecution): Unit
 
-  def restartRuntime(runtime: NotebookRuntime): AdapterRuntime
+  def restartRuntime(
+      runtime: NotebookRuntime,
+      configuration: Map[String, String]): AdapterRuntime
 
   def stopRuntime(runtime: NotebookRuntime): Unit
 

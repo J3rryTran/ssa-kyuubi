@@ -92,18 +92,58 @@ export interface NotebookSession {
 }
 
 export interface EngineProfile {
+  profileId: string
   name?: string
   subdomain: string
   owner?: string
   sparkConfig?: Record<string, string>
+  notebookRuntimeIdleTimeout?: string | null
+  engineIdleTimeout?: string | null
   driverMemory?: string
   driverCores?: number | string
   executorMemory?: string
   executorCores?: number | string
   executorInstances?: number
   customConfigs?: Record<string, string>
+  revision?: number
+  pythonEnvironmentRevisionId?: string | null
   createdAt?: number
   updatedAt?: number
+}
+
+export interface EngineProfileRevision {
+  profileId: string
+  revision: number
+  sparkConfig: Record<string, string>
+  notebookRuntimeIdleTimeout?: string | null
+  engineIdleTimeout?: string | null
+  state: 'ACTIVE' | 'DRAINING'
+  createdAt: number
+  pythonEnvironmentRevisionId?: string | null
+}
+
+export interface PythonEnvironmentRevision {
+  id: string
+  profileId: string
+  revision: number
+  state: 'PENDING' | 'BUILDING' | 'READY' | 'FAILED' | 'RETIRED'
+  requirements: string[]
+  createdAt: number
+  readyAt?: number | null
+}
+
+export interface EngineProfileRevisionTermination {
+  profileId: string
+  revision: number
+  terminatedEngineNodes: number
+}
+
+export interface EngineProfileEngineStatus {
+  profileId: string
+  revision: number
+  state: 'STARTING' | 'RUNNING' | 'STOPPING' | 'STOPPED' | 'FAILED' | 'UNKNOWN'
+  engineCount: number
+  errorSummary?: string | null
 }
 
 export interface CellExecution {

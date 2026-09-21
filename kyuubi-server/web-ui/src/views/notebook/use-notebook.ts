@@ -45,6 +45,9 @@ const PAGE_ROWS = 100
 const isTerminal = (execution: CellExecution) =>
   TERMINAL_EXECUTION_STATES.includes(execution.state)
 
+const isUsableSession = (candidate: NotebookSession) =>
+  !['STOPPING', 'STOPPED', 'LOST', 'FAILED'].includes(candidate.state)
+
 /**
  * Surfaces the server's error envelope, which carries a message safe to display. Falling back to
  * a generic sentence hides exactly the part the user needs, so the envelope wins whenever present.
@@ -126,7 +129,7 @@ export function useNotebook() {
         api.listSessions(notebookId)
       ])
       session.value =
-        openSessions.find((candidate) => candidate.state !== 'STOPPED') || null
+        openSessions.find(isUsableSession) || null
       // The list is newest first, so the first hit per cell is the current one.
       history.forEach((execution) => {
         if (execution.cellId && !executions[execution.cellId]) {
@@ -145,7 +148,7 @@ export function useNotebook() {
   }
 
   const ensureSession = async (): Promise<NotebookSession> => {
-    if (session.value && session.value.state !== 'STOPPED') return session.value
+    if (session.value && isUsableSession(session.value)) return session.value
     const created = await api.createSession(
       notebook.value!.id,
       notebook.value?.runtimeProfile || null
@@ -154,19 +157,33 @@ export function useNotebook() {
     return created
   }
 
-  const runCell = async (cell: NotebookCell, source: string) => {
+  const cancelledStarts = new Set<string>()
+
+  /**
+   * Starts one cell. `isCancelled` lets Run all stop cleanly while its first engine session is
+   * still being created: session creation may finish, but no execution is submitted afterwards.
+   */
+  const runCell = async (
+    cell: NotebookCell,
+    source: string,
+    isCancelled?: () => boolean
+  ): Promise<CellExecution | null> => {
     if (!notebook.value?.runtimeProfile) {
       reportError(
         new Error('Please select an Engine profile from the top header bar before running cells.'),
         'No Engine Selected'
       )
-      return
+      return null
     }
     const current = executions[cell.id]
-    if (initializingCells[cell.id] || (current && !isTerminal(current))) return
+    if (initializingCells[cell.id] || (current && !isTerminal(current))) return null
+    cancelledStarts.delete(cell.id)
     initializingCells[cell.id] = true
     try {
       const active = await ensureSession()
+      if (cancelledStarts.delete(cell.id) || isCancelled?.()) {
+        return null
+      }
       const execution = await api.submitExecution(active.id, {
         cellId: cell.id,
         // Kept for older servers; the current one takes the language from the notebook and
@@ -187,14 +204,23 @@ export function useNotebook() {
         outputSequence: 0
       }
       poll(cell.id, execution.id)
+      return execution
     } catch (error) {
       reportError(error, 'The cell could not be started')
+      return null
     } finally {
       delete initializingCells[cell.id]
     }
   }
 
   const stopCell = async (cell: NotebookCell) => {
+    if (initializingCells[cell.id]) {
+      // A session request cannot be cancelled by the execution endpoint because no execution
+      // exists yet. Mark it cancelled so runCell exits before submitting the user's code.
+      cancelledStarts.add(cell.id)
+      ElMessage.info('Engine startup will finish, but this cell will not be run.')
+      return
+    }
     const execution = executions[cell.id]
     if (!execution) return
     try {

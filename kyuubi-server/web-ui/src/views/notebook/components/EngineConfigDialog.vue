@@ -32,7 +32,7 @@
         <span>📋 Saved Engine Presets</span>
       </div>
       <el-table :data="savedProfiles" size="small" border style="width: 100%; margin-bottom: 16px">
-        <el-table-column prop="subdomain" label="Engine Name" min-width="130" />
+        <el-table-column prop="name" label="Engine Name" min-width="130" />
         <el-table-column label="Driver" width="100">
           <template #default="{ row }">
             {{ row.driverMemory || '1g' }} / {{ row.driverCores || 1 }}c
@@ -49,12 +49,12 @@
               Edit
             </el-button>
             <el-button
-              v-if="row.subdomain !== 'default'"
+              v-if="row.profileId !== 'default'"
               size="small"
               type="danger"
               link
               icon="Delete"
-              @click="deleteProfile(row.subdomain)">
+              @click="deleteProfile(row.profileId)">
               Delete
             </el-button>
           </template>
@@ -63,7 +63,7 @@
     </div>
 
     <el-divider content-position="left">
-      {{ form.subdomain ? `Edit Preset: ${form.subdomain}` : 'Create New Engine Preset' }}
+      {{ form.profileId ? `Edit Preset: ${form.name}` : 'Create New Engine Preset' }}
     </el-divider>
 
     <el-form
@@ -74,13 +74,13 @@
       label-width="140px"
       size="default"
       @submit.prevent>
-      <el-form-item label="Engine Name" prop="subdomain">
+      <el-form-item label="Engine Name" prop="name">
         <el-input
-          v-model="form.subdomain"
+          v-model="form.name"
           placeholder="e.g. engine-analytics-heavy"
           clearable />
         <span class="field-hint">
-          Used as Subdomain identifier on Zookeeper &amp; K8s Pod label.
+          A name is unique only within your account. The server creates the runtime subdomain.
         </span>
       </el-form-item>
 
@@ -129,6 +129,31 @@
           :max="20"
           :step="1"
           class="resource-input" />
+      </el-form-item>
+
+      <el-divider content-position="left">Idle timeout policy</el-divider>
+      <el-form-item label="Notebook runtime idle">
+        <el-select v-model="form.notebookRuntimeIdleTimeout" style="width: 100%">
+          <el-option label="Inherit platform default" value="inherit" />
+          <el-option label="5 minutes" value="PT5M" />
+          <el-option label="15 minutes" value="PT15M" />
+          <el-option label="30 minutes" value="PT30M" />
+          <el-option label="1 hour" value="PT1H" />
+          <el-option label="6 hours" value="PT6H" />
+          <el-option label="24 hours" value="PT24H" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="Spark engine idle">
+        <el-select v-model="form.engineIdleTimeout" style="width: 100%">
+          <el-option label="Inherit platform default" value="inherit" />
+          <el-option label="5 minutes" value="PT5M" />
+          <el-option label="15 minutes" value="PT15M" />
+          <el-option label="30 minutes" value="PT30M" />
+          <el-option label="1 hour" value="PT1H" />
+          <el-option label="6 hours" value="PT6H" />
+          <el-option label="24 hours" value="PT24H" />
+        </el-select>
+        <span class="field-hint">Applies to all sessions opened with this profile.</span>
       </el-form-item>
 
       <!-- Collapsible Advanced Settings for custom Spark Key-Values -->
@@ -183,7 +208,12 @@
   import type { FormInstance, FormRules } from 'element-plus'
   import { ElMessage } from 'element-plus'
   import type { EngineProfile } from '@/api/notebook/types'
-  import { listEngineProfiles, upsertEngineProfile, deleteEngineProfile } from '@/api/notebook'
+  import {
+    createEngineProfile,
+    deleteEngineProfile,
+    listEngineProfiles,
+    updateEngineProfile
+  } from '@/api/notebook'
 
   const props = defineProps<{
     visible: boolean
@@ -211,18 +241,21 @@
   }
 
   const form = reactive({
-    subdomain: '',
+    profileId: '',
+    name: '',
     driverMemory: '1g',
     driverCores: 1,
     executorMemory: '2g',
     executorCores: 1,
     executorInstances: 1,
+    notebookRuntimeIdleTimeout: 'inherit',
+    engineIdleTimeout: 'inherit',
     customConfigs: [] as CustomConfigRow[]
   })
 
   // Validation rules enforcing strict input boundaries
   const rules = reactive<FormRules>({
-    subdomain: [
+    name: [
       { required: true, message: 'Please enter an Engine Name', trigger: 'blur' },
       {
         pattern: /^[a-z0-9][-a-z0-9]*[a-z0-9]$/,
@@ -265,7 +298,7 @@
     }
     return {
       ...apiProfile,
-      name: apiProfile.subdomain,
+      name: apiProfile.name || apiProfile.subdomain,
       driverMemory: sparkConfig['spark.driver.memory'] || apiProfile.driverMemory || '1g',
       driverCores: sparkConfig['spark.driver.cores'] ? Number(sparkConfig['spark.driver.cores']) : (Number(apiProfile.driverCores) || 1),
       executorMemory: sparkConfig['spark.executor.memory'] || apiProfile.executorMemory || '2g',
@@ -289,6 +322,7 @@
     }
     savedProfiles.value = [{
       name: 'default',
+      profileId: 'default',
       subdomain: 'default',
       driverMemory: '1g',
       driverCores: 1,
@@ -304,12 +338,15 @@
 
   function loadProfileForEdit(profile: EngineProfile) {
     const parsed = parseProfileFromApi(profile)
-    form.subdomain = parsed.subdomain || parsed.name || ''
+    form.profileId = parsed.profileId || ''
+    form.name = parsed.name || ''
     form.driverMemory = parsed.driverMemory || '1g'
     form.driverCores = Number(parsed.driverCores) || 1
     form.executorMemory = parsed.executorMemory || '2g'
     form.executorCores = Number(parsed.executorCores) || 1
     form.executorInstances = parsed.executorInstances || 1
+    form.notebookRuntimeIdleTimeout = parsed.notebookRuntimeIdleTimeout || 'inherit'
+    form.engineIdleTimeout = parsed.engineIdleTimeout || 'inherit'
     if (parsed.customConfigs) {
       form.customConfigs = Object.entries(parsed.customConfigs).map(([key, value]) => ({
         key,
@@ -332,24 +369,27 @@
     { immediate: true }
   )
 
-  async function deleteProfile(subdomain: string) {
+  async function deleteProfile(profileId: string) {
     try {
-      await deleteEngineProfile(subdomain)
-      savedProfiles.value = savedProfiles.value.filter((p) => p.subdomain !== subdomain)
+      await deleteEngineProfile(profileId)
+      savedProfiles.value = savedProfiles.value.filter((p) => p.profileId !== profileId)
       emit('change')
-      ElMessage.success(`Engine preset '${subdomain}' removed`)
+      ElMessage.success('Engine preset removed')
     } catch (e: any) {
       ElMessage.error(`Failed to delete engine profile: ${e?.message || e}`)
     }
   }
 
   function resetForm() {
-    form.subdomain = ''
+    form.profileId = ''
+    form.name = ''
     form.driverMemory = '1g'
     form.driverCores = 1
     form.executorMemory = '2g'
     form.executorCores = 1
     form.executorInstances = 1
+    form.notebookRuntimeIdleTimeout = 'inherit'
+    form.engineIdleTimeout = 'inherit'
     form.customConfigs = []
   }
 
@@ -393,10 +433,18 @@
 
       saving.value = true
       try {
-        const updated = await upsertEngineProfile(form.subdomain, sparkConfig)
+        const updated = form.profileId
+          ? await updateEngineProfile(form.profileId, form.name, sparkConfig, {
+            notebookRuntimeIdleTimeout: form.notebookRuntimeIdleTimeout,
+            engineIdleTimeout: form.engineIdleTimeout
+          })
+          : await createEngineProfile(form.name, sparkConfig, {
+            notebookRuntimeIdleTimeout: form.notebookRuntimeIdleTimeout,
+            engineIdleTimeout: form.engineIdleTimeout
+          })
         const parsed = parseProfileFromApi(updated)
         const existingIndex = savedProfiles.value.findIndex(
-          (p) => p.subdomain === parsed.subdomain
+          (p) => p.profileId === parsed.profileId
         )
         if (existingIndex >= 0) {
           savedProfiles.value[existingIndex] = parsed
@@ -406,7 +454,7 @@
 
         emit('save', parsed)
         emit('change')
-        ElMessage.success(`Engine profile '${parsed.subdomain}' saved successfully`)
+        ElMessage.success(`Engine profile '${parsed.name}' saved successfully`)
         handleClose()
       } catch (e: any) {
         ElMessage.error(`Failed to save engine profile: ${e?.message || e}`)

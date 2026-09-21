@@ -157,8 +157,56 @@ object NotebookDocument {
  * on write; it is never accepted from the request body.
  */
 case class EngineProfile(
+    profileId: String,
+    name: String,
     subdomain: String,
     owner: String,
     sparkConfig: Map[String, String],
+    notebookRuntimeIdleTimeout: Option[String],
+    engineIdleTimeout: Option[String],
+    revision: Long,
+    createdAt: Long,
+    updatedAt: Long,
+    pythonEnvironmentRevisionId: Option[String] = None)
+
+/** Immutable configuration captured for one Engine Profile revision. */
+case class EngineProfileRevision(
+    profileId: String,
+    revision: Long,
+    subdomain: String,
+    sparkConfig: Map[String, String],
+    notebookRuntimeIdleTimeout: Option[String],
+    engineIdleTimeout: Option[String],
+    createdAt: Long,
+    pythonEnvironmentRevisionId: Option[String] = None)
+
+/** Immutable Python environment built for one Engine Profile. */
+case class PythonEnvironmentRevision(
+    id: String,
+    profileId: String,
+    revision: Long,
+    pvcName: String,
+    relativePath: String,
+    state: String,
+    requirementsLock: Option[String],
+    metadata: Option[String],
+    contentChecksum: Option[String],
+    baseImage: String,
+    createdAt: Long,
+    readyAt: Option[Long],
+    retiredAt: Option[Long])
+
+/** Durable, server-validated request to publish a new Python environment revision. */
+case class PythonEnvironmentChangeRequest(
+    id: String,
+    profileId: String,
+    requestedBy: String,
+    operation: String,
+    requestedPackages: Seq[String],
+    expectedProfileRevision: Long,
+    state: String,
+    hotInstallState: String,
+    resultingEnvironmentRevisionId: Option[String],
+    errorSummary: Option[String],
     createdAt: Long,
     updatedAt: Long)

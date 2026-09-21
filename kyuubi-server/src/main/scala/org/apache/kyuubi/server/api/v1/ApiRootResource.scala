@@ -194,6 +194,9 @@ private[v1] class ApiRootResource extends ApiRequestContext {
   @Path("sessions")
   def sessions: Class[SessionsResource] = classOf[SessionsResource]
 
+  @Path("editor-sessions")
+  def editorSessions: Class[EditorSessionsResource] = classOf[EditorSessionsResource]
+
   @Path("operations")
   def operations: Class[OperationsResource] = classOf[OperationsResource]
 
@@ -238,6 +241,15 @@ private[v1] class ApiRootResource extends ApiRequestContext {
   @Path("engine-profiles")
   def engineProfiles: Class[NotebookEngineProfilesResource] =
     classOf[NotebookEngineProfilesResource]
+
+  @Path("dbt-workspaces")
+  def dbtWorkspaces: Class[DbtWorkspacesResource] = classOf[DbtWorkspacesResource]
+
+  @Path("dbt-jobs")
+  def dbtJobs: Class[DbtJobsResource] = classOf[DbtJobsResource]
+
+  @Path("dbt-job-runs")
+  def dbtJobRuns: Class[DbtJobRunsResource] = classOf[DbtJobRunsResource]
 
   @GET
   @Path("exception")

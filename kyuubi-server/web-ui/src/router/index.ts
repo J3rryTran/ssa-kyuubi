@@ -23,6 +23,7 @@ import swaggerRoutes from './swagger'
 import editorRoutes from './editor'
 import notebookRoutes from './notebook'
 import workspaceRoutes from './workspace'
+import dbtRoutes from './dbt'
 
 const routes = [
   {
@@ -50,7 +51,8 @@ const routes = [
       ...swaggerRoutes,
       ...editorRoutes,
       ...notebookRoutes,
-      ...workspaceRoutes
+      ...workspaceRoutes,
+      ...dbtRoutes
     ]
   }
 ]

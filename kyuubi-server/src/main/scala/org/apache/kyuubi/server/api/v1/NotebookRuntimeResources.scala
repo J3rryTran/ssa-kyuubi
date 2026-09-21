@@ -138,9 +138,11 @@ private[v1] class NotebookRuntimesResource extends NotebookApiSupport {
 
   @POST
   @Path("{runtimeId: [^:/]+}:restart")
-  def restart(@PathParam("runtimeId") runtimeId: String): NotebookRuntimeView =
-    NotebookRuntimeView(
-      notebooks.runtimes.restart(notebooks.runtimes.require(principal, runtimeId)))
+  def restart(@PathParam("runtimeId") runtimeId: String): NotebookRuntimeView = {
+    val runtime = notebooks.runtimes.require(principal, runtimeId)
+    val session = notebooks.sessions.require(principal, runtime.notebookSessionId)
+    NotebookRuntimeView(notebooks.runtimes.restart(principal, session, runtime))
+  }
 
   @POST
   @Path("{runtimeId: [^:/]+}:stop")

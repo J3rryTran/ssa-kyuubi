@@ -15,12 +15,8 @@
  * limitations under the License.
  */
 
-interface ISessionConfigs {
-  [key: string]: string
-}
-
-interface IOpenSessionRequest {
-  configs: ISessionConfigs
+interface IOpenEditorSessionRequest {
+  engineProfileId: string
 }
 
 interface IRunSqlRequest {
@@ -39,7 +35,7 @@ interface IGetSqlMetadataRequest {
 }
 
 export {
-  IOpenSessionRequest,
+  IOpenEditorSessionRequest,
   IRunSqlRequest,
   IGetSqlRowsetRequest,
   IGetSqlMetadataRequest

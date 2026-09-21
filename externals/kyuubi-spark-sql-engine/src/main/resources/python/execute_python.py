@@ -36,8 +36,6 @@ else:
     from ast import Module as OriginalModule
     Module = lambda nodelist, type_ignores: OriginalModule(nodelist)
 
-import kyuubi_util
-
 try:
     import resource
 except ImportError:
@@ -48,10 +46,23 @@ if sys.version_info[0] < 3:
 
 os.environ["PYSPARK_PYTHON"] = os.environ.get("PYSPARK_PYTHON", sys.executable)
 
-# add kyuubi-session-pip to sys.path if present
-session_pip_dir = os.path.join(os.getcwd(), "kyuubi-session-pip")
-if os.path.exists(session_pip_dir) and session_pip_dir not in sys.path:
-    sys.path.insert(0, session_pip_dir)
+def _refresh_session_pip_path():
+    """Expose packages installed by any notebook session on this shared engine.
+
+    A worker can have started before another notebook runs ``%pip install``. Refreshing before
+    each request makes the driver's shared, session-scoped package directory visible without a
+    Spark-engine restart. The directory remains ephemeral; durable packages are promoted by the
+    server only for a later PVC-backed engine generation.
+    """
+    session_pip_dir = os.path.join(os.getcwd(), "kyuubi-session-pip")
+    if os.path.exists(session_pip_dir):
+        if session_pip_dir in sys.path:
+            sys.path.remove(session_pip_dir)
+        sys.path.insert(0, session_pip_dir)
+        importlib.invalidate_caches()
+
+
+_refresh_session_pip_path()
 
 # add pyspark to sys.path
 
@@ -74,6 +85,8 @@ if "pyspark" not in sys.modules:
         sys.path[:0] = sys_path = [spark_python, py4j]
 else:
     sys_path = None
+
+import kyuubi_util
 
 
 TOP_FRAME_REGEX = re.compile(r'\s*File "<stdin>".*in <module>')
@@ -310,6 +323,7 @@ def execute_reply_internal_error(message, exc_info=None):
 
 
 def execute_request(content):
+    _refresh_session_pip_path()
     try:
         code = content["code"]
     except KeyError:
@@ -337,6 +351,13 @@ def execute_request(content):
     if result is None:
         result = {}
 
+    # A normal notebook cell commonly ends with ``plt.show()``. Kyuubi's Python protocol is a
+    # MIME bundle rather than an interactive display transport, so capture the latest open figure
+    # as a PNG before returning the bundle. This is deliberately best-effort: matplotlib is an
+    # optional package and a non-plotting cell must keep exactly its existing behaviour.
+    if "image/png" not in result:
+        result.update(_capture_matplotlib_figure())
+
     stdout = sys.stdout.getvalue()
     stderr = sys.stderr.getvalue()
 
@@ -357,6 +378,41 @@ def execute_request(content):
         result["text/plain"] = output.rstrip()
 
     return execute_reply_ok(result)
+
+
+def _capture_matplotlib_figure():
+    """Return the latest matplotlib figure as a notebook image, if one was created.
+
+    The response protocol holds one value per MIME type, so a cell with several figures exposes
+    the latest figure. Closing figures after capture prevents stale plots from appearing again in
+    later cells and releases Driver memory.
+    """
+    try:
+        import matplotlib
+
+        # A Spark Driver is normally headless. Set a non-interactive backend before pyplot is
+        # imported; if the user already imported pyplot, retain their selected backend instead.
+        if "matplotlib.pyplot" not in sys.modules:
+            matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+
+        figure_numbers = plt.get_fignums()
+        if not figure_numbers:
+            return {}
+        figure = plt.figure(figure_numbers[-1])
+        image = io.BytesIO()
+        figure.savefig(image, format="png", bbox_inches="tight")
+        encoded = base64.b64encode(image.getvalue())
+        if sys.version_info[0] >= 3:
+            encoded = encoded.decode("ascii")
+        plt.close("all")
+        return {"image/png": encoded}
+    except ImportError:
+        return {}
+    except Exception:
+        # Rendering must not turn an otherwise successful Python cell into a failure. The user
+        # still receives stdout/stderr and can inspect a plotting-library error explicitly.
+        return {}
 
 
 def magic_table_convert(value):
@@ -520,9 +576,10 @@ def magic_matplot(name):
 def _pip_target_dir():
     """Where %pip installs land.
 
-    Kept under the driver's working directory on purpose: it dies with the driver pod, so a
-    session restart really does undo everything a user installed, and nothing ever reaches the
-    interpreter's own site-packages where it would outlive the session and leak to other users.
+    Kept under the driver's working directory on purpose: it dies with the driver pod. A
+    notebook-session restart can reuse the same driver, so its new Python worker must discover
+    this directory too. Nothing reaches the interpreter's own site-packages, preventing package
+    leakage to a different Engine Profile or user.
     """
     target = os.path.join(os.getcwd(), "kyuubi-session-pip")
     os.makedirs(target, exist_ok=True)
@@ -538,16 +595,16 @@ def _pip_timeout():
 
 
 def magic_pip(rest=""):
-    """`%pip install <packages>` or `%pip list` - manage libraries for this session."""
+    """`%pip install`, `%pip uninstall` or `%pip list` for the current session."""
     args = rest.split()
     if not args:
         raise PipError(
-            "%pip requires a subcommand. Use: %pip install <packages> or %pip list")
+            "%pip requires a subcommand. Use: %pip install <packages>, %pip uninstall <packages> or %pip list")
     subcommand = args[0]
-    if subcommand not in ("install", "list"):
+    if subcommand not in ("install", "uninstall", "list"):
         raise PipError(
-            "Only '%%pip install' and '%%pip list' are supported, not '%%pip %s'. "
-            "Use: %%pip install <packages> or %%pip list" % subcommand)
+            "Only '%%pip install', '%%pip uninstall' and '%%pip list' are supported, not '%%pip %s'. "
+            "Use: %%pip install <packages>, %%pip uninstall <packages> or %%pip list" % subcommand)
 
     target = _pip_target_dir()
 
@@ -582,11 +639,43 @@ def magic_pip(rest=""):
         log = completed.stdout.decode("utf-8", "replace") if completed.stdout else ""
         if completed.returncode != 0:
             raise PipError("pip list failed with exit code %d:\n%s" % (completed.returncode, log))
+        # `PYTHONPATH` lets imports resolve from --target, but pip's distribution discovery does
+        # not consistently enumerate that directory. Query it explicitly so %pip list accurately
+        # reports packages shared by Python workers in the still-live Spark driver.
+        target_command = command + ["--path", target]
+        try:
+            target_completed = subprocess.run(
+                target_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                env=env,
+            )
+            target_log = (
+                target_completed.stdout.decode("utf-8", "replace")
+                if target_completed.stdout
+                else ""
+            )
+            if target_completed.returncode == 0 and target_log and target_log != log:
+                log += "\n\nSession-scoped packages:\n" + target_log
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            # The regular list above already succeeded. Older pip versions may not support
+            # --path, so do not turn a diagnostic enhancement into a failed notebook cell.
+            pass
         return {"text/plain": log}
 
     packages = args[1:]
     if not packages:
-        raise PipError("No packages given. Use: %pip install <packages>")
+        raise PipError("No packages given. Use: %pip %s <packages>" % subcommand)
+
+    if subcommand == "uninstall":
+        # `pip uninstall` cannot safely target an arbitrary directory.  A persistent profile
+        # environment rebuild has already been requested by the notebook backend; pretending to
+        # remove a distribution from the shared interpreter here would risk deleting image-wide
+        # packages.  The new revision applies when the runtime is restarted.
+        return {"text/plain": (
+            "Package removal was queued for the persistent Engine Profile environment. "
+            "Restart the runtime after its environment build is READY.\n")}
 
     command = [
         sys.executable,

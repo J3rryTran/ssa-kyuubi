@@ -293,7 +293,7 @@ class NotebookExecutionSuite extends NotebookTestBase {
     val execution = submit(alice, session, "select 1")
     val runtime = runtimeService.list(session).head
 
-    val restarted = runtimeService.restart(runtime)
+    val restarted = runtimeService.restart(alice, session, runtime)
     assert(restarted.generation === runtime.generation + 1)
 
     // The outcome of work from the previous generation can no longer be established.
@@ -336,6 +336,22 @@ class NotebookExecutionSuite extends NotebookTestBase {
     sessionService.reapIdle(1L)
     assert(runtimeService.listFor(session).isEmpty)
     assert(manager.store.getSession(session.id).get.state === NotebookSessionState.STOPPED)
+  }
+
+  test("an idle reaper never stops a runtime owned by another frontend") {
+    val session = openSession(alice, "exec-idle-peer")
+    submit(alice, session, "select 1")
+    val peer = new NotebookSessionService(
+      manager.store,
+      documents,
+      permissions,
+      runtimeService,
+      () => "peer-instance")
+
+    peer.reapIdle(1L)
+
+    assert(runtimeService.listFor(session).size === 1)
+    assert(manager.store.getSession(session.id).get.state === NotebookSessionState.IDLE)
   }
 
   test("a runtime in use is not reclaimed") {
@@ -423,7 +439,9 @@ private class ScriptedAdapter extends TabularNotebookRuntimeAdapter {
 
   override def closeExecution(execution: CellExecution): Unit = closed = closed :+ execution.id
 
-  override def restartRuntime(runtime: NotebookRuntime): AdapterRuntime =
+  override def restartRuntime(
+      runtime: NotebookRuntime,
+      configuration: Map[String, String]): AdapterRuntime =
     AdapterRuntime(s"handle-${runtime.id}-restarted", Some("test-instance"))
 
   override def stopRuntime(runtime: NotebookRuntime): Unit = ()

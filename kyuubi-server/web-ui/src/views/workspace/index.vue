@@ -24,14 +24,14 @@
         <div class="breadcrumb-container">
           <el-breadcrumb separator="/">
             <el-breadcrumb-item>
-              <span class="breadcrumb-link root-link" @click="navigateToFolder(null)">
+              <span
+                class="breadcrumb-link root-link"
+                @click="navigateToFolder(null)">
                 <el-icon class="bc-icon"><FolderOpened /></el-icon>
                 <span>Workspace</span>
               </span>
             </el-breadcrumb-item>
-            <el-breadcrumb-item
-              v-for="crumb in breadcrumbs"
-              :key="crumb.id">
+            <el-breadcrumb-item v-for="crumb in breadcrumbs" :key="crumb.id">
               <span class="breadcrumb-link" @click="navigateToFolder(crumb.id)">
                 {{ crumb.name }}
               </span>
@@ -102,22 +102,30 @@
             @node-click="handleTreeNodeClick"
             @node-drop="handleTreeNodeDrop">
             <template #default="{ data }">
-              <div class="tree-node-content" :class="{ 'is-active': isNodeActive(data) }">
+              <div
+                class="tree-node-content"
+                :class="{ 'is-active': isNodeActive(data) }">
                 <div class="node-left">
                   <el-icon v-if="data.isRoot" class="dir-icon root-icon">
                     <FolderOpened />
                   </el-icon>
-                  <el-icon v-else-if="data.isFolder" class="dir-icon folder-icon">
+                  <el-icon
+                    v-else-if="data.isFolder"
+                    class="dir-icon folder-icon">
                     <Folder />
                   </el-icon>
                   <span
                     v-else
                     class="lang-badge-mini"
-                    :class="data.language === 'PYTHON' ? 'lang-python' : 'lang-sql'">
+                    :class="
+                      data.language === 'PYTHON' ? 'lang-python' : 'lang-sql'
+                    ">
                     {{ data.language === 'PYTHON' ? 'PY' : 'SQL' }}
                   </span>
 
-                  <span class="tree-node-label" :title="data.label">{{ data.label }}</span>
+                  <span class="tree-node-label" :title="data.label">{{
+                    data.label
+                  }}</span>
                 </div>
 
                 <span v-if="data.count !== undefined" class="count-badge">
@@ -142,7 +150,10 @@
             <template #default="{ row }">
               <div
                 class="name-cell"
-                :class="{ 'is-drop-target': dragOverFolderId === (row.isFolder ? row.id : null) }"
+                :class="{
+                  'is-drop-target':
+                    dragOverFolderId === (row.isFolder ? row.id : null)
+                }"
                 draggable="true"
                 @dragstart="handleTableDragStart($event, row)"
                 @dragend="clearTableDragState"
@@ -157,10 +168,14 @@
                 <template v-else>
                   <span
                     class="lang-badge"
-                    :class="row.language === 'PYTHON' ? 'lang-python' : 'lang-sql'">
+                    :class="
+                      row.language === 'PYTHON' ? 'lang-python' : 'lang-sql'
+                    ">
                     {{ row.language === 'PYTHON' ? 'PY' : 'SQL' }}
                   </span>
-                  <span class="item-name notebook-name" @click.stop="openNotebook(row.id)">
+                  <span
+                    class="item-name notebook-name"
+                    @click.stop="openNotebook(row.id)">
                     {{ row.name }}
                   </span>
                 </template>
@@ -171,7 +186,9 @@
           <!-- TYPE COLUMN -->
           <el-table-column label="Type" width="130">
             <template #default="{ row }">
-              <span class="type-badge">{{ row.isFolder ? 'Folder' : 'Notebook' }}</span>
+              <span class="type-badge">{{
+                row.isFolder ? 'Folder' : 'Notebook'
+              }}</span>
             </template>
           </el-table-column>
 
@@ -188,7 +205,9 @@
           <!-- LAST MODIFIED COLUMN -->
           <el-table-column label="Last Modified" width="180">
             <template #default="{ row }">
-              <span class="text-muted">{{ row.lastModified || 'Just now' }}</span>
+              <span class="text-muted">{{
+                row.lastModified || 'Just now'
+              }}</span>
             </template>
           </el-table-column>
 
@@ -221,20 +240,32 @@
                   Open
                 </el-button>
 
-                <el-dropdown trigger="click" @command="(cmd: string) => handleItemAction(cmd, row)">
+                <el-dropdown
+                  trigger="click"
+                  @command="(cmd: string) => handleItemAction(cmd, row)">
                   <el-button size="small" link icon="MoreFilled" />
                   <template #dropdown>
                     <el-dropdown-menu>
                       <el-dropdown-item command="rename" icon="Edit">
                         Rename
                       </el-dropdown-item>
-                      <el-dropdown-item v-if="!row.isFolder" command="clone" icon="CopyDocument">
+                      <el-dropdown-item
+                        v-if="!row.isFolder"
+                        command="clone"
+                        icon="CopyDocument">
                         Clone
                       </el-dropdown-item>
-                      <el-dropdown-item v-if="!row.isFolder" command="export" icon="Download">
+                      <el-dropdown-item
+                        v-if="!row.isFolder"
+                        command="export"
+                        icon="Download">
                         Export
                       </el-dropdown-item>
-                      <el-dropdown-item command="delete" divided icon="Delete" style="color: #f56c6c">
+                      <el-dropdown-item
+                        command="delete"
+                        divided
+                        icon="Delete"
+                        style="color: #f56c6c">
                         Delete
                       </el-dropdown-item>
                     </el-dropdown-menu>
@@ -248,12 +279,21 @@
             <div class="empty-folder-state">
               <el-icon :size="48" class="empty-icon"><FolderOpened /></el-icon>
               <p class="empty-title">This folder is empty</p>
-              <p class="empty-desc">Get started by creating a new notebook or subfolder</p>
+              <p class="empty-desc"
+                >Get started by creating a new notebook or subfolder</p
+              >
               <div class="empty-actions">
-                <el-button type="primary" size="small" icon="DocumentAdd" @click="openCreateNotebookDialog">
+                <el-button
+                  type="primary"
+                  size="small"
+                  icon="DocumentAdd"
+                  @click="openCreateNotebookDialog">
                   New Notebook
                 </el-button>
-                <el-button size="small" icon="FolderAdd" @click="folderDialog = true">
+                <el-button
+                  size="small"
+                  icon="FolderAdd"
+                  @click="folderDialog = true">
                   New Folder
                 </el-button>
               </div>
@@ -261,7 +301,8 @@
           </template>
         </el-table>
         <p class="drag-drop-hint">
-          Drag notebooks or folders onto a folder in this list or the directory tree to move them.
+          Drag notebooks or folders onto a folder in this list or the directory
+          tree to move them.
         </p>
       </div>
     </div>
@@ -286,7 +327,10 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item label="Destination Folder">
-          <el-select v-model="destinationFolderId" style="width: 100%" placeholder="Workspace Root">
+          <el-select
+            v-model="destinationFolderId"
+            style="width: 100%"
+            placeholder="Workspace Root">
             <el-option label="Workspace (Root)" :value="null" />
             <el-option
               v-for="f in folders"
@@ -340,9 +384,7 @@
       destroy-on-close>
       <el-form label-position="top" @submit.prevent>
         <el-form-item label="New Name" required>
-          <el-input
-            v-model="renameValue"
-            @keyup.enter="handleSaveRename" />
+          <el-input v-model="renameValue" @keyup.enter="handleSaveRename" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -392,7 +434,15 @@
   import { useRouter } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import * as api from '@/api/notebook'
-  import type { Notebook, NotebookFolder, NotebookLanguage } from '@/api/notebook/types'
+  import type {
+    Notebook,
+    NotebookFolder,
+    NotebookLanguage
+  } from '@/api/notebook/types'
+  import {
+    defaultCloneNotebookName,
+    defaultNotebookName
+  } from '@/utils/notebook-name'
 
   const router = useRouter()
 
@@ -400,8 +450,22 @@
   const LOCAL_STORAGE_NOTEBOOKS = 'kyuubi_mock_notebooks'
 
   const defaultMockFolders: NotebookFolder[] = [
-    { id: 'f-analytics', name: 'Analytics & Reporting', path: '/analytics', owner: 'admin', parentId: null, version: 1 },
-    { id: 'f-etl', name: 'ETL Pipelines', path: '/etl', owner: 'admin', parentId: null, version: 1 }
+    {
+      id: 'f-analytics',
+      name: 'Analytics & Reporting',
+      path: '/analytics',
+      owner: 'admin',
+      parentId: null,
+      version: 1
+    },
+    {
+      id: 'f-etl',
+      name: 'ETL Pipelines',
+      path: '/etl',
+      owner: 'admin',
+      parentId: null,
+      version: 1
+    }
   ]
 
   const defaultMockNotebooks: any[] = [
@@ -414,8 +478,21 @@
       owner: 'admin',
       lastModified: '10 mins ago',
       cells: [
-        { id: 'c1', cellType: 'MARKDOWN', language: 'MARKDOWN', source: '# Daily Revenue Analysis\nQuery revenue grouped by region.', position: 0 },
-        { id: 'c2', cellType: 'CODE', language: 'SQL', source: 'SELECT region, SUM(amount) AS total_sales\nFROM sales_mart\nGROUP BY region\nORDER BY total_sales DESC\nLIMIT 10;', position: 1 }
+        {
+          id: 'c1',
+          cellType: 'MARKDOWN',
+          language: 'MARKDOWN',
+          source: '# Daily Revenue Analysis\nQuery revenue grouped by region.',
+          position: 0
+        },
+        {
+          id: 'c2',
+          cellType: 'CODE',
+          language: 'SQL',
+          source:
+            'SELECT region, SUM(amount) AS total_sales\nFROM sales_mart\nGROUP BY region\nORDER BY total_sales DESC\nLIMIT 10;',
+          position: 1
+        }
       ]
     },
     {
@@ -427,8 +504,21 @@
       owner: 'admin',
       lastModified: '1 hour ago',
       cells: [
-        { id: 'c3', cellType: 'MARKDOWN', language: 'MARKDOWN', source: '## PySpark ETL & ML Feature Prep', position: 0 },
-        { id: 'c4', cellType: 'CODE', language: 'PYTHON', source: '%pip install pandas scikit-learn\n\nfrom pyspark.sql import functions as F\ndf = spark.read.table("customers")\ndf.groupBy("country").count().show(5)', position: 1 }
+        {
+          id: 'c3',
+          cellType: 'MARKDOWN',
+          language: 'MARKDOWN',
+          source: '## PySpark ETL & ML Feature Prep',
+          position: 0
+        },
+        {
+          id: 'c4',
+          cellType: 'CODE',
+          language: 'PYTHON',
+          source:
+            '%pip install pandas scikit-learn\n\nfrom pyspark.sql import functions as F\ndf = spark.read.table("customers")\ndf.groupBy("country").count().show(5)',
+          position: 1
+        }
       ]
     }
   ]
@@ -509,7 +599,9 @@
     const rootFolders: DirectoryTreeNode[] = []
     folders.value.forEach((f) => {
       const node = folderNodes.get(f.id)!
-      const count = allNotebooks.value.filter((nb) => nb.folderId === f.id).length
+      const count = allNotebooks.value.filter(
+        (nb) => nb.folderId === f.id
+      ).length
       node.count = count
 
       if (f.parentId && folderNodes.has(f.parentId)) {
@@ -560,11 +652,16 @@
     const dragged = draggingNode.data as DirectoryTreeNode
     const destination = dropNode.data as DirectoryTreeNode
     // Avoid no-op drops. The service validates authorization and folder cycles authoritatively.
-    return dragged.id !== destination.id &&
+    return (
+      dragged.id !== destination.id &&
       (dragged.isFolder ? dragged.parentId !== destination.id : true)
+    )
   }
 
-  const moveWorkspaceItem = async (item: any, destinationFolderId: string | null) => {
+  const moveWorkspaceItem = async (
+    item: any,
+    destinationFolderId: string | null
+  ) => {
     try {
       if (item.isFolder) {
         // A folder/notebook can have been changed in the Notebook tab after this view loaded.
@@ -577,7 +674,9 @@
         if ((notebook.folderId || null) === destinationFolderId) return
         await api.moveNotebook(item.id, destinationFolderId, notebook.version)
       }
-      ElMessage.success(`Moved ${item.isFolder ? 'folder' : 'notebook'} "${item.name}"`)
+      ElMessage.success(
+        `Moved ${item.isFolder ? 'folder' : 'notebook'} "${item.name}"`
+      )
       await loadData()
     } catch (e: any) {
       console.error('Failed to move workspace item:', e)
@@ -586,7 +685,10 @@
   }
 
   const handleTreeNodeDrop = async (draggingNode: any, dropNode: any) => {
-    await moveWorkspaceItem(draggingNode.data, (dropNode.data as DirectoryTreeNode).id)
+    await moveWorkspaceItem(
+      draggingNode.data,
+      (dropNode.data as DirectoryTreeNode).id
+    )
   }
 
   const handleTableDragStart = (event: DragEvent, row: any) => {
@@ -638,10 +740,14 @@
   const breadcrumbs = computed(() => {
     if (!currentFolderId.value) return []
     const crumbs: { id: string; name: string }[] = []
-    let curr: NotebookFolder | undefined = folders.value.find((f) => f.id === currentFolderId.value)
+    let curr: NotebookFolder | undefined = folders.value.find(
+      (f) => f.id === currentFolderId.value
+    )
     while (curr) {
       crumbs.unshift({ id: curr.id, name: curr.name })
-      curr = curr.parentId ? folders.value.find((f) => f.id === curr!.parentId) : undefined
+      curr = curr.parentId
+        ? folders.value.find((f) => f.id === curr!.parentId)
+        : undefined
     }
     return crumbs
   })
@@ -682,7 +788,9 @@
     const list: any[] = []
     folders.value
       .filter((f) => f.name.toLowerCase().includes(q))
-      .forEach((f) => list.push({ ...f, isFolder: true, lastModified: 'Folder' }))
+      .forEach((f) =>
+        list.push({ ...f, isFolder: true, lastModified: 'Folder' })
+      )
     allNotebooks.value
       .filter((nb) => nb.name.toLowerCase().includes(q))
       .forEach((nb) => list.push({ ...nb, isFolder: false }))
@@ -705,7 +813,10 @@
 
   const persistData = () => {
     localStorage.setItem(LOCAL_STORAGE_FOLDERS, JSON.stringify(folders.value))
-    localStorage.setItem(LOCAL_STORAGE_NOTEBOOKS, JSON.stringify(allNotebooks.value))
+    localStorage.setItem(
+      LOCAL_STORAGE_NOTEBOOKS,
+      JSON.stringify(allNotebooks.value)
+    )
   }
 
   const navigateToFolder = (folderId: string | null) => {
@@ -738,7 +849,7 @@
   }
 
   const openCreateNotebookDialog = () => {
-    newNotebookName.value = ''
+    newNotebookName.value = defaultNotebookName()
     newNotebookLanguage.value = 'SQL'
     destinationFolderId.value = currentFolderId.value
     notebookDialog.value = true
@@ -820,15 +931,16 @@
   }
 
   const handleCloneNotebook = async (item: any) => {
+    const cloneName = defaultCloneNotebookName(item.name)
     try {
-      await api.cloneNotebook(item.id, `${item.name} (Copy)`)
+      await api.cloneNotebook(item.id, cloneName)
       ElMessage.success('Notebook cloned')
       await loadData()
     } catch {
       const cloned = {
         ...JSON.parse(JSON.stringify(item)),
         id: 'nb-' + Date.now(),
-        name: `${item.name} (Copy)`,
+        name: cloneName,
         lastModified: 'Just now'
       }
       allNotebooks.value.unshift(cloned)
@@ -840,7 +952,9 @@
   const handleExportNotebook = async (item: any) => {
     try {
       const doc = await api.exportNotebook(item.id, 'JSON')
-      const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' })
+      const blob = new Blob([JSON.stringify(doc, null, 2)], {
+        type: 'application/json'
+      })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -848,7 +962,9 @@
       a.click()
       URL.revokeObjectURL(url)
     } catch {
-      const blob = new Blob([JSON.stringify(item, null, 2)], { type: 'application/json' })
+      const blob = new Blob([JSON.stringify(item, null, 2)], {
+        type: 'application/json'
+      })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -861,7 +977,9 @@
   const handleDeleteItem = async (row: any) => {
     try {
       await ElMessageBox.confirm(
-        `Are you sure you want to delete ${row.isFolder ? 'folder' : 'notebook'} "${row.name}"?`,
+        `Are you sure you want to delete ${
+          row.isFolder ? 'folder' : 'notebook'
+        } "${row.name}"?`,
         'Delete confirmation',
         { type: 'warning' }
       )

@@ -45,9 +45,9 @@
             @change="handleEngineChange">
             <el-option
               v-for="p in engineProfiles"
-              :key="p.subdomain"
+              :key="p.profileId"
               :label="p.name"
-              :value="p.subdomain"
+              :value="p.profileId"
               class="engine-profile-option">
               <div class="option-content">
                 <div class="option-header">
@@ -143,7 +143,7 @@
   import { ElMessage } from 'element-plus'
   import { useI18n } from 'vue-i18n'
   import {
-    openSession,
+    openEditorSession,
     closeSession,
     runSql,
     getSqlRowset,
@@ -193,6 +193,7 @@
         if (!mapped.some((p) => p.subdomain === 'default')) {
           mapped.unshift({
             name: 'default',
+            profileId: 'default',
             subdomain: 'default',
             driverMemory: '1g',
             driverCores: 1,
@@ -206,6 +207,7 @@
         engineProfiles.value = [
           {
             name: 'default',
+            profileId: 'default',
             subdomain: 'default',
             driverMemory: '1g',
             driverCores: 1,
@@ -219,6 +221,7 @@
       engineProfiles.value = [
         {
           name: 'default',
+          profileId: 'default',
           subdomain: 'default',
           driverMemory: '1g',
           driverCores: 1,
@@ -228,8 +231,8 @@
         }
       ]
     }
-    if (engineProfiles.value.length > 0 && !engineProfiles.value.some((p) => p.subdomain === selectedEngine.value)) {
-      selectedEngine.value = engineProfiles.value[0].subdomain
+    if (engineProfiles.value.length > 0 && !engineProfiles.value.some((p) => p.profileId === selectedEngine.value)) {
+      selectedEngine.value = engineProfiles.value[0].profileId
     }
   }
 
@@ -261,27 +264,9 @@
   }
 
   const selectedProfileSpecs = computed(() => {
-    const found = engineProfiles.value.find((p) => p.subdomain === selectedEngine.value)
+    const found = engineProfiles.value.find((p) => p.profileId === selectedEngine.value)
     return found ? formatSpecs(found) : ''
   })
-
-  /**
-   * The SQL Editor uses the generic Sessions API rather than the Notebook runtime API, so it
-   * must carry the selected profile's Spark config and Kyuubi subdomain itself.
-   */
-  const selectedSessionConfigs = (): Record<string, string> => {
-    const profile = engineProfiles.value.find(
-      (candidate) => candidate.subdomain === selectedEngine.value
-    )
-    const subdomain = selectedEngine.value || 'default'
-    return {
-      ...(profile?.sparkConfig || {}),
-      'kyuubi.engine.type': param.engineType,
-      // Keep both spellings for the mixed Kyuubi versions/components in this deployment.
-      'kyuubi.engine.share.level.subdomain': subdomain,
-      'kyuubi.engine.share.level.sub.domain': subdomain
-    }
-  }
 
   const handleEngineChange = async (_val: string) => {
     param.engineType = 'SPARK_SQL'
@@ -429,8 +414,8 @@
     errorMessages.value = []
 
     if (!sessionIdentifier.value) {
-      const openSessionResponse: IResponse = await openSession({
-        configs: selectedSessionConfigs()
+      const openSessionResponse: IResponse = await openEditorSession({
+        engineProfileId: selectedEngine.value || 'default'
       }).catch(catchSessionError)
       if (!openSessionResponse) return
       sessionIdentifier.value = openSessionResponse.identifier

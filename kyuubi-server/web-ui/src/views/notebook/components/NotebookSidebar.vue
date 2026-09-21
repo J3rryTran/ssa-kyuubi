@@ -148,6 +148,10 @@
   import * as api from '@/api/notebook'
   import { reportError } from '../use-notebook'
   import EngineConfigDialog from './EngineConfigDialog.vue'
+  import {
+    defaultCloneNotebookName,
+    defaultNotebookName
+  } from '@/utils/notebook-name'
   import type {
     EngineProfile,
     Notebook,
@@ -182,7 +186,7 @@
         if (Array.isArray(parsed) && parsed.length > 0) return parsed
       }
     } catch (e) {}
-    return [{ name: 'default', subdomain: 'default' }]
+    return [{ profileId: 'default', name: 'default', subdomain: 'default' }]
   }
 
   const notebookDialog = ref(false)
@@ -272,15 +276,17 @@
       promptFolder()
       return
     }
-    notebookName.value = ''
+    notebookName.value = defaultNotebookName()
     // A server without Python cannot offer it, so never open the dialog pre-set to it.
-    notebookLanguage.value = props.pythonEnabled ? notebookLanguage.value : 'SQL'
+    notebookLanguage.value = props.pythonEnabled
+      ? notebookLanguage.value
+      : 'SQL'
     notebookDialog.value = true
   }
 
   const onEngineProfileSave = (profile: EngineProfile) => {
     const existingIndex = engineProfiles.value.findIndex(
-      (p) => p.subdomain === profile.subdomain
+      (p) => p.profileId === profile.profileId
     )
     if (existingIndex >= 0) {
       engineProfiles.value[existingIndex] = profile
@@ -288,9 +294,12 @@
       engineProfiles.value.push(profile)
     }
     try {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(engineProfiles.value))
+      localStorage.setItem(
+        LOCAL_STORAGE_KEY,
+        JSON.stringify(engineProfiles.value)
+      )
     } catch (e) {}
-    notebookEngineProfile.value = profile.subdomain
+    notebookEngineProfile.value = profile.profileId
   }
 
   const createNotebook = async () => {
@@ -303,12 +312,7 @@
       return
     }
     try {
-      await api.createNotebook(
-        name,
-        null,
-        notebookLanguage.value,
-        null
-      )
+      await api.createNotebook(name, null, notebookLanguage.value, null)
       notebookDialog.value = false
       await reload()
     } catch (error) {
@@ -353,7 +357,7 @@
             'Name of the copy',
             'Clone',
             {
-              inputValue: `${data.label} copy`,
+              inputValue: defaultCloneNotebookName(data.label),
               ...NAME_RULES
             }
           )
