@@ -31,12 +31,14 @@
 ## 2. TASK A — PySparkRuntimeAdapter (thay the hoan toan CPython)
 
 ### Co che nen tang: TAI DUNG Python mode co san cua Kyuubi engine
+
 Kyuubi Spark engine 1.10 da ho tro chay Python: operation voi
 `kyuubi.operation.language=PYTHON` -> engine spawn python worker TREN DRIVER, co san bien `spark`
 (SparkSession). Worker la resource python trong kyuubi-spark-sql-engine (execute_python).
 KHONG phat minh engine type moi — dung SPARK_SQL engine + doi operation language.
 
 ### Yeu cau
+
 1. Them `PySparkRuntimeAdapter` implement `NotebookRuntimeAdapter`, dang ky vao
    `RuntimeAdapterRegistry` cho language PYTHON. Day la runtime DUY NHAT cho Python
    (khong co config chon runtime — cpython bi xoa o Task B).
@@ -59,21 +61,23 @@ KHONG phat minh engine type moi — dung SPARK_SQL engine + doi operation langua
 5. Timeout/cancel: map cancel cua notebook execution -> cancel operation Kyuubi tuong ung.
 
 ### Matplotlib tren engine
+
 6. Python worker cua engine hien KHONG chac bat figure matplotlib. Kiem tra source; neu chua co,
    patch worker (hoac wrap code cell) theo mau:
 
-       import matplotlib; matplotlib.use("Agg")
-       # sau khi exec cell:
-       for num in plt.get_fignums():
-           buf = io.BytesIO(); plt.figure(num).savefig(buf, format="png", bbox_inches="tight")
-           emit image/png base64
-       plt.close("all")
+           import matplotlib; matplotlib.use("Agg")
+           # sau khi exec cell:
+           for num in plt.get_fignums():
+               buf = io.BytesIO(); plt.figure(num).savefig(buf, format="png", bbox_inches="tight")
+               emit image/png base64
+           plt.close("all")
 
    Chi kich hoat khi import duoc matplotlib (ImportError -> bo qua im lang).
 
 ## 3. TASK B — XOA Python khoi Kyuubi server (code + image)
 
 ### 3.1 Xoa code CPython path
+
 1. Xoa `CpythonRuntimeAdapter` (+ KernelProcess, ExecutionOutcome, PythonRuntimeContext neu chi
    phuc vu cpython) va resource kernel `python/kyuubi_notebook_kernel.py`.
 2. Xoa feature python-environments phia server:
@@ -91,14 +95,16 @@ KHONG phat minh engine type moi — dung SPARK_SQL engine + doi operation langua
 4. Route/endpoint da xoa tra 404 mac dinh — dam bao KHONG con cho nao trong UI goi toi.
 
 ### 3.2 Xoa Python khoi image kyuubi-custom (Dockerfile trong repo)
+
 1. Bo cac buoc lien quan Python trong Dockerfile: multi-stage COPY tu image python
    (/usr/local), pip install libs, ENV python. Image chi con JDK + Kyuubi + web-ui + jars.
 2. Ket qua: image nho lai, khong con python3/pip trong container server. Them buoc kiem tra
    trong CI/build script (neu co):
 
-       docker run --rm <image> sh -c "! command -v python3 && ! command -v pip3"
+           docker run --rm <image> sh -c "! command -v python3 && ! command -v pip3"
 
    (exit 0 = da sach python).
+
 3. LUU Y cho nguoi van hanh (ghi vao docs, agent khong sua chart): chart dang co init container
    `prepare-python-packages` + mount emptyDir de `/usr/local` + block `pipConfig` + config
    `kyuubi.notebook.python.venv.system.site.packages=true` — sau khi image moi len, cac phan nay
@@ -109,11 +115,11 @@ KHONG phat minh engine type moi — dung SPARK_SQL engine + doi operation langua
 Notebook/folder/cell/revision van dang SQLite per-pod -> phai chuyen shared. Chi tiet day du theo
 spec `notebook_multi_replica.md` TASK A da giao; diem chinh:
 1. Impl `FileSystemNotebookStore` sau trait `NotebookStore` (Hadoop FileSystem API, fs.defaultFS
-   tu core-site da mount; UGI/kinit co san cua server).
+tu core-site da mount; UGI/kinit co san cua server).
 2. Config: `kyuubi.notebook.store.class` (default JDBCNotebookStore — giu nguyen) va
-   `kyuubi.notebook.store.fs.root` (vd hdfs:///user/kyuubi/notebooks).
+`kyuubi.notebook.store.fs.root` (vd hdfs:///user/kyuubi/notebooks).
 3. Layout ipynb + meta.json + revisions + .trash (tai dung IpynbCodec); ghi atomic (tmp + rename);
-   chong ghi dong thoi bang version compare-and-set -> 409; cache list TTL ~5s.
+chong ghi dong thoi bang version compare-and-set -> 409; cache list TTL ~5s.
 4. Migration mot lan tu SQLite (idempotent, khong xoa SQLite).
 
 ## 5. TASK D — Route notebook-session ve dung pod so huu
@@ -121,13 +127,13 @@ spec `notebook_multi_replica.md` TASK A da giao; diem chinh:
 Kyuubi session (ca SQL lan Python) van do MOT pod server giu handle -> voi 2 replica van phai routing.
 1. Ghi `kyuubiInstance` (host:port REST cua pod mo session) vao ban ghi notebook-session trong store.
 2. Endpoint runtime (`/api/v1/notebook-sessions/*`, `/api/v1/executions/*`,
-   `/api/v1/notebooks/{id}/executions`): khong phai owner -> proxy sang owner bang Jetty client
-   voi config `kyuubi.frontend.rest.proxy.jetty.client.*` co san. Proxy phai:
-   - Giu method/body/header/status; stream duoc endpoint /logs /outputs (khong buffer het).
-   - Giu danh tinh nguoi dung (forward Authorization/cookie) — khong thanh duong vong xac thuc.
-   - Header chong lap `X-Kyuubi-Proxied: true`; nhan header nay ma van khong phai owner -> 502.
+`/api/v1/notebooks/{id}/executions`): khong phai owner -> proxy sang owner bang Jetty client
+voi config `kyuubi.frontend.rest.proxy.jetty.client.*` co san. Proxy phai:
+- Giu method/body/header/status; stream duoc endpoint /logs /outputs (khong buffer het).
+- Giu danh tinh nguoi dung (forward Authorization/cookie) — khong thanh duong vong xac thuc.
+- Header chong lap `X-Kyuubi-Proxied: true`; nhan header nay ma van khong phai owner -> 502.
 3. Owner khong con trong ZooKeeper (pod chet) -> tra 409 + message "runtime da mat, hay Restart
-   session"; UI hien nut Restart (mo session moi tren pod dang phuc vu).
+session"; UI hien nut Restart (mo session moi tren pod dang phuc vu).
 
 ## 6. Thay doi NGOAI repo (giao cho nguoi van hanh — agent chi xuat file huong dan)
 
@@ -136,17 +142,19 @@ Spark ap dung — Dockerfile image Spark KHONG nam trong repo nay):
 
 1. Python: giu python3.8 co san thi PIN version libs tuong thich 3.8:
 
-       pip3 install --no-cache-dir "pandas==2.0.3" "numpy==1.24.4" \
-           "pyarrow==16.1.0" "matplotlib==3.7.5"
+           pip3 install --no-cache-dir "pandas==2.0.3" "numpy==1.24.4" \
+               "pyarrow==16.1.0" "matplotlib==3.7.5"
 
    (Khuyen nghi hon: nang python3.10+ trong image roi dung ban libs moi — ghi ca 2 phuong an.)
+
 2. ENV bat buoc trong image (driver va executor DUNG CHUNG image nen tu dong nhat):
 
-       ENV PYSPARK_PYTHON=/usr/bin/python3
-       ENV PYSPARK_DRIVER_PYTHON=/usr/bin/python3
-       ENV MPLBACKEND=Agg
+           ENV PYSPARK_PYTHON=/usr/bin/python3
+           ENV PYSPARK_DRIVER_PYTHON=/usr/bin/python3
+           ENV MPLBACKEND=Agg
 
 3. Ghi chu cho chart (nguoi khac ap dung, agent KHONG sua chart):
+
    - spark.sql.execution.arrow.pyspark.enabled=true
    - go init container prepare-python-packages + mount /usr/local + pipConfig +
      kyuubi.notebook.python.venv.system.site.packages (het tac dung khi server khong con python).
@@ -166,9 +174,9 @@ Go Python khoi server:
 7. Image moi: `docker run --rm <image> sh -c "command -v python3"` -> khong tim thay.
 8. Jar moi khong con CpythonRuntimeAdapter/PythonEnvironmentsResource:
 
-       unzip -p kyuubi-server_*.jar 'org/apache/kyuubi/server/notebook/**' | strings \
-         | grep -iE 'CpythonRuntimeAdapter|PythonEnvironmentsResource' -> RONG
-       unzip -l kyuubi-server_*.jar | grep kyuubi_notebook_kernel.py -> RONG
+        unzip -p kyuubi-server_*.jar 'org/apache/kyuubi/server/notebook/**' | strings \
+          | grep -iE 'CpythonRuntimeAdapter|PythonEnvironmentsResource' -> RONG
+        unzip -l kyuubi-server_*.jar | grep kyuubi_notebook_kernel.py -> RONG
 
 9. UI khong con nut "Python env"; khong co request nao toi /python-environments (check Network tab).
 
@@ -179,7 +187,7 @@ Store + routing:
 13. `kyuubi.notebook.store.class` default (SQLite) -> hanh vi cu khong doi.
 
 Kiem tra jar sau build:
-    unzip -p kyuubi-server_*.jar 'org/apache/kyuubi/server/notebook/**' | strings | grep -iE 'PySparkRuntimeAdapter|FileSystemNotebookStore'
+unzip -p kyuubi-server_*.jar 'org/apache/kyuubi/server/notebook/**' | strings | grep -iE 'PySparkRuntimeAdapter|FileSystemNotebookStore'
 
 ## 8. Giao hang
 

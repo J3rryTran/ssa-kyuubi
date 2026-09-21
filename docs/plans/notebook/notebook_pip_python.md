@@ -183,12 +183,15 @@ canary cell).
 1. `docker run --rm <tag> python3.11 -c "import sys; print(sys.version)"` → 3.11.x
 2. `docker run --rm <tag> python3.11 -c "import pandas,numpy,pyarrow; print(pandas.__version__, numpy.__version__, pyarrow.__version__)"` → the pinned versions.
 3. Jar check inside the image:
+
    ```bash
    docker run --rm <tag> sh -c \
      "unzip -p /opt/spark/jars/kyuubi-spark-sql-engine_*.jar python/execute_python.py \
       | grep -c -e magic_pip -e _apply_resource_limits -e reject_shell_commands"
    ```
+
    → 6, and exactly one `kyuubi-spark-sql-engine_*.jar` under `/opt/spark/jars/`.
+
 4. Worker syntax: `docker run --rm <tag> python3.11 -m py_compile` on the extracted
    `execute_python.py` → exit 0. (Behavioural checks — %pip install/session scope/timeout/
    `!pip` hint — are the deploy side's live-cluster checklist; there is no python unit-test
