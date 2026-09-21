@@ -66,6 +66,15 @@ function build {
   local KYUUBI_ROOT="$KYUUBI_HOME"
   local BUILD_ARGS=(${BUILD_PARAMS})
 
+  # Dockerfile copies a local Spark distribution when the image is built with
+  # the default spark_builtin stage. Stage it in the Docker build context.
+  if [[ ! -d "$SPARK_HOME" ]]; then
+    error "Cannot find SPARK_HOME $SPARK_HOME; provide it with -s."
+  fi
+  rm -rf "$KYUUBI_ROOT/spark-binary"
+  mkdir -p "$KYUUBI_ROOT/spark-binary"
+  cp -r "$SPARK_HOME"/* "$KYUUBI_ROOT/spark-binary/"
+
   # Verify that the Docker image content directory is present
   if [ ! -d "$KYUUBI_ROOT/docker" ]; then
     error "Can't find Kyuubi docker context $KYUUBI_ROOT/docker, please check whether the binary package is complete."
@@ -110,6 +119,7 @@ Options:
                         resulting container
   -b                    Build arg to build or push the image. For multiple build args, this option needs to
                         be used separately for each build arg.
+  -s                    Put the specified Spark distribution into the Kyuubi image at /opt/spark.
 
 Examples:
 
@@ -133,7 +143,7 @@ BASEDOCKERFILE=
 NOCACHEARG=
 BUILD_PARAMS=
 KYUUBI_UID=
-while getopts f:r:t:i:nb:u: option
+while getopts f:r:t:i:nb:u:s: option
 do
  case "${option}"
  in
@@ -144,6 +154,7 @@ do
  n) NOCACHEARG="--no-cache";;
  b) BUILD_PARAMS=${BUILD_PARAMS}" --build-arg "${OPTARG};;
  u) KYUUBI_UID=${OPTARG};;
+ s) SPARK_HOME=${OPTARG};;
  esac
 done
 
