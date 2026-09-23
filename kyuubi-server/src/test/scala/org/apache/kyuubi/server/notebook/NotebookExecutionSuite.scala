@@ -32,7 +32,7 @@ import org.apache.kyuubi.server.notebook.store.ExecutionFilter
  *
  * A real Kyuubi engine is deliberately not used: these assertions are about the service layer's
  * state machine, idempotency and authorization, which must hold whatever the backend does. The
- * adapter contract itself is what [[KyuubiSqlRuntimeAdapter]] implements against Spark.
+ * adapter contract itself is what the Spark notebook runtime implements against Spark.
  */
 class NotebookExecutionSuite extends NotebookTestBase {
 
@@ -61,6 +61,7 @@ class NotebookExecutionSuite extends NotebookTestBase {
       sessionService,
       runtimeService,
       registry)
+    sessionService.onBeforeRuntimeInvalidation(executionService.invalidateSession)
   }
 
   private def openSession(principal: NotebookPrincipal, name: String): NotebookSession = {
@@ -92,11 +93,41 @@ class NotebookExecutionSuite extends NotebookTestBase {
     assert(runtimes.head.state === RuntimeState.IDLE)
   }
 
-  test("a second submission reuses the runtime of its session") {
+  test("a later submission reuses the one runtime of its session") {
     val session = openSession(alice, "exec-reuse")
-    submit(alice, session, "select 1")
+    val first = submit(alice, session, "select 1")
+    adapter.finish(first.id, ExecutionState.SUCCEEDED)
+    executionService.get(alice, first.id)
     submit(alice, session, "select 2")
     assert(runtimeService.list(session).size === 1)
+  }
+
+  test("a second submission is queued until the first shared-session operation finishes") {
+    val session = openSession(alice, "exec-queue")
+    val before = adapter.executeCount.get()
+    val first = submit(alice, session, "select 1")
+    val second = submit(alice, session, "select 2")
+
+    assert(first.state === ExecutionState.STARTING)
+    assert(second.state === ExecutionState.QUEUED)
+    assert(adapter.executeCount.get() - before === 1)
+
+    adapter.finish(first.id, ExecutionState.SUCCEEDED)
+    assert(executionService.get(alice, first.id).state === ExecutionState.SUCCEEDED)
+    assert(executionService.get(alice, second.id).state === ExecutionState.STARTING)
+    assert(adapter.executeCount.get() - before === 2)
+  }
+
+  test("restart cancels queued work and loses the operation that owned the old runtime") {
+    val session = openSession(alice, "exec-queue-restart")
+    val running = submit(alice, session, "select 1")
+    val queued = submit(alice, session, "select 2")
+
+    sessionService.restart(alice, session.id)
+
+    assert(manager.store.getExecution(running.id).get.state === ExecutionState.LOST)
+    assert(manager.store.getExecution(queued.id).get.state === ExecutionState.CANCELED)
+    assert(adapter.interrupted.contains(running.id))
   }
 
   test("the source is snapshotted, so editing the cell afterwards changes nothing") {
@@ -293,7 +324,7 @@ class NotebookExecutionSuite extends NotebookTestBase {
     val execution = submit(alice, session, "select 1")
     val runtime = runtimeService.list(session).head
 
-    val restarted = runtimeService.restart(runtime)
+    val restarted = runtimeService.restart(alice, session, runtime)
     assert(restarted.generation === runtime.generation + 1)
 
     // The outcome of work from the previous generation can no longer be established.
@@ -338,6 +369,22 @@ class NotebookExecutionSuite extends NotebookTestBase {
     assert(manager.store.getSession(session.id).get.state === NotebookSessionState.STOPPED)
   }
 
+  test("an idle reaper never stops a runtime owned by another frontend") {
+    val session = openSession(alice, "exec-idle-peer")
+    submit(alice, session, "select 1")
+    val peer = new NotebookSessionService(
+      manager.store,
+      documents,
+      permissions,
+      runtimeService,
+      () => "peer-instance")
+
+    peer.reapIdle(1L)
+
+    assert(runtimeService.listFor(session).size === 1)
+    assert(manager.store.getSession(session.id).get.state === NotebookSessionState.IDLE)
+  }
+
   test("a runtime in use is not reclaimed") {
     val session = openSession(alice, "exec-idle-busy")
     submit(alice, session, "select 1")
@@ -348,7 +395,9 @@ class NotebookExecutionSuite extends NotebookTestBase {
 
   test("executions are listed for their notebook") {
     val session = openSession(alice, "exec-listing")
-    submit(alice, session, "select 1")
+    val first = submit(alice, session, "select 1")
+    adapter.finish(first.id, ExecutionState.SUCCEEDED)
+    executionService.get(alice, first.id)
     submit(alice, session, "select 2")
     val listed = executionService.list(
       alice,
@@ -381,7 +430,8 @@ private class ScriptedAdapter extends TabularNotebookRuntimeAdapter {
     version = "test",
     enabled = true,
     configurableKeys = Seq.empty,
-    limits = Map.empty)
+    limits = Map.empty,
+    supportedLanguages = Seq(CellLanguage.SQL.toString, CellLanguage.PYTHON.toString))
 
   override def startRuntime(
       runtime: NotebookRuntime,
@@ -423,7 +473,9 @@ private class ScriptedAdapter extends TabularNotebookRuntimeAdapter {
 
   override def closeExecution(execution: CellExecution): Unit = closed = closed :+ execution.id
 
-  override def restartRuntime(runtime: NotebookRuntime): AdapterRuntime =
+  override def restartRuntime(
+      runtime: NotebookRuntime,
+      configuration: Map[String, String]): AdapterRuntime =
     AdapterRuntime(s"handle-${runtime.id}-restarted", Some("test-instance"))
 
   override def stopRuntime(runtime: NotebookRuntime): Unit = ()

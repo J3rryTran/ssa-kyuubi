@@ -107,19 +107,16 @@ object NotebookRoutePaths {
 
   private val Session = """/v1/notebook-sessions/([^/:]+).*""".r
   private val Execution = """/v1/executions/([^/:]+).*""".r
-  private val NotebookExecutions = """/v1/notebooks/([^/:]+)/executions.*""".r
 
   /**
    * The session id a path concerns, and how to find it.
    *
-   * An execution and a notebook do not name their session in the path, so the caller resolves
-   * those through the store - which is safe because an execution row and a notebook row are
-   * shared state, unlike the live session they point at.
+   * An execution does not name its session in the path, so the caller resolves it through the
+   * store. Execution rows are shared durable state, unlike the live session they point at.
    */
   def sessionKeyOf(path: String): Option[RouteKey] = path match {
     case Session(id) => Some(RouteKey.Session(id))
     case Execution(id) => Some(RouteKey.Execution(id))
-    case NotebookExecutions(id) => Some(RouteKey.Notebook(id))
     case _ => None
   }
 }
@@ -129,5 +126,4 @@ sealed trait RouteKey
 object RouteKey {
   case class Session(id: String) extends RouteKey
   case class Execution(id: String) extends RouteKey
-  case class Notebook(id: String) extends RouteKey
 }

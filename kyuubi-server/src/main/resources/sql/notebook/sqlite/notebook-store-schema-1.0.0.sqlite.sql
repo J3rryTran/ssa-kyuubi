@@ -126,3 +126,67 @@ CREATE TABLE IF NOT EXISTS notebook_engine_profile(
 );
 
 CREATE INDEX IF NOT EXISTS notebook_engine_profile_owner_index ON notebook_engine_profile(owner);
+
+-- The original table above remains as a read-only legacy import source. New rows use an
+-- immutable ID, owner-scoped display name and a revision-specific Kyuubi subdomain.
+CREATE TABLE IF NOT EXISTS notebook_engine_profile_v2(
+    profile_id TEXT PRIMARY KEY NOT NULL,
+    owner TEXT NOT NULL,
+    name TEXT NOT NULL,
+    subdomain TEXT NOT NULL UNIQUE,
+    spark_config TEXT NOT NULL,
+    notebook_runtime_idle_timeout TEXT,
+    engine_idle_timeout TEXT,
+    python_environment_revision_id TEXT,
+    revision INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(owner, name)
+);
+
+CREATE TABLE IF NOT EXISTS notebook_engine_profile_revision(
+    profile_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    subdomain TEXT NOT NULL UNIQUE,
+    spark_config TEXT NOT NULL,
+    notebook_runtime_idle_timeout TEXT,
+    engine_idle_timeout TEXT,
+    python_environment_revision_id TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(profile_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS notebook_engine_profile_v2_owner_index
+ON notebook_engine_profile_v2(owner);
+
+CREATE TABLE IF NOT EXISTS notebook_python_environment_revision(
+    id TEXT PRIMARY KEY NOT NULL,
+    profile_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    pvc_name TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    state TEXT NOT NULL,
+    requirements_lock TEXT,
+    metadata TEXT,
+    content_checksum TEXT,
+    base_image TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    ready_at INTEGER,
+    retired_at INTEGER,
+    UNIQUE(profile_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS notebook_python_environment_change_request(
+    id TEXT PRIMARY KEY NOT NULL,
+    profile_id TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    requested_packages TEXT NOT NULL,
+    expected_profile_revision INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    hot_install_state TEXT NOT NULL,
+    resulting_environment_revision_id TEXT,
+    error_summary TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);

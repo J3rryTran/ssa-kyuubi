@@ -179,6 +179,9 @@
         ? 'Execution completed.'
         : 'The statement produced no rows.'
     }
+    if (props.execution.state === 'CANCELED') {
+      return 'Execution was interrupted.'
+    }
     if (props.execution.errorMessage) return 'The statement failed.'
     return 'Waiting for results…'
   })

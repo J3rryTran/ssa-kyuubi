@@ -23,9 +23,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * OAuth2 Device Authorization Grant (RFC 8628) for headless / no-browser clients.
- */
+/** OAuth2 Device Authorization Grant (RFC 8628) for headless / no-browser clients. */
 public class DeviceFlow {
 
   private static final Logger LOG = LoggerFactory.getLogger(DeviceFlow.class);

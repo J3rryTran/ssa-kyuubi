@@ -59,6 +59,12 @@ object AuthenticationProviderFactory {
         className.nonEmpty,
         "kyuubi.authentication.custom.class must be set when auth method was CUSTOM.")
       ClassUtils.createInstance(className.get, classOf[PasswdAuthenticationProvider], conf)
+    case AuthMethods.OIDC =>
+      // OIDC authenticates over HTTP Bearer; the passwd path defaults to deny-all
+      // so THRIFT_BINARY / basic clients are pushed onto the bearer flow.
+      val className =
+        conf.get(KyuubiConf.AUTHENTICATION_CUSTOM_CLASS).getOrElse(OIDC_PASSWD_PROVIDER_CLASS)
+      ClassUtils.createInstance(className, classOf[PasswdAuthenticationProvider], conf)
     case _ => throw new AuthenticationException("Not a valid authentication method")
   }
 
@@ -82,6 +88,10 @@ object AuthenticationProviderFactory {
         className.nonEmpty,
         "kyuubi.authentication.custom.basic.class must be set for http basic authentication.")
       ClassUtils.createInstance(className.get, classOf[PasswdAuthenticationProvider], conf)
+    case AuthMethods.OIDC =>
+      val className = conf.get(KyuubiConf.AUTHENTICATION_CUSTOM_BASIC_CLASS)
+        .getOrElse(OIDC_PASSWD_PROVIDER_CLASS)
+      ClassUtils.createInstance(className, classOf[PasswdAuthenticationProvider], conf)
     case _ => throw new AuthenticationException("Not a valid authentication method")
   }
 

@@ -277,16 +277,6 @@ class NotebookDocumentService(
     }
     val language = Option(request.getLanguage).map(parseNotebookLanguage)
       .getOrElse(notebook.language)
-    val languageChanged = language != notebook.language
-    // Changing the language would leave existing code being handed to the wrong engine, so it is
-    // only allowed while no CODE cell holds anything. An untouched notebook can still switch.
-    val existingCells = if (languageChanged) store.listCells(notebookId) else Seq.empty
-    if (languageChanged && !NotebookLanguages.canChangeLanguage(existingCells)) {
-      throw NotebookException.invalid(
-        "the notebook language cannot be changed once a code cell has content;" +
-          " clear the code cells first or create a new notebook",
-        Map("currentLanguage" -> notebook.language.toString, "requested" -> language.toString))
-    }
     val now = System.currentTimeMillis()
     val updated = notebook.copy(
       name = name,
@@ -299,24 +289,9 @@ class NotebookDocumentService(
       updatedAt = now,
       updatedBy = principal.user,
       version = expectedVersion + 1)
-    val applied =
-      if (languageChanged) {
-        // The empty CODE cells that the guard allowed through still carry the old language;
-        // rewrite them in the same transaction so nothing is left claiming otherwise.
-        val relanguaged = existingCells.map { cell =>
-          if (cell.cellType == CellType.CODE) {
-            cell.copy(
-              language = NotebookLanguage.toCellLanguage(language),
-              updatedAt = now,
-              version = cell.version + 1)
-          } else {
-            cell
-          }
-        }
-        store.replaceCells(notebookId, relanguaged, updated, expectedVersion)
-      } else {
-        store.updateNotebook(updated, expectedVersion)
-      }
+    // Notebook.language is a legacy/default UI preference. Cell language is immutable execution
+    // metadata until that cell is explicitly edited, so changing this field never rewrites cells.
+    val applied = store.updateNotebook(updated, expectedVersion)
     if (!applied) {
       throw NotebookException.versionConflict(s"notebook $notebookId was modified concurrently")
     }
@@ -451,12 +426,18 @@ class NotebookDocumentService(
     val expectedVersion = expectedVersionOf(request.getVersion, cell.version)
     val cellType = Option(request.getCellType)
       .map(value => parseCellType(value)).getOrElse(cell.cellType)
-    // Same rule as when a cell is created: the notebook decides, the request cannot.
     val language =
       if (cellType == CellType.MARKDOWN) {
         CellLanguage.MARKDOWN
       } else {
-        NotebookLanguage.toCellLanguage(notebook.language)
+        Option(request.getLanguage).map(parseCellLanguage).getOrElse(cell.language) match {
+          case CellLanguage.SQL | CellLanguage.PYTHON =>
+            Option(request.getLanguage).map(parseCellLanguage).getOrElse(cell.language)
+          case other =>
+            throw new NotebookException(
+              NotebookErrorCode.UNSUPPORTED_LANGUAGE,
+              s"a CODE cell cannot use $other")
+        }
       }
     val source = Option(request.getSource).getOrElse(cell.source)
     validateSource(source)
@@ -564,14 +545,12 @@ class NotebookDocumentService(
       now: Long,
       notebookLanguage: NotebookLanguage): NotebookCell = {
     val cellType = parseCellType(Option(request.getCellType).getOrElse(CellType.CODE.toString))
-    // The cell's own language is not a choice: a CODE cell always speaks the notebook's language
-    // and a MARKDOWN cell is always MARKDOWN. Any value the client sent is ignored rather than
-    // rejected, so older clients that still post one keep working.
     val language =
       if (cellType == CellType.MARKDOWN) {
         CellLanguage.MARKDOWN
       } else {
-        NotebookLanguage.toCellLanguage(notebookLanguage)
+        Option(request.getLanguage).map(parseCellLanguage)
+          .getOrElse(NotebookLanguage.toCellLanguage(notebookLanguage))
       }
     val source = Option(request.getSource).getOrElse("")
     validateSource(source)
@@ -613,6 +592,13 @@ class NotebookDocumentService(
   private def parseCellType(raw: String): CellType =
     CellType.values.find(_.toString.equalsIgnoreCase(raw.trim)).getOrElse {
       throw NotebookException.invalid(s"cellType must be one of ${CellType.values.mkString(", ")}")
+    }
+
+  private def parseCellLanguage(raw: String): CellLanguage =
+    CellLanguage.values.find(_.toString.equalsIgnoreCase(raw.trim)).getOrElse {
+      throw new NotebookException(
+        NotebookErrorCode.UNSUPPORTED_LANGUAGE,
+        s"language must be one of ${CellLanguage.executable.mkString(", ")}")
     }
 
   private def parseNotebookLanguage(raw: String): NotebookLanguage =

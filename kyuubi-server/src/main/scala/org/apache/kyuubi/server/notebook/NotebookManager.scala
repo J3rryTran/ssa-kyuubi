@@ -25,10 +25,14 @@ import org.apache.kyuubi.KyuubiException
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.ha.HighAvailabilityConf.HA_ADDRESSES
 import org.apache.kyuubi.ha.client.{DiscoveryClient, DiscoveryClientProvider}
+import org.apache.kyuubi.server.dbt.{DbtStore, DbtWorkspaceService, DisabledDbtRunner, JDBCDbtStore, KubernetesJobDbtRunner}
+import org.apache.kyuubi.server.engineprofile.{EngineProfileRuntimeService, EngineProfileService, PythonEnvironmentService}
+import org.apache.kyuubi.server.metadata.jdbc.DatabaseType.SQLITE
+import org.apache.kyuubi.server.metadata.jdbc.JDBCMetadataStoreConf.METADATA_STORE_JDBC_DATABASE_TYPE
 import org.apache.kyuubi.server.notebook.NotebookConf._
-import org.apache.kyuubi.server.notebook.api.{ExecutionState, NotebookErrorCode, NotebookException, NotebookSession, NotebookSessionState, NotebookStatusView}
+import org.apache.kyuubi.server.notebook.api.{CellLanguage, ExecutionState, NotebookErrorCode, NotebookException, NotebookSession, NotebookStatusView}
 import org.apache.kyuubi.server.notebook.routing.{NotebookSessionRegistry, RouteKey}
-import org.apache.kyuubi.server.notebook.runtime.{KyuubiSqlRuntimeAdapter, PySparkRuntimeAdapter, RuntimeAdapterRegistry}
+import org.apache.kyuubi.server.notebook.runtime.{RuntimeAdapterRegistry, SparkNotebookRuntimeAdapter}
 import org.apache.kyuubi.server.notebook.service._
 import org.apache.kyuubi.server.notebook.store.{ExecutionFilter, NotebookStore}
 import org.apache.kyuubi.service.{AbstractService, BackendService}
@@ -50,7 +54,11 @@ class NotebookManager(
   @volatile private var _documents: NotebookDocumentService = _
   @volatile private var _content: NotebookContentService = _
   @volatile private var _schedules: NotebookScheduleService = _
-  @volatile private var _engineProfiles: NotebookEngineProfileService = _
+  @volatile private var _engineProfiles: EngineProfileService = _
+  @volatile private var _engineProfileRuntimes: EngineProfileRuntimeService = _
+  @volatile private var _pythonEnvironments: PythonEnvironmentService = _
+  @volatile private var _dbtStore: DbtStore = _
+  @volatile private var _dbt: DbtWorkspaceService = _
   @volatile private var _registry: RuntimeAdapterRegistry = _
   @volatile private var _runtimes: NotebookRuntimeService = _
   @volatile private var _sessions: NotebookSessionService = _
@@ -76,22 +84,22 @@ class NotebookManager(
   /**
    * The session a routed path concerns, when the path itself does not name one.
    *
-   * An execution names its session; a notebook is resolved through whichever of its sessions is
-   * still live. A miss is not an error - it simply means this instance cannot say, and the
-   * registry answers instead.
+   * An execution names its session. Notebook-level history endpoints deliberately do not route:
+   * they only read durable metadata and must remain usable after the corresponding session ends.
    */
   def sessionIdOf(key: RouteKey): Option[String] = key match {
     case RouteKey.Session(id) => Some(id)
     case RouteKey.Execution(id) => _store.getExecution(id).map(_.notebookSessionId)
-    case RouteKey.Notebook(id) =>
-      _store.listSessions(id).find(_.state != NotebookSessionState.STOPPED.toString).map(_.id)
   }
   def permissions: NotebookPermissionService = _permissions
   def revisions: NotebookRevisionService = _revisions
   def documents: NotebookDocumentService = _documents
   def content: NotebookContentService = _content
   def schedules: NotebookScheduleService = _schedules
-  def engineProfiles: NotebookEngineProfileService = _engineProfiles
+  def engineProfiles: EngineProfileService = _engineProfiles
+  def engineProfileRuntimes: EngineProfileRuntimeService = _engineProfileRuntimes
+  def pythonEnvironments: PythonEnvironmentService = _pythonEnvironments
+  def dbt: DbtWorkspaceService = _dbt
   def registry: RuntimeAdapterRegistry = _registry
   def runtimes: NotebookRuntimeService = _runtimes
   def sessions: NotebookSessionService = _sessions
@@ -107,14 +115,38 @@ class NotebookManager(
     _documents = new NotebookDocumentService(conf, _store, _permissions, _revisions)
     _content = new NotebookContentService(conf, _store, _documents, _revisions, _permissions)
     _schedules = new NotebookScheduleService(_store, _permissions)
-    _engineProfiles = new NotebookEngineProfileService(_store)
-    // Python runs in the Spark engine, never on this server: one notebook session is one engine,
-    // and the engine's python worker is what makes a name bound in one cell outlive it.
+    _engineProfiles = new EngineProfileService(_store)
+    _pythonEnvironments = new PythonEnvironmentService(conf, _store, _engineProfiles)
+    _engineProfileRuntimes = new EngineProfileRuntimeService(
+      conf,
+      backendService,
+      _engineProfiles,
+      Some(_pythonEnvironments))
+    _dbtStore = new JDBCDbtStore(conf)
+    if (conf.get(NOTEBOOK_SCHEMA_INIT)) {
+      _dbtStore.initSchema()
+    }
+    val dbtRunner = if (conf.get(DBT_RUNNER_ENABLED)) {
+      if (conf.get(METADATA_STORE_JDBC_DATABASE_TYPE) == SQLITE.toString) {
+        throw new KyuubiException(
+          "DBT Kubernetes runner requires a shared MySQL or PostgreSQL metadata store, not SQLite")
+      }
+      KubernetesJobDbtRunner.create(conf, Some(_pythonEnvironments))
+    } else {
+      DisabledDbtRunner
+    }
+    _dbt = new DbtWorkspaceService(conf, _dbtStore, _engineProfiles, dbtRunner)
+    // One notebook session owns one Kyuubi/Spark session. Individual cells select SQL or Python
+    // at operation submission time, preserving both SQL session state and Python globals.
     _registry = new RuntimeAdapterRegistry(Seq(
-      new KyuubiSqlRuntimeAdapter(backendService, instanceUri, conf),
-      new PySparkRuntimeAdapter(backendService, instanceUri, conf)))
+      new SparkNotebookRuntimeAdapter(backendService, instanceUri, conf)))
     _sessionRegistry = new NotebookSessionRegistry(conf, () => discoveryClient)
-    _runtimes = new NotebookRuntimeService(_store, _registry, instanceUri, Some(_engineProfiles))
+    _runtimes = new NotebookRuntimeService(
+      _store,
+      _registry,
+      instanceUri,
+      Some(_engineProfiles),
+      Some(_pythonEnvironments))
     _sessions =
       new NotebookSessionService(
         _store,
@@ -130,7 +162,9 @@ class NotebookManager(
       _permissions,
       _sessions,
       _runtimes,
-      _registry)
+      _registry,
+      Some(_pythonEnvironments))
+    _sessions.onBeforeRuntimeInvalidation(_executions.invalidateSession)
     super.initialize(conf)
   }
 
@@ -158,6 +192,12 @@ class NotebookManager(
   private lazy val idleReaper =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("notebook-idle-reaper")
 
+  private lazy val dbtReconciler =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("dbt-run-reconciler")
+
+  private lazy val pythonEnvironmentReconciler =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("python-environment-reconciler")
+
   override def start(): Unit = {
     // Nothing that was running can have survived; saying so up front beats letting the first
     // poll of a stale execution report a confusing failure.
@@ -173,14 +213,42 @@ class NotebookManager(
         interval,
         TimeUnit.MILLISECONDS)
     }
+    if (conf.get(DBT_RUNNER_ENABLED)) {
+      val interval = conf.get(DBT_RUNNER_RECONCILE_INTERVAL)
+      scheduleTolerableRunnableWithFixedDelay(
+        dbtReconciler,
+        () => _dbt.reconcileActiveRuns(),
+        interval,
+        interval,
+        TimeUnit.MILLISECONDS)
+    }
+    if (conf.get(PYTHON_ENVIRONMENT_ENABLED)) {
+      val interval = conf.get(PYTHON_ENVIRONMENT_RECONCILE_INTERVAL)
+      _pythonEnvironments.reconcile()
+      scheduleTolerableRunnableWithFixedDelay(
+        pythonEnvironmentReconciler,
+        () => _pythonEnvironments.reconcile(),
+        interval,
+        interval,
+        TimeUnit.MILLISECONDS)
+    }
     super.start()
   }
 
   override def stop(): Unit = {
     ThreadUtils.shutdown(idleReaper)
+    ThreadUtils.shutdown(dbtReconciler)
+    ThreadUtils.shutdown(pythonEnvironmentReconciler)
+    if (_engineProfileRuntimes != null) {
+      _engineProfileRuntimes.close()
+    }
     if (_store != null) {
       try _store.close()
       catch { case NonFatal(e) => warn("Failed to close the notebook store", e) }
+    }
+    if (_dbtStore != null) {
+      try _dbtStore.close()
+      catch { case NonFatal(e) => warn("Failed to close the DBT store", e) }
     }
     super.stop()
   }
@@ -211,9 +279,8 @@ class NotebookManager(
       // no environment manager behind it any more: Python is available when the engine's
       // runtime is registered, and its packages come from the Spark image.
       pythonRuntimeManager = {
-        val pythonReady = _registry.specs.exists { spec =>
-          spec.id == PySparkRuntimeAdapter.SPEC_ID && spec.enabled
-        }
+        val pythonReady = _registry.specs.exists(spec =>
+          spec.enabled && spec.supportedLanguages.contains(CellLanguage.PYTHON.toString))
         if (pythonReady) "HEALTHY" else "UNAVAILABLE"
       },
       activeSessions = liveSessions.size,

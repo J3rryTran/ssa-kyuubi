@@ -30,12 +30,12 @@
       :rules="rules"
       label-width="150px"
       label-position="right">
-      <el-form-item label="Engine Name" prop="subdomain">
+      <el-form-item label="Engine Name" prop="name">
         <el-input
-          v-model="form.subdomain"
+          v-model="form.name"
           :disabled="isEdit"
           placeholder="e.g. heavy-engine, ml-cluster" />
-        <span class="help-text">Unique identifier used by Spark engine subdomain and Zookeeper discovery</span>
+        <span class="help-text">Unique within your account; runtime subdomains are server-generated.</span>
       </el-form-item>
 
       <el-divider content-position="left">Standard Resource Allocations</el-divider>
@@ -83,6 +83,34 @@
           :max="64"
           :step="1"
           style="width: 100%" />
+      </el-form-item>
+
+      <el-divider content-position="left">Idle timeout policy</el-divider>
+
+      <el-form-item label="Notebook runtime idle">
+        <el-select v-model="form.notebookRuntimeIdleTimeout" style="width: 100%">
+          <el-option label="Inherit platform default" value="inherit" />
+          <el-option label="5 minutes" value="PT5M" />
+          <el-option label="15 minutes" value="PT15M" />
+          <el-option label="30 minutes" value="PT30M" />
+          <el-option label="1 hour" value="PT1H" />
+          <el-option label="6 hours" value="PT6H" />
+          <el-option label="24 hours" value="PT24H" />
+        </el-select>
+        <span class="help-text">Closes an idle Notebook runtime and its Kyuubi session.</span>
+      </el-form-item>
+
+      <el-form-item label="Spark engine idle">
+        <el-select v-model="form.engineIdleTimeout" style="width: 100%">
+          <el-option label="Inherit platform default" value="inherit" />
+          <el-option label="5 minutes" value="PT5M" />
+          <el-option label="15 minutes" value="PT15M" />
+          <el-option label="30 minutes" value="PT30M" />
+          <el-option label="1 hour" value="PT1H" />
+          <el-option label="6 hours" value="PT6H" />
+          <el-option label="24 hours" value="PT24H" />
+        </el-select>
+        <span class="help-text">Applies to Notebook, SQL Editor and DBT sessions using this profile.</span>
       </el-form-item>
 
       <el-divider content-position="left">Advanced Spark Configurations</el-divider>
@@ -141,7 +169,13 @@
 
   const emit = defineEmits<{
     (e: 'update:modelValue', value: boolean): void
-    (e: 'save', profile: { subdomain: string; sparkConfig: Record<string, string> }): void
+    (e: 'save', profile: {
+      profileId?: string
+      name: string
+      sparkConfig: Record<string, string>
+      notebookRuntimeIdleTimeout: string
+      engineIdleTimeout: string
+    }): void
   }>()
 
   const visible = ref(props.modelValue)
@@ -150,18 +184,21 @@
   const formRef = ref<FormInstance>()
 
   const form = reactive({
-    subdomain: '',
+    profileId: '',
+    name: '',
     driverMemory: '1g',
     driverCores: 1,
     executorMemory: '2g',
     executorCores: 1,
-    executorInstances: 1
+    executorInstances: 1,
+    notebookRuntimeIdleTimeout: 'inherit',
+    engineIdleTimeout: 'inherit'
   })
 
   const customConfigs = ref<Array<{ key: string; value: string }>>([])
 
   const rules: FormRules = {
-    subdomain: [
+    name: [
       { required: true, message: 'Engine Name is required', trigger: 'blur' },
       {
         pattern: /^[a-z0-9][-a-z0-9]*[a-z0-9]$/,
@@ -195,13 +232,16 @@
       if (val) {
         if (props.profileData) {
           isEdit.value = true
-          form.subdomain = props.profileData.subdomain || ''
+          form.profileId = props.profileData.profileId || ''
+          form.name = props.profileData.name || ''
           const sparkConfig = props.profileData.sparkConfig || {}
           form.driverMemory = sparkConfig['spark.driver.memory'] || props.profileData.driverMemory || '1g'
           form.driverCores = sparkConfig['spark.driver.cores'] ? Number(sparkConfig['spark.driver.cores']) : (Number(props.profileData.driverCores) || 1)
           form.executorMemory = sparkConfig['spark.executor.memory'] || props.profileData.executorMemory || '2g'
           form.executorCores = sparkConfig['spark.executor.cores'] ? Number(sparkConfig['spark.executor.cores']) : (Number(props.profileData.executorCores) || 1)
           form.executorInstances = sparkConfig['spark.executor.instances'] ? Number(sparkConfig['spark.executor.instances']) : (Number(props.profileData.executorInstances) || 1)
+          form.notebookRuntimeIdleTimeout = props.profileData.notebookRuntimeIdleTimeout || 'inherit'
+          form.engineIdleTimeout = props.profileData.engineIdleTimeout || 'inherit'
           
           const extras: Array<{ key: string; value: string }> = []
           const standardKeys = [
@@ -219,12 +259,15 @@
           customConfigs.value = extras
         } else {
           isEdit.value = false
-          form.subdomain = ''
+          form.profileId = ''
+          form.name = ''
           form.driverMemory = '1g'
           form.driverCores = 1
           form.executorMemory = '2g'
           form.executorCores = 1
           form.executorInstances = 1
+          form.notebookRuntimeIdleTimeout = 'inherit'
+          form.engineIdleTimeout = 'inherit'
           customConfigs.value = []
         }
       }
@@ -277,8 +320,11 @@
       })
 
       const result = {
-        subdomain: form.subdomain.trim(),
-        sparkConfig
+        profileId: form.profileId || undefined,
+        name: form.name.trim(),
+        sparkConfig,
+        notebookRuntimeIdleTimeout: form.notebookRuntimeIdleTimeout,
+        engineIdleTimeout: form.engineIdleTimeout
       }
 
       emit('save', result)

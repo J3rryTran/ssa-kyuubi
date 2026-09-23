@@ -243,6 +243,7 @@
         <maven.plugin.scalatest.exclude.tags>org.scalatest.tags.Slow</maven.plugin.scalatest.exclude.tags>
         <maven.plugin.scalatest.include.tags></maven.plugin.scalatest.include.tags>
         <maven.plugin.scalatest.debug.enabled>false</maven.plugin.scalatest.debug.enabled>
+        <wildcardSuites></wildcardSuites>
         <!-- TODO: Once we drop support for Java 8, we can consider upgrade spotless.version to 2.43.0. -->
         <maven.plugin.spotless.version>2.30.0</maven.plugin.spotless.version>
         <maven.plugin.surefire.version>3.2.1</maven.plugin.surefire.version>
@@ -1512,6 +1513,7 @@
                         </systemProperties>
                         <tagsToExclude>${maven.plugin.scalatest.exclude.tags}</tagsToExclude>
                         <tagsToInclude>${maven.plugin.scalatest.include.tags}</tagsToInclude>
+                        <wildcardSuites>${wildcardSuites}</wildcardSuites>
                         <debugForkedProcess>${maven.plugin.scalatest.debug.enabled}</debugForkedProcess>
                         <debugArgLine>${debugArgLine}</debugArgLine>
                     </configuration>

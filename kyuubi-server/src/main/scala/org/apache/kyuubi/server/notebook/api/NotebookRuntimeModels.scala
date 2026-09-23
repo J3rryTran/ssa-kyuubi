@@ -57,6 +57,7 @@ case class NotebookRuntime(
     state: RuntimeState,
     generation: Long,
     environmentRevisionId: Option[String],
+    runtimeIdleTimeoutMillis: Option[Long],
     createdAt: Long,
     lastActivityAt: Long,
     stoppedAt: Option[Long],
@@ -115,11 +116,16 @@ case class NotebookRun(
 case class RuntimeSpec(
     id: String,
     displayName: String,
+    /**
+     * Legacy display/default language retained for wire compatibility. Execution language belongs
+     * to a cell; use `supportedLanguages` to decide whether a runtime can execute it.
+     */
     language: String,
     version: String,
     enabled: Boolean,
     configurableKeys: Seq[String],
-    limits: Map[String, String])
+    limits: Map[String, String],
+    supportedLanguages: Seq[String] = Seq.empty)
 
 // ------------------------------------------------------------------------------------------------
 // Views

@@ -89,25 +89,6 @@
             placeholder="My notebook"
             @keyup.enter="createNotebook" />
         </el-form-item>
-        <el-form-item label="Language">
-          <!--
-            Fixed for the life of the notebook, so it is chosen here rather than per cell.
-            Python is offered only when a Python runtime is actually enabled on this server.
-          -->
-          <el-radio-group v-model="notebookLanguage">
-            <el-radio label="SQL">SQL</el-radio>
-            <el-tooltip
-              :disabled="pythonEnabled"
-              content="This server has no Python runtime enabled"
-              placement="top">
-              <span>
-                <el-radio label="PYTHON" :disabled="!pythonEnabled">
-                  Python
-                </el-radio>
-              </span>
-            </el-tooltip>
-          </el-radio-group>
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="notebookDialog = false">Cancel</el-button>
@@ -148,11 +129,14 @@
   import * as api from '@/api/notebook'
   import { reportError } from '../use-notebook'
   import EngineConfigDialog from './EngineConfigDialog.vue'
+  import {
+    defaultCloneNotebookName,
+    defaultNotebookName
+  } from '@/utils/notebook-name'
   import type {
     EngineProfile,
     Notebook,
-    NotebookFolder,
-    NotebookLanguage
+    NotebookFolder
   } from '@/api/notebook/types'
 
   /**
@@ -167,11 +151,6 @@
 
   const emit = defineEmits<{ (e: 'select', notebookId: string): void }>()
 
-  /** Gate for the Python option; the notebook view already resolves it from runtime-specs. */
-  const props = withDefaults(defineProps<{ pythonEnabled?: boolean }>(), {
-    pythonEnabled: false
-  })
-
   const LOCAL_STORAGE_KEY = 'kyuubi_notebook_engine_profiles'
 
   const loadEngineProfiles = (): EngineProfile[] => {
@@ -182,12 +161,11 @@
         if (Array.isArray(parsed) && parsed.length > 0) return parsed
       }
     } catch (e) {}
-    return [{ name: 'default', subdomain: 'default' }]
+    return [{ profileId: 'default', name: 'default', subdomain: 'default' }]
   }
 
   const notebookDialog = ref(false)
   const notebookName = ref('')
-  const notebookLanguage = ref<NotebookLanguage>('SQL')
   const notebookEngineProfile = ref('default')
   const engineConfigDialogVisible = ref(false)
   const engineProfiles = ref<EngineProfile[]>(loadEngineProfiles())
@@ -272,15 +250,13 @@
       promptFolder()
       return
     }
-    notebookName.value = ''
-    // A server without Python cannot offer it, so never open the dialog pre-set to it.
-    notebookLanguage.value = props.pythonEnabled ? notebookLanguage.value : 'SQL'
+    notebookName.value = defaultNotebookName()
     notebookDialog.value = true
   }
 
   const onEngineProfileSave = (profile: EngineProfile) => {
     const existingIndex = engineProfiles.value.findIndex(
-      (p) => p.subdomain === profile.subdomain
+      (p) => p.profileId === profile.profileId
     )
     if (existingIndex >= 0) {
       engineProfiles.value[existingIndex] = profile
@@ -288,9 +264,12 @@
       engineProfiles.value.push(profile)
     }
     try {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(engineProfiles.value))
+      localStorage.setItem(
+        LOCAL_STORAGE_KEY,
+        JSON.stringify(engineProfiles.value)
+      )
     } catch (e) {}
-    notebookEngineProfile.value = profile.subdomain
+    notebookEngineProfile.value = profile.profileId
   }
 
   const createNotebook = async () => {
@@ -303,12 +282,7 @@
       return
     }
     try {
-      await api.createNotebook(
-        name,
-        null,
-        notebookLanguage.value,
-        null
-      )
+      await api.createNotebook(name, null, 'SQL', null)
       notebookDialog.value = false
       await reload()
     } catch (error) {
@@ -353,7 +327,7 @@
             'Name of the copy',
             'Clone',
             {
-              inputValue: `${data.label} copy`,
+              inputValue: defaultCloneNotebookName(data.label),
               ...NAME_RULES
             }
           )

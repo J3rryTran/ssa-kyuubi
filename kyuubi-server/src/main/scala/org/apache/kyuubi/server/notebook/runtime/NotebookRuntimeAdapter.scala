@@ -45,14 +45,23 @@ case class AdapterResultPage(rows: Seq[Seq[String]], nextOffset: Long, hasMore: 
  * What a language runtime must be able to do for the notebook services.
  *
  * The services own persistence, authorization and state transitions; an adapter owns only the
- * conversation with its backend. Keeping the split here is what allows the SQL and CPython
- * runtimes to coexist without the REST layer knowing which is which.
+ * conversation with its backend. A runtime may support several cell languages; the execution,
+ * rather than the runtime, determines which operation is submitted.
  */
 trait NotebookRuntimeAdapter {
 
   def runtimeType: String
 
   def runtimeSpec: RuntimeSpec
+
+  /** Deprecated IDs which are safely handled by this adapter after a server upgrade. */
+  def legacyRuntimeSpecIds: Seq[String] = Seq.empty
+
+  def supports(language: CellLanguage.Value): Boolean =
+    runtimeSpec.supportedLanguages match {
+      case Seq() => runtimeSpec.language == language.toString
+      case languages => languages.contains(language.toString)
+    }
 
   def startRuntime(runtime: NotebookRuntime, configuration: Map[String, String]): AdapterRuntime
 
@@ -70,7 +79,9 @@ trait NotebookRuntimeAdapter {
   /** Releases whatever the adapter holds for this execution; must be idempotent. */
   def closeExecution(execution: CellExecution): Unit
 
-  def restartRuntime(runtime: NotebookRuntime): AdapterRuntime
+  def restartRuntime(
+      runtime: NotebookRuntime,
+      configuration: Map[String, String]): AdapterRuntime
 
   def stopRuntime(runtime: NotebookRuntime): Unit
 
@@ -101,13 +112,14 @@ trait TabularNotebookRuntimeAdapter extends NotebookRuntimeAdapter {
 }
 
 /**
- * Resolves a runtime spec or language to its adapter. Registration happens once at startup, so a
- * lookup miss is a configuration error rather than a transient condition.
+ * Resolves a runtime spec or capability to its adapter. Registration happens once at startup, so
+ * a lookup miss is a configuration error rather than a transient condition.
  */
 class RuntimeAdapterRegistry(adapters: Seq[NotebookRuntimeAdapter]) {
 
-  private val bySpecId: Map[String, NotebookRuntimeAdapter] =
-    adapters.map(adapter => adapter.runtimeSpec.id -> adapter).toMap
+  private val bySpecId: Map[String, NotebookRuntimeAdapter] = adapters.flatMap { adapter =>
+    (adapter.runtimeSpec.id +: adapter.legacyRuntimeSpecIds).map(_ -> adapter)
+  }.toMap
 
   def specs: Seq[RuntimeSpec] = adapters.map(_.runtimeSpec)
 
@@ -120,9 +132,9 @@ class RuntimeAdapterRegistry(adapters: Seq[NotebookRuntimeAdapter]) {
 
   def spec(runtimeSpecId: String): RuntimeSpec = get(runtimeSpecId).runtimeSpec
 
-  /** The default spec for a language, used when a submission does not name a runtime. */
+  /** The default spec capable of running a cell language. */
   def defaultSpecFor(language: CellLanguage.Value): RuntimeSpec =
-    adapters.map(_.runtimeSpec).find(_.language == language.toString).getOrElse {
+    adapters.find(_.supports(language)).map(_.runtimeSpec).getOrElse {
       throw new NotebookException(
         NotebookErrorCode.UNSUPPORTED_LANGUAGE,
         s"no runtime is available for $language")

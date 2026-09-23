@@ -72,7 +72,7 @@ class KyuubiRestFrontendService(override val serverable: Serverable)
 
   private[kyuubi] lazy val notebookManager: Option[NotebookManager] =
     if (conf.get(NOTEBOOK_ENABLED)) {
-      Some(new NotebookManager(() => be, () => connectionUrl))
+      Some(new NotebookManager(() => be, () => notebookInstanceUri))
     } else {
       None
     }
@@ -125,6 +125,17 @@ class KyuubiRestFrontendService(override val serverable: Serverable)
     }
   }
 
+  /**
+   * An internal, per-pod address for notebook runtime ownership and peer routing.
+   *
+   * `connectionUrl` may deliberately resolve to a load-balanced Service, or to `0.0.0.0` when
+   * the REST listener binds every interface. Neither value identifies the process that owns a
+   * stateful notebook session. Notebook peers run inside the cluster, where the local address is
+   * directly reachable and unique for the lifetime of this frontend process.
+   */
+  private[kyuubi] lazy val notebookInstanceUri: String =
+    s"${JavaUtils.findLocalInetAddress.getHostAddress}:$port"
+
   private def startInternal(): Unit = {
     val contextHandler = ApiRootResource.getServletHandler(this)
     val holder = new FilterHolder(new AuthenticationFilter(conf))
@@ -134,7 +145,7 @@ class KyuubiRestFrontendService(override val serverable: Serverable)
     notebookManager.foreach { manager =>
       val routing = new FilterHolder(new NotebookRoutingFilter(
         conf,
-        () => connectionUrl,
+        () => notebookInstanceUri,
         manager.sessionIdOf,
         manager.isSessionLocal,
         () => manager.sessionRegistry))

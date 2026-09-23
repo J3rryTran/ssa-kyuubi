@@ -171,6 +171,197 @@ object NotebookConf {
       .longConf
       .createWithDefault(10000L)
 
+  val PYTHON_ENVIRONMENT_ENABLED: ConfigEntry[Boolean] =
+    buildConf("kyuubi.notebook.python.environment.enabled")
+      .doc("Whether Engine Profile Python environments may be mounted into Spark Driver and " +
+        "Executor pods. It is disabled by default; the server is the sole source of PVC and " +
+        "Python executable settings.")
+      .version("1.10.3")
+      .serverOnly
+      .booleanConf
+      .createWithDefault(false)
+
+  val PYTHON_ENVIRONMENT_MOUNT_PATH: ConfigEntry[String] =
+    buildConf("kyuubi.notebook.python.environment.mount.path")
+      .doc("Absolute path where a READY Engine Profile environment PVC is mounted read-only.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("/python-env")
+
+  val PYTHON_ENVIRONMENT_BASE_IMAGE: ConfigEntry[String] =
+    buildConf("kyuubi.notebook.python.environment.base-image")
+      .doc("Pinned Spark Python image identity used to reject incompatible persistent " +
+        "environments. This value is server controlled, not a browser parameter.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("")
+
+  val PYTHON_ENVIRONMENT_KUBERNETES_NAMESPACE: ConfigEntry[String] =
+    buildConf("kyuubi.notebook.python.environment.kubernetes.namespace")
+      .doc("Namespace where the server provisions profile PVCs and environment builder Jobs.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("default")
+
+  val PYTHON_ENVIRONMENT_KUBERNETES_BUILDER_IMAGE: ConfigEntry[String] =
+    buildConf("kyuubi.notebook.python.environment.kubernetes.builder.image")
+      .doc("Pinned image containing the trusted Python environment builder entrypoint.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("")
+
+  val PYTHON_ENVIRONMENT_KUBERNETES_SERVICE_ACCOUNT: ConfigEntry[String] =
+    buildConf("kyuubi.notebook.python.environment.kubernetes.service-account")
+      .doc("ServiceAccount assigned to Python environment builder Jobs.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("default")
+
+  val PYTHON_ENVIRONMENT_PVC_STORAGE_CLASS: ConfigEntry[String] =
+    buildConf("kyuubi.notebook.python.environment.pvc.storage-class")
+      .doc(
+        "StorageClass for profile-scoped environment PVCs. " +
+          "Empty delegates selection to Kubernetes.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("")
+
+  val PYTHON_ENVIRONMENT_PVC_SIZE: ConfigEntry[String] =
+    buildConf("kyuubi.notebook.python.environment.pvc.size")
+      .doc("PersistentVolumeClaim size for one Engine Profile Python environment store.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("10Gi")
+
+  val PYTHON_ENVIRONMENT_RECONCILE_INTERVAL: ConfigEntry[Long] =
+    buildConf("kyuubi.notebook.python.environment.reconcile.interval")
+      .doc("How often Kyuubi reconnects persisted Python environment build requests to Jobs.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .createWithDefault(java.util.concurrent.TimeUnit.SECONDS.toMillis(10))
+
+  val DBT_RUNNER_ENABLED: ConfigEntry[Boolean] =
+    buildConf("kyuubi.dbt.runner.enabled")
+      .doc("Whether the server may dispatch DBT runs to Kubernetes Jobs. It is disabled by " +
+        "default; enabling it requires a shared JDBC metadata store and a configured " +
+        "Kubernetes runner image.")
+      .version("1.10.3")
+      .serverOnly
+      .booleanConf
+      .createWithDefault(false)
+
+  val DBT_RUNNER_KUBERNETES_NAMESPACE: ConfigEntry[String] =
+    buildConf("kyuubi.dbt.runner.kubernetes.namespace")
+      .doc("Namespace in which the DBT runner creates Jobs and ConfigMaps.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("default")
+
+  val DBT_RUNNER_KUBERNETES_IMAGE: ConfigEntry[String] =
+    buildConf("kyuubi.dbt.runner.kubernetes.image")
+      .doc("Container image containing the pinned dbt-core and dbt-spark runner.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("")
+
+  val DBT_RUNNER_KUBERNETES_SERVICE_ACCOUNT: ConfigEntry[String] =
+    buildConf("kyuubi.dbt.runner.kubernetes.service-account")
+      .doc("ServiceAccount assigned to each DBT runner Job.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("default")
+
+  val DBT_RUNNER_KYUUBI_HOST: ConfigEntry[String] =
+    buildConf("kyuubi.dbt.runner.kyuubi.host")
+      .doc("Internal Kyuubi Thrift host used by DBT runner Jobs.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("")
+
+  val DBT_RUNNER_KYUUBI_PORT: ConfigEntry[Int] =
+    buildConf("kyuubi.dbt.runner.kyuubi.port")
+      .doc("Internal Kyuubi Thrift port used by DBT runner Jobs.")
+      .version("1.10.3")
+      .serverOnly
+      .intConf
+      .createWithDefault(10009)
+
+  val DBT_RUNNER_KYUUBI_USER: ConfigEntry[String] =
+    buildConf("kyuubi.dbt.runner.kyuubi.user")
+      .doc("Authenticated Kyuubi service identity used before proxy-user impersonation.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("dbt-runner")
+
+  val DBT_RUNNER_KYUUBI_AUTH: ConfigEntry[String] =
+    buildConf("kyuubi.dbt.runner.kyuubi.auth")
+      .doc("dbt-spark authentication mode for the DBT runner's Kyuubi connection.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("NONE")
+
+  val DBT_RUNNER_KYUUBI_SCHEMA: ConfigEntry[String] =
+    buildConf("kyuubi.dbt.runner.kyuubi.schema")
+      .doc("Default schema written into the runner-generated dbt profile.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("dbt")
+
+  val DBT_RUNNER_RECONCILE_INTERVAL: ConfigEntry[Long] =
+    buildConf("kyuubi.dbt.runner.reconcile.interval")
+      .doc("How often the server refreshes Kubernetes DBT Job states.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .createWithDefault(10000L)
+
+  val DBT_RUNNER_KUBERNETES_JOB_TIMEOUT: ConfigEntry[Long] =
+    buildConf("kyuubi.dbt.runner.kubernetes.job.timeout")
+      .doc("Maximum wall-clock duration of a DBT Kubernetes Job before Kubernetes terminates it.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .createWithDefault(java.util.concurrent.TimeUnit.HOURS.toMillis(1))
+
+  val DBT_RUNNER_KUBERNETES_JOB_TTL: ConfigEntry[Long] =
+    buildConf("kyuubi.dbt.runner.kubernetes.job.ttl")
+      .doc("How long Kubernetes retains a finished DBT Job after its logs are persisted.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .createWithDefault(java.util.concurrent.TimeUnit.HOURS.toMillis(1))
+
+  val DBT_RUNNER_LOG_MAX_BYTES: ConfigEntry[Long] =
+    buildConf("kyuubi.dbt.runner.log.max.bytes")
+      .doc("Maximum number of DBT runner log bytes persisted for one run.")
+      .version("1.10.3")
+      .serverOnly
+      .longConf
+      .createWithDefault(10L * 1024 * 1024)
+
+  val DBT_RUNNER_LOG_PAGE_MAX_BYTES: ConfigEntry[Int] =
+    buildConf("kyuubi.dbt.runner.log.page.max.bytes")
+      .doc("Maximum number of persisted DBT runner log bytes returned by one API request.")
+      .version("1.10.3")
+      .serverOnly
+      .intConf
+      .createWithDefault(256 * 1024)
+
   val NOTEBOOK_IMPORT_MAX_SIZE: ConfigEntry[Long] =
     buildConf("kyuubi.notebook.import.max.size")
       .doc("Maximum size in bytes of a notebook document accepted by the import endpoint.")

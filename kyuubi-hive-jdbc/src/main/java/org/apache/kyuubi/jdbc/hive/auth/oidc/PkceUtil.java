@@ -29,6 +29,7 @@ public final class PkceUtil {
   private static final Base64.Encoder URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
 
   private PkceUtil() {}
+
   public static String generateCodeVerifier() {
     byte[] bytes = new byte[32];
     RANDOM.nextBytes(bytes);

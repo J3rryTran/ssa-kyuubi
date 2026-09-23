@@ -70,7 +70,7 @@ public class HttpJsonClient {
     this.readTimeoutMs = readTimeoutMs;
     this.insecureTls = insecureTls;
   }
-  
+
   private void applyTls(HttpURLConnection conn) {
     if (insecureTls && conn instanceof HttpsURLConnection) {
       HttpsURLConnection https = (HttpsURLConnection) conn;

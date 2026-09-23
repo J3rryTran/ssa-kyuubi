@@ -25,6 +25,7 @@ import org.apache.kyuubi.Logging
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.ha.HighAvailabilityConf.HA_NAMESPACE
 import org.apache.kyuubi.ha.client.DiscoveryClient
+import org.apache.kyuubi.ha.client.DiscoveryPaths
 
 /**
  * Which server instance owns a live notebook session.
@@ -49,7 +50,9 @@ class NotebookSessionRegistry(
 
   import NotebookSessionRegistry._
 
-  private val root = s"${conf.get(HA_NAMESPACE)}$SESSIONS_PATH"
+  // Discovery clients require an absolute path. Building it with DiscoveryPaths also handles
+  // a namespace configured without a leading slash, such as the usual "kyuubi".
+  private val root = DiscoveryPaths.makePath(null, conf.get(HA_NAMESPACE), SESSIONS_PATH)
 
   private def pathOf(sessionId: String): String = s"$root/$sessionId"
 
@@ -113,5 +116,5 @@ class NotebookSessionRegistry(
 object NotebookSessionRegistry {
 
   /** Kept under the HA namespace so it is discarded with the rest of a namespace's state. */
-  val SESSIONS_PATH = "/notebook-sessions"
+  val SESSIONS_PATH = "notebook-sessions"
 }

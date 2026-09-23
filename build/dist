@@ -298,6 +298,9 @@ echo "Hive $HIVE_VERSION" >> "$DISTDIR/RELEASE"
 # shellcheck disable=SC2145
 echo "Build flags: $@" >> "$DISTDIR/RELEASE"
 
+#copy hadoop jar 
+cp -r "$KYUUBI_HOME"/hadoop/3.3.4/jars/*.jar "$DISTDIR/jars/"
+
 # Copy kyuubi server jars
 cp -r "$KYUUBI_HOME"/kyuubi-assembly/target/scala-$SCALA_VERSION/jars/*.jar "$DISTDIR/jars/"
 
@@ -395,11 +398,18 @@ if [[ "$HIVE_PROVIDED" != "true" ]]; then
   cp -r "$HIVE_BUILTIN" "$DISTDIR/externals/"
 fi
 
-# Copy license files
-if [[ -f $"$KYUUBI_HOME/LICENSE-binary" ]]; then
+# Copy license files. Apache release builds carry the -binary variants, while
+# source builds in this fork use the repository LICENSE and NOTICE directly.
+if [[ -f "$KYUUBI_HOME/LICENSE-binary" ]]; then
   cp "$KYUUBI_HOME/LICENSE-binary" "$DISTDIR/LICENSE"
   cp -r "$KYUUBI_HOME/licenses-binary" "$DISTDIR/licenses"
   cp "$KYUUBI_HOME/NOTICE-binary" "$DISTDIR/NOTICE"
+else
+  cp "$KYUUBI_HOME/LICENSE" "$DISTDIR/LICENSE"
+  cp "$KYUUBI_HOME/NOTICE" "$DISTDIR/NOTICE"
+  if [[ -d "$KYUUBI_HOME/licenses" ]]; then
+    cp -r "$KYUUBI_HOME/licenses" "$DISTDIR/licenses"
+  fi
 fi
 
 cp -r "$KYUUBI_HOME/bin" "$DISTDIR"

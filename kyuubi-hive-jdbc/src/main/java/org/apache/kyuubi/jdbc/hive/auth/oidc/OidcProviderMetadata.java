@@ -36,7 +36,7 @@ public class OidcProviderMetadata {
     this.deviceAuthorizationEndpoint = deviceAuthorizationEndpoint;
     this.endSessionEndpoint = endSessionEndpoint;
   }
-  
+
   public static OidcProviderMetadata discover(String discoveryUrl, HttpJsonClient http) {
     JsonNode doc = http.getJson(discoveryUrl);
     String tokenEndpoint = text(doc, "token_endpoint");

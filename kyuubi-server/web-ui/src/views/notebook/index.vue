@@ -22,11 +22,16 @@
     <div
       v-show="isTreeVisible"
       class="db-tree-panel"
+      :class="{ 'is-resizing': isResizingTree }"
       :style="{ width: `${treeWidth}px` }">
       <WorkspaceTree
         ref="workspaceTree"
         :python-enabled="pythonEnabled"
         @select="handleSelectNotebook" />
+      <div
+        class="db-tree-resize-handle"
+        title="Drag to resize workspace"
+        @pointerdown.prevent.stop="startTreeResize" />
     </div>
 
     <!-- COLLAPSE/EXPAND TOGGLE STRIP -->
@@ -56,12 +61,13 @@
           <div class="db-action-toolbar">
             <div class="toolbar-top-row">
               <div class="title-section">
-                <el-icon class="nb-icon">
-                  <component :is="notebook.language === 'PYTHON' ? 'Opportunity' : 'DataLine'" />
-                </el-icon>
+                <el-icon class="nb-icon"><component :is="'Document'" /></el-icon>
 
                 <!-- EDITABLE TITLE -->
-                <div v-if="!isEditingTitle" class="title-display" @click="startEditTitle">
+                <div
+                  v-if="!isEditingTitle"
+                  class="title-display"
+                  @click="startEditTitle">
                   <span class="nb-name">{{ notebook.name }}</span>
                   <el-icon class="edit-pen-icon"><Edit /></el-icon>
                 </div>
@@ -74,13 +80,10 @@
                   @blur="saveTitle"
                   @keyup.enter="saveTitle" />
 
-                <!-- LANGUAGE BADGE -->
-                <span
-                  class="nb-lang-tag"
-                  :class="notebook.language === 'PYTHON' ? 'tag-python' : 'tag-sql'">
-                  {{ notebook.language === 'PYTHON' ? 'Python' : 'SQL' }}
-                </span>
-                <span class="nb-path">{{ notebook.path || '/Workspace/' + notebook.name }}</span>
+                <span class="nb-lang-tag tag-notebook">Notebook</span>
+                <span class="nb-path">{{
+                  notebook.path || '/Workspace/' + notebook.name
+                }}</span>
               </div>
 
               <!-- RIGHT ACTION BUTTONS -->
@@ -89,7 +92,9 @@
                 <div class="engine-compute-selector">
                   <span
                     class="status-indicator"
-                    :class="{ 'is-running': session && session.state !== 'STOPPED' }">
+                    :class="{
+                      'is-running': session && session.state !== 'STOPPED'
+                    }">
                     ●
                   </span>
                   <el-tooltip
@@ -105,14 +110,18 @@
                       @change="onEngineProfileChange">
                       <el-option
                         v-for="p in engineProfiles"
-                        :key="p.subdomain"
+                        :key="p.profileId"
                         :label="p.name || p.subdomain"
-                        :value="p.subdomain"
+                        :value="p.profileId"
                         class="engine-profile-option">
                         <div class="option-content">
                           <div class="option-header">
-                            <span class="profile-name">{{ p.name || p.subdomain }}</span>
-                            <span class="profile-subdomain">{{ p.subdomain }}</span>
+                            <span class="profile-name">{{
+                              p.name || p.subdomain
+                            }}</span>
+                            <span class="profile-subdomain">{{
+                              p.subdomain
+                            }}</span>
                           </div>
                           <div class="option-specs">
                             <el-icon class="spec-icon"><Cpu /></el-icon>
@@ -132,14 +141,17 @@
 
                 <el-button
                   size="small"
-                  type="primary"
                   class="run-all-btn"
-                  icon="VideoPlay"
-                  @click="runAllCells">
-                  Run all
+                  :type="runAllActive ? 'danger' : 'primary'"
+                  :icon="runAllActive ? 'VideoPause' : 'VideoPlay'"
+                  @click="runAllActive ? interruptRunAll() : runAllCells()">
+                  {{ runAllActive ? 'Interrupt run all' : 'Run all' }}
                 </el-button>
 
-                <el-button size="small" icon="Calendar" @click="scheduleDialog = true">
+                <el-button
+                  size="small"
+                  icon="Calendar"
+                  @click="scheduleDialog = true">
                   Schedule
                 </el-button>
 
@@ -161,7 +173,10 @@
                       <el-dropdown-item command="stop" icon="SwitchButton">
                         Stop Session
                       </el-dropdown-item>
-                      <el-dropdown-item command="clear-output" icon="Delete" divided>
+                      <el-dropdown-item
+                        command="clear-output"
+                        icon="Delete"
+                        divided>
                         Clear All Outputs
                       </el-dropdown-item>
                     </el-dropdown-menu>
@@ -174,7 +189,9 @@
             <div class="toolbar-menu-row">
               <span class="menu-item" @click="saveNotebookState">File</span>
               <span class="menu-item" @click="clearAllOutputs">Edit</span>
-              <span class="menu-item" @click="isTreeVisible = !isTreeVisible">View</span>
+              <span class="menu-item" @click="isTreeVisible = !isTreeVisible"
+                >View</span
+              >
               <span class="menu-item" @click="runAllCells">Run</span>
               <span class="menu-item" @click="showHelp">Help</span>
             </div>
@@ -192,9 +209,8 @@
               :is-initializing="Boolean(initializingCells[cell.id])"
               :read-only="readOnly()"
               :python-enabled="pythonEnabled"
-              :notebook-language="notebook.language"
               @run="runCell"
-              @stop="stopCell"
+              @stop="handleStopCell"
               @remove="removeCell"
               @save="saveCell"
               @move-up="handleMoveCell(cell, 'up')"
@@ -208,14 +224,18 @@
                 type="primary"
                 plain
                 icon="Plus"
-                @click="addCell('CODE')">
-                Add Code Cell
+                @click="addCell('CODE', undefined, 'SQL')">
+                + SQL
               </el-button>
               <el-button
                 plain
                 icon="Plus"
-                @click="addCell('MARKDOWN')">
-                Add Text Cell
+                :disabled="!pythonEnabled"
+                @click="addCell('CODE', undefined, 'PYTHON')">
+                + Python
+              </el-button>
+              <el-button plain icon="Plus" @click="addCell('MARKDOWN')">
+                + Text
               </el-button>
             </div>
           </div>
@@ -226,7 +246,10 @@
           <div class="welcome-box">
             <div class="welcome-icon">📁</div>
             <h2>VTNexus Workspace</h2>
-            <p>Select a notebook from the workspace tree on the left or create a new one to start analytics.</p>
+            <p
+              >Select a notebook from the workspace tree on the left or create a
+              new one to start analytics.</p
+            >
             <div class="welcome-actions">
               <el-button
                 type="primary"
@@ -248,7 +271,10 @@
     </div>
 
     <!-- REVISIONS DIALOG -->
-    <el-dialog v-model="revisionsDialog" title="Notebook Revisions" width="620px">
+    <el-dialog
+      v-model="revisionsDialog"
+      title="Notebook Revisions"
+      width="620px">
       <el-button size="small" style="margin-bottom: 8px" @click="checkpoint">
         Create checkpoint
       </el-button>
@@ -283,7 +309,11 @@
           <el-option label="Editor" value="EDITOR" />
           <el-option label="Viewer" value="VIEWER" />
         </el-select>
-        <el-button size="small" link type="danger" @click="permissions.splice(index, 1)">
+        <el-button
+          size="small"
+          link
+          type="danger"
+          @click="permissions.splice(index, 1)">
           Remove
         </el-button>
       </div>
@@ -297,11 +327,16 @@
     </el-dialog>
 
     <!-- SCHEDULE DIALOG -->
-    <el-dialog v-model="scheduleDialog" title="Schedule Notebook Execution" width="460px">
+    <el-dialog
+      v-model="scheduleDialog"
+      title="Schedule Notebook Execution"
+      width="460px">
       <el-form label-width="120px">
         <el-form-item label="Cron Expression">
           <el-input v-model="cronExpr" placeholder="0 0 * * *" />
-          <div style="font-size: 11px; color: #909399">e.g. 0 0 * * * (Every midnight)</div>
+          <div style="font-size: 11px; color: #909399"
+            >e.g. 0 0 * * * (Every midnight)</div
+          >
         </el-form-item>
         <el-form-item label="Timezone">
           <el-input v-model="cronTz" />
@@ -309,7 +344,9 @@
       </el-form>
       <template #footer>
         <el-button @click="scheduleDialog = false">Cancel</el-button>
-        <el-button type="primary" @click="saveSchedule">Save Schedule</el-button>
+        <el-button type="primary" @click="saveSchedule"
+          >Save Schedule</el-button
+        >
       </template>
     </el-dialog>
 
@@ -322,7 +359,14 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+  import {
+    computed,
+    nextTick,
+    onBeforeUnmount,
+    onMounted,
+    ref,
+    watch
+  } from 'vue'
   import { useRoute } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import WorkspaceTree from './components/WorkspaceTree.vue'
@@ -331,7 +375,13 @@
   import EngineConfigDialog from './components/EngineConfigDialog.vue'
   import { useNotebook } from './use-notebook'
   import * as api from '@/api/notebook'
-  import type { EngineProfile, NotebookPermission, NotebookRevision } from '@/api/notebook/types'
+  import {
+    TERMINAL_EXECUTION_STATES,
+    type EngineProfile,
+    type NotebookCell,
+    type NotebookPermission,
+    type NotebookRevision
+  } from '@/api/notebook/types'
 
   const {
     notebook,
@@ -362,6 +412,42 @@
   const workspaceTree = ref<InstanceType<typeof WorkspaceTree> | null>(null)
   const isTreeVisible = ref(true)
   const treeWidth = ref(260)
+  const isResizingTree = ref(false)
+  const MIN_TREE_WIDTH = 220
+  const MAX_TREE_WIDTH = 560
+  let treeResizeStartX = 0
+  let treeResizeStartWidth = 0
+
+  const resizeTree = (event: PointerEvent) => {
+    const nextWidth = treeResizeStartWidth + event.clientX - treeResizeStartX
+    treeWidth.value = Math.min(
+      MAX_TREE_WIDTH,
+      Math.max(MIN_TREE_WIDTH, nextWidth)
+    )
+  }
+
+  const stopTreeResize = () => {
+    if (!isResizingTree.value) return
+    isResizingTree.value = false
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    document.removeEventListener('pointermove', resizeTree)
+    document.removeEventListener('pointerup', stopTreeResize)
+  }
+
+  const startTreeResize = (event: PointerEvent) => {
+    if (event.button !== 0) return
+    treeResizeStartX = event.clientX
+    treeResizeStartWidth = treeWidth.value
+    isResizingTree.value = true
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('pointermove', resizeTree)
+    document.addEventListener('pointerup', stopTreeResize)
+  }
+  const runAllActive = ref(false)
+  const interruptRunAllRequested = ref(false)
+  const runAllCellId = ref<string | null>(null)
 
   // MULTI-TABS MANAGEMENT
   const openTabs = ref<NotebookTab[]>([])
@@ -376,6 +462,7 @@
   const engineConfigDialogVisible = ref(false)
   const engineProfiles = ref<EngineProfile[]>([
     {
+      profileId: 'default',
       name: 'default',
       subdomain: 'default',
       driverMemory: '1g',
@@ -403,11 +490,23 @@
     return {
       ...apiProfile,
       name: apiProfile.name || apiProfile.subdomain,
-      driverMemory: sparkConfig['spark.driver.memory'] || apiProfile.driverMemory || (isDefault ? '1g' : ''),
-      executorMemory: sparkConfig['spark.executor.memory'] || apiProfile.executorMemory || (isDefault ? '2g' : ''),
-      driverCores: sparkConfig['spark.driver.cores'] ? Number(sparkConfig['spark.driver.cores']) : apiProfile.driverCores || (isDefault ? 1 : undefined),
-      executorCores: sparkConfig['spark.executor.cores'] ? Number(sparkConfig['spark.executor.cores']) : apiProfile.executorCores || (isDefault ? 1 : undefined),
-      executorInstances: sparkConfig['spark.executor.instances'] ? Number(sparkConfig['spark.executor.instances']) : apiProfile.executorInstances || (isDefault ? 1 : undefined)
+      driverMemory:
+        sparkConfig['spark.driver.memory'] ||
+        apiProfile.driverMemory ||
+        (isDefault ? '1g' : ''),
+      executorMemory:
+        sparkConfig['spark.executor.memory'] ||
+        apiProfile.executorMemory ||
+        (isDefault ? '2g' : ''),
+      driverCores: sparkConfig['spark.driver.cores']
+        ? Number(sparkConfig['spark.driver.cores'])
+        : apiProfile.driverCores || (isDefault ? 1 : undefined),
+      executorCores: sparkConfig['spark.executor.cores']
+        ? Number(sparkConfig['spark.executor.cores'])
+        : apiProfile.executorCores || (isDefault ? 1 : undefined),
+      executorInstances: sparkConfig['spark.executor.instances']
+        ? Number(sparkConfig['spark.executor.instances'])
+        : apiProfile.executorInstances || (isDefault ? 1 : undefined)
     }
   }
 
@@ -420,6 +519,7 @@
         const mapped = res.map(parseProfile)
         if (!mapped.some((p) => p.subdomain === 'default')) {
           mapped.unshift({
+            profileId: 'default',
             name: 'default',
             subdomain: 'default',
             driverMemory: '1g',
@@ -433,6 +533,7 @@
       } else {
         engineProfiles.value = [
           {
+            profileId: 'default',
             name: 'default',
             subdomain: 'default',
             driverMemory: '1g',
@@ -447,6 +548,7 @@
       console.error('Failed to load engine profiles from backend:', e)
       engineProfiles.value = [
         {
+          profileId: 'default',
           name: 'default',
           subdomain: 'default',
           driverMemory: '1g',
@@ -461,9 +563,11 @@
     // Only treat a missing profile as deleted after a successful API response. A network/API
     // failure must not silently switch a Notebook away from its selected Engine.
     if (loadedFromBackend && notebook.value && notebook.value.runtimeProfile) {
-      const exists = engineProfiles.value.some((p) => p.subdomain === notebook.value?.runtimeProfile)
+      const exists = engineProfiles.value.some(
+        (p) => p.profileId === notebook.value?.runtimeProfile
+      )
       if (!exists && engineProfiles.value.length > 0) {
-        await onEngineProfileChange(engineProfiles.value[0].subdomain)
+        await onEngineProfileChange(engineProfiles.value[0].profileId)
       }
     }
   }
@@ -471,10 +575,22 @@
   const formatSpecs = (p: EngineProfile): string => {
     const sparkConfig = p.sparkConfig || {}
     const isDefault = p.subdomain === 'default'
-    const driver = sparkConfig['spark.driver.memory'] || p.driverMemory || (isDefault ? '1g' : undefined)
-    const exec = sparkConfig['spark.executor.memory'] || p.executorMemory || (isDefault ? '2g' : undefined)
-    const cores = sparkConfig['spark.executor.cores'] || p.executorCores || (isDefault ? 1 : undefined)
-    const inst = sparkConfig['spark.executor.instances'] || p.executorInstances || (isDefault ? 1 : undefined)
+    const driver =
+      sparkConfig['spark.driver.memory'] ||
+      p.driverMemory ||
+      (isDefault ? '1g' : undefined)
+    const exec =
+      sparkConfig['spark.executor.memory'] ||
+      p.executorMemory ||
+      (isDefault ? '2g' : undefined)
+    const cores =
+      sparkConfig['spark.executor.cores'] ||
+      p.executorCores ||
+      (isDefault ? 1 : undefined)
+    const inst =
+      sparkConfig['spark.executor.instances'] ||
+      p.executorInstances ||
+      (isDefault ? 1 : undefined)
 
     if (!driver && !exec && !cores && !inst) {
       if (p.subdomain === 'default') {
@@ -499,10 +615,10 @@
     get: () => {
       const profile = notebook.value?.runtimeProfile || ''
       if (profile) {
-        const exists = engineProfiles.value.some((p) => p.subdomain === profile)
-        if (!exists) return engineProfiles.value[0]?.subdomain || 'default'
+        const exists = engineProfiles.value.some((p) => p.profileId === profile)
+        if (!exists) return engineProfiles.value[0]?.profileId || 'default'
       }
-      return profile || (engineProfiles.value[0]?.subdomain || 'default')
+      return profile || engineProfiles.value[0]?.profileId || 'default'
     },
     set: (val) => {
       if (notebook.value) {
@@ -512,7 +628,9 @@
   })
 
   const selectedProfileSpecs = computed(() => {
-    const found = engineProfiles.value.find((p) => p.subdomain === currentEngineProfile.value)
+    const found = engineProfiles.value.find(
+      (p) => p.profileId === currentEngineProfile.value
+    )
     return found ? formatSpecs(found) : ''
   })
 
@@ -537,14 +655,14 @@
 
   const onEngineProfileSave = (profile: EngineProfile) => {
     const existingIndex = engineProfiles.value.findIndex(
-      (p) => p.subdomain === profile.subdomain
+      (p) => p.profileId === profile.profileId
     )
     if (existingIndex >= 0) {
       engineProfiles.value[existingIndex] = profile
     } else {
       engineProfiles.value.push(profile)
     }
-    onEngineProfileChange(profile.subdomain)
+    onEngineProfileChange(profile.profileId)
   }
 
   // TAB OPERATIONS
@@ -640,8 +758,12 @@
   }
 
   // CELL OPERATIONS
-  const handleAddCell = (type: 'CODE' | 'MARKDOWN', afterCellId: string) => {
-    addCell(type, afterCellId)
+  const handleAddCell = (
+    type: 'CODE' | 'MARKDOWN',
+    afterCellId: string,
+    language?: 'SQL' | 'PYTHON'
+  ) => {
+    addCell(type, afterCellId, language)
   }
 
   const handleMoveCell = (cell: any, direction: 'up' | 'down') => {
@@ -649,13 +771,55 @@
   }
 
   const runAllCells = async () => {
-    if (!cells.value.length) return
-    ElMessage.info('Executing all cells sequentially...')
-    for (const cell of cells.value) {
-      if (cell.cellType === 'CODE') {
-        await runCell(cell, cell.source)
+    if (!cells.value.length || runAllActive.value) return
+    runAllActive.value = true
+    interruptRunAllRequested.value = false
+    ElMessage.info('Executing all code cells sequentially...')
+    try {
+      for (const cell of cells.value) {
+        if (cell.cellType !== 'CODE' || interruptRunAllRequested.value) continue
+        runAllCellId.value = cell.id
+        const execution = await runCell(
+          cell,
+          cell.source,
+          () => interruptRunAllRequested.value
+        )
+        if (interruptRunAllRequested.value) break
+        if (!execution) continue
+
+        // Wait for polling to observe the terminal state before the next cell. This avoids
+        // submitting every cell at once and gives Interrupt run all a single, clear target.
+        while (true) {
+          const latest = executions[cell.id]
+          if (!latest || TERMINAL_EXECUTION_STATES.includes(latest.state)) break
+          await new Promise((resolve) => window.setTimeout(resolve, 200))
+          if (interruptRunAllRequested.value) break
+        }
+        if (interruptRunAllRequested.value) break
       }
+      if (interruptRunAllRequested.value) {
+        ElMessage.info('Run all was interrupted.')
+      }
+    } finally {
+      runAllCellId.value = null
+      runAllActive.value = false
+      interruptRunAllRequested.value = false
     }
+  }
+
+  const interruptRunAll = async () => {
+    if (!runAllActive.value) return
+    interruptRunAllRequested.value = true
+    const current = cells.value.find((cell) => cell.id === runAllCellId.value)
+    if (current) await stopCell(current)
+  }
+
+  const handleStopCell = async (cell: NotebookCell) => {
+    // Interrupting the active Run all cell also prevents the remaining cells from starting.
+    if (runAllActive.value && runAllCellId.value === cell.id) {
+      interruptRunAllRequested.value = true
+    }
+    await stopCell(cell)
   }
 
   const clearAllOutputs = () => {
@@ -694,13 +858,18 @@
 
   const checkpoint = async () => {
     try {
-      const { value } = await ElMessageBox.prompt('Reason for this checkpoint', 'Checkpoint', {
-        inputPlaceholder: 'e.g. before major refactoring'
-      })
+      const { value } = await ElMessageBox.prompt(
+        'Reason for this checkpoint',
+        'Checkpoint',
+        {
+          inputPlaceholder: 'e.g. before major refactoring'
+        }
+      )
       await api.createRevision(notebook.value!.id, value)
       revisions.value = (await api.listRevisions(notebook.value!.id)).items
     } catch (error) {
-      if (error !== 'cancel') reportError(error, 'The checkpoint could not be created')
+      if (error !== 'cancel')
+        reportError(error, 'The checkpoint could not be created')
     }
   }
 
@@ -716,7 +885,8 @@
       revisionsDialog.value = false
       ElMessage.success(`Restored revision ${revisionNumber}`)
     } catch (error) {
-      if (error !== 'cancel') reportError(error, 'The revision could not be restored')
+      if (error !== 'cancel')
+        reportError(error, 'The revision could not be restored')
     }
   }
 
@@ -775,7 +945,10 @@
     }
   })
 
-  onBeforeUnmount(dispose)
+  onBeforeUnmount(() => {
+    stopTreeResize()
+    dispose()
+  })
 </script>
 
 <style scoped lang="scss">
@@ -787,9 +960,29 @@
     margin: -20px;
 
     .db-tree-panel {
+      position: relative;
       height: 100%;
       flex-shrink: 0;
       transition: width 0.2s ease;
+
+      &.is-resizing {
+        transition: none;
+      }
+    }
+
+    .db-tree-resize-handle {
+      position: absolute;
+      z-index: 2;
+      top: 0;
+      right: -4px;
+      width: 8px;
+      height: 100%;
+      cursor: col-resize;
+      touch-action: none;
+
+      &:hover {
+        background: rgba(255, 54, 33, 0.15);
+      }
     }
 
     .db-tree-toggle-strip {
@@ -887,16 +1080,10 @@
             border-radius: 3px;
             letter-spacing: 0.5px;
 
-            &.tag-sql {
+            &.tag-notebook {
               background: #eff6ff;
               color: #2563eb;
               border: 1px solid #bfdbfe;
-            }
-
-            &.tag-python {
-              background: #fefce8;
-              color: #ca8a04;
-              border: 1px solid #fef08a;
             }
           }
 

@@ -19,6 +19,7 @@ package org.apache.kyuubi.jdbc.hive.auth.oidc;
 
 public final class OidcParams {
   private OidcParams() {}
+
   public static final String AUTH_TYPE_OIDC = "oidc";
   public static final String OIDC_ENABLED = "oidc";
   public static final String OIDC_ISSUER = "oidcIssuer";

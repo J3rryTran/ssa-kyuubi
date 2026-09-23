@@ -18,18 +18,9 @@
 <template>
   <div class="engine-management-page">
     <div class="view-header">
-      <el-radio-group v-model="currentView" size="large">
-        <el-radio-button label="instances">
-          <el-icon><Monitor /></el-icon>
-          <span style="margin-left: 6px">Active Engines</span>
-        </el-radio-button>
-        <el-radio-button label="profiles">
-          <el-icon><Setting /></el-icon>
-          <span style="margin-left: 6px">Engine Profiles</span>
-        </el-radio-button>
-      </el-radio-group>
-
-      <div v-if="currentView === 'profiles'" class="header-actions">
+      <div class="page-title">Engine Profiles</div>
+      <div class="header-actions">
+        <el-button icon="Refresh" @click="loadProfiles">Refresh status</el-button>
         <el-button type="primary" icon="Plus" @click="handleOpenCreateProfile">
           Create Engine Profile
         </el-button>
@@ -37,7 +28,7 @@
     </div>
 
     <!-- VIEW 1: ACTIVE INSTANCES -->
-    <div v-if="currentView === 'instances'">
+    <div v-if="false">
       <el-card :body-style="{ padding: '10px 14px' }" class="filter_card">
         <header>
           <el-space class="search-box">
@@ -152,13 +143,28 @@
     </div>
 
     <!-- VIEW 2: ENGINE PROFILES -->
-    <div v-else class="profiles-container">
+    <div class="profiles-container">
       <el-card class="table-container">
         <el-table v-loading="profilesLoading" :data="profiles" style="width: 100%">
-          <el-table-column prop="subdomain" label="Engine Name" min-width="20%">
+          <el-table-column prop="name" label="Engine Profile" min-width="20%">
             <template #default="{ row }">
-              <div style="font-weight: 600; color: #1E293B">{{ row.name || row.subdomain }}</div>
-              <div class="sub-text">{{ row.subdomain }}</div>
+              <div style="font-weight: 600; color: #1E293B">{{ row.name }}</div>
+              <div class="sub-text">Profile ID: {{ row.profileId }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="Revision" min-width="10%">
+            <template #default="{ row }">
+              <el-tag size="small" type="success">r{{ row.revision }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="Engine status" min-width="14%">
+            <template #default="{ row }">
+              <el-tag :type="engineStateType(row.profileId)" size="small">
+                {{ engineState(row.profileId) }}
+              </el-tag>
+              <div class="sub-text">
+                {{ engineCount(row.profileId) }} running engine(s)
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="Driver" min-width="15%">
@@ -195,9 +201,41 @@
               <span v-else class="sub-text">None</span>
             </template>
           </el-table-column>
-          <el-table-column fixed="right" label="Actions" width="160">
+          <el-table-column label="Python environment" min-width="16%">
+            <template #default="{ row }">
+              <span v-if="row.pythonEnvironmentRevisionId" class="custom-config-tag">
+                {{ row.pythonEnvironmentRevisionId.slice(0, 12) }}
+              </span>
+              <span v-else class="sub-text">No persistent packages</span>
+            </template>
+          </el-table-column>
+          <el-table-column fixed="right" label="Actions" width="390">
             <template #default="{ row }">
               <el-space>
+                <el-button
+                  size="small"
+                  type="primary"
+                  icon="VideoPlay"
+                  :loading="startingProfile === row.profileId"
+                  :disabled="isEngineTransitioning(row.profileId)"
+                  @click="handleStartEngine(row)">
+                  Start
+                </el-button>
+                <el-button
+                  size="small"
+                  type="danger"
+                  icon="VideoPause"
+                  :loading="stoppingProfile === row.profileId"
+                  :disabled="engineState(row.profileId) !== 'RUNNING'"
+                  @click="handleStopEngine(row)">
+                  Stop
+                </el-button>
+                <el-button
+                  size="small"
+                  icon="InfoFilled"
+                  @click="handleOpenLifecycle(row)">
+                  Lifecycle
+                </el-button>
                 <el-button
                   size="small"
                   icon="Edit"
@@ -208,8 +246,10 @@
                   size="small"
                   type="danger"
                   icon="Delete"
-                  :loading="deletingProfile === row.subdomain"
-                  @click="handleDeleteProfile(row)" />
+                  :loading="deletingProfile === row.profileId"
+                  @click="handleDeleteProfile(row)">
+                  Delete
+                </el-button>
               </el-space>
             </template>
           </el-table-column>
@@ -222,11 +262,15 @@
       v-model="profileDialogVisible"
       :profile-data="selectedProfile"
       @save="handleSaveProfile" />
+    <EngineProfileLifecycleDialog
+      v-model="lifecycleDialogVisible"
+      :profile="lifecycleProfile"
+      @changed="loadProfiles" />
   </div>
 </template>
 
 <script lang="ts" setup>
-  import { ref, reactive, watch } from 'vue'
+  import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
   import { getAllEngines, deleteEngine } from '@/api/engine'
   import { IEngineSearch } from '@/api/engine/types'
   import { useTable } from '@/utils/use-table'
@@ -234,20 +278,19 @@
   import { useI18n } from 'vue-i18n'
   import { getEngineType, getShareLevel } from '@/utils/engine'
   import EngineProfileDialog from './components/EngineProfileDialog.vue'
-  import { listEngineProfiles, upsertEngineProfile, deleteEngineProfile } from '@/api/notebook'
-  import type { EngineProfile } from '@/api/notebook/types'
+  import EngineProfileLifecycleDialog from './components/EngineProfileLifecycleDialog.vue'
+  import {
+    createEngineProfile,
+    deleteEngineProfile,
+    getEngineProfileEngineStatus,
+    listEngineProfiles,
+    startEngineProfile,
+    stopEngineProfile,
+    updateEngineProfile
+  } from '@/api/notebook'
+  import type { EngineProfile, EngineProfileEngineStatus } from '@/api/notebook/types'
 
   const { t } = useI18n()
-  const currentView = ref<'instances' | 'profiles'>('instances')
-
-  watch(currentView, (view) => {
-    if (view === 'profiles') {
-      loadProfiles()
-    } else {
-      getList()
-    }
-  })
-
   // VIEW 1: ACTIVE INSTANCES
   const { tableData, loading, getList: _getList } = useTable()
   const searchParam: IEngineSearch = reactive({
@@ -259,7 +302,6 @@
     _getList(getAllEngines, searchParam)
   }
   const init = () => {
-    getList()
     loadProfiles()
   }
 
@@ -308,7 +350,12 @@
   const profilesLoading = ref(false)
   const profileDialogVisible = ref(false)
   const selectedProfile = ref<EngineProfile | null>(null)
+  const lifecycleDialogVisible = ref(false)
+  const lifecycleProfile = ref<EngineProfile | null>(null)
   const deletingProfile = ref<string | null>(null)
+  const startingProfile = ref<string | null>(null)
+  const stoppingProfile = ref<string | null>(null)
+  const engineStatuses = ref<Record<string, EngineProfileEngineStatus>>({})
 
   const loadProfiles = async () => {
     profilesLoading.value = true
@@ -316,12 +363,76 @@
       const res = await listEngineProfiles()
       if (Array.isArray(res)) {
         profiles.value = res
+        await refreshEngineStatuses(res)
       }
     } catch (e: any) {
       console.error('Failed to load engine profiles from backend:', e)
       ElMessage.error(`Failed to load engine profiles: ${e?.message || e}`)
     } finally {
       profilesLoading.value = false
+    }
+  }
+
+  // Poll only engine state. Re-fetching the full profile list every few seconds replaces all
+  // table rows and makes the page look as though it is continuously reloading.
+  const refreshEngineStatuses = async (profileList = profiles.value) => {
+    const statuses = await Promise.all(profileList.map(async (profile) => {
+      try {
+        return await getEngineProfileEngineStatus(profile.profileId)
+      } catch {
+        return {
+          profileId: profile.profileId,
+          revision: profile.revision || 1,
+          state: 'UNKNOWN' as const,
+          engineCount: 0
+        }
+      }
+    }))
+    engineStatuses.value = Object.fromEntries(
+      statuses.map((status) => [status.profileId, status])
+    )
+  }
+
+  const engineState = (profileId: string): string =>
+    engineStatuses.value[profileId]?.state || 'STOPPED'
+
+  const engineCount = (profileId: string): number =>
+    engineStatuses.value[profileId]?.engineCount || 0
+
+  const engineStateType = (profileId: string) =>
+    ({
+      STARTING: 'warning',
+      RUNNING: 'success',
+      STOPPING: 'warning',
+      STOPPED: 'info',
+      FAILED: 'danger',
+      UNKNOWN: 'info'
+    }[engineState(profileId)] || 'info')
+
+  const isEngineTransitioning = (profileId: string) =>
+    ['STARTING', 'STOPPING'].includes(engineState(profileId))
+
+  const handleStartEngine = async (profile: EngineProfile) => {
+    startingProfile.value = profile.profileId
+    try {
+      engineStatuses.value[profile.profileId] = await startEngineProfile(profile.profileId)
+      ElMessage.success(`Engine '${profile.name || profile.subdomain}' is starting`)
+    } catch (e: any) {
+      ElMessage.error(`Failed to start engine: ${e?.message || e}`)
+    } finally {
+      startingProfile.value = null
+    }
+  }
+
+  const handleStopEngine = async (profile: EngineProfile) => {
+    stoppingProfile.value = profile.profileId
+    try {
+      engineStatuses.value[profile.profileId] = await stopEngineProfile(profile.profileId)
+      ElMessage.success(`Engine '${profile.name || profile.subdomain}' is stopping`)
+    } catch (e: any) {
+      ElMessage.error(`Failed to stop engine: ${e?.message || e}`)
+    } finally {
+      stoppingProfile.value = null
     }
   }
 
@@ -347,82 +458,73 @@
     profileDialogVisible.value = true
   }
 
+  const handleOpenLifecycle = (profile: EngineProfile) => {
+    lifecycleProfile.value = profile
+    lifecycleDialogVisible.value = true
+  }
+
   const handleDeleteProfile = async (profile: EngineProfile) => {
-    const subdomain = profile.subdomain
-    let activeEngines: any[] = []
     try {
-      // Query the exact Kyuubi discovery space for this user/subdomain before deleting the
-      // profile. Passing the owner also makes an administrator terminate the profile owner's
-      // engine rather than their own.
-      const response = await getAllEngines({
-        type: 'SPARK_SQL',
-        sharelevel: 'USER',
-        'hive.server2.proxy.user': profile.owner || null,
-        subdomain
-      })
-      // The shared axios interceptor unwraps `data` at runtime, while the legacy helper is
-      // typed as AxiosResponse. Support both shapes until that helper is typed consistently.
-      activeEngines = Array.isArray(response)
-        ? response
-        : Array.isArray(response.data)
-          ? response.data
-          : []
-    } catch (e: any) {
-      ElMessage.error(`Unable to check active Engines: ${e?.message || e}`)
-      return
-    }
-
-    const engineCount = activeEngines.length
-    const confirmation = engineCount
-      ? `Profile '${subdomain}' currently has ${engineCount} running Engine ${engineCount === 1 ? 'Pod' : 'Pods'} on the cluster. Deleting this profile will terminate ${engineCount === 1 ? 'that Pod' : 'those Pods'} and release its resources. Do you want to continue?`
-      : `Delete Engine Profile '${subdomain}'? No active Engine Pod was found.`
-
-    try {
-      await ElMessageBox.confirm(confirmation, 'Delete Engine Profile', {
-        confirmButtonText: engineCount ? 'Terminate Engine & Delete Profile' : 'Delete Profile',
-        cancelButtonText: 'Cancel',
-        type: 'warning'
-      })
+      await ElMessageBox.confirm(
+        `Delete Engine Profile '${profile.name || profile.subdomain}'? Existing engines are not terminated; they remain available until their idle timeout.`,
+        'Delete Engine Profile',
+        {
+          confirmButtonText: 'Delete Profile',
+          cancelButtonText: 'Cancel',
+          type: 'warning'
+        })
     } catch {
       return
     }
 
-    deletingProfile.value = subdomain
+    deletingProfile.value = profile.profileId
     try {
-      if (engineCount) {
-        await deleteEngine({
-          type: 'SPARK_SQL',
-          sharelevel: 'USER',
-          'hive.server2.proxy.user': profile.owner || null,
-          subdomain,
-          kill: true
-        })
-      }
-      await deleteEngineProfile(subdomain)
-      ElMessage.success(
-        engineCount
-          ? `Engine '${subdomain}' was terminated and its profile was deleted`
-          : `Engine profile '${subdomain}' deleted successfully`
-      )
+      await deleteEngineProfile(profile.profileId)
+      ElMessage.success(`Engine profile '${profile.name || profile.subdomain}' deleted successfully`)
       await loadProfiles()
     } catch (e: any) {
-      ElMessage.error(`Failed to terminate/delete '${subdomain}': ${e?.message || e}`)
+      ElMessage.error(`Failed to delete profile: ${e?.message || e}`)
     } finally {
       deletingProfile.value = null
     }
   }
 
-  const handleSaveProfile = async (profileData: { subdomain: string; sparkConfig: Record<string, string> }) => {
+  const handleSaveProfile = async (profileData: {
+    profileId?: string
+    name: string
+    sparkConfig: Record<string, string>
+    notebookRuntimeIdleTimeout: string
+    engineIdleTimeout: string
+  }) => {
     try {
-      await upsertEngineProfile(profileData.subdomain, profileData.sparkConfig)
-      ElMessage.success(`Engine profile '${profileData.subdomain}' saved successfully`)
+      if (profileData.profileId) {
+        await updateEngineProfile(profileData.profileId, profileData.name, profileData.sparkConfig, {
+          notebookRuntimeIdleTimeout: profileData.notebookRuntimeIdleTimeout,
+          engineIdleTimeout: profileData.engineIdleTimeout
+        })
+      } else {
+        await createEngineProfile(profileData.name, profileData.sparkConfig, {
+          notebookRuntimeIdleTimeout: profileData.notebookRuntimeIdleTimeout,
+          engineIdleTimeout: profileData.engineIdleTimeout
+        })
+      }
+      ElMessage.success(`Engine profile '${profileData.name}' saved successfully`)
       await loadProfiles()
     } catch (e: any) {
       ElMessage.error(`Failed to save engine profile: ${e?.message || e}`)
     }
   }
 
-  init()
+  let statusPoll: ReturnType<typeof setInterval> | undefined
+
+  onMounted(() => {
+    init()
+    statusPoll = setInterval(refreshEngineStatuses, 5000)
+  })
+
+  onBeforeUnmount(() => {
+    if (statusPoll) clearInterval(statusPoll)
+  })
 
   defineExpose({
     getProxyEngineUI
@@ -436,6 +538,11 @@
       align-items: center;
       justify-content: space-between;
       margin-bottom: 16px;
+    }
+    .page-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #1e293b;
     }
     header {
       display: flex;

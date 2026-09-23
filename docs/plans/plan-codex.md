@@ -27,30 +27,30 @@ All facts below were verified against the working tree before writing this plan.
 Ranger version is **2.5.0**, declared in `extensions/spark/kyuubi-spark-authz/pom.xml:35`
 (not in the root `pom.xml`).
 
-| Fact | Evidence |
-|---|---|
-| Singleton hard-codes appId/serviceType at class-load | `ranger/SparkRangerAdminPlugin.scala:30` — `object SparkRangerAdminPlugin extends RangerBasePlugin("spark", "sparkSql") with RangerConfigProvider` |
-| Eager initialization in the extension constructor | `ranger/RangerSparkExtension.scala:45` — `SparkRangerAdminPlugin.initialize()` in the class body |
-| Ranger conf keys interpolate the service type | `ranger/SparkRangerAdminPlugin.scala:42,60` — `s"ranger.plugin.${getServiceType}..."` |
-| `initialize()` also registers the shutdown hook | `ranger/SparkRangerAdminPlugin.scala:67-85` |
-| `getRangerConf` is an eager `val` bound to `this` as a `RangerBasePlugin` | `ranger/RangerConfigProvider.scala` — `val getRangerConf = invokeAs(this, "getConfig")` |
-| Access string is derived from the Scala enum name | `ranger/AccessRequest.scala:60` — `req.setAccessType(accessType.toString.toLowerCase)` |
-| `USE` is mapped to ANY_ACCESS, not a named access | `ranger/AccessRequest.scala:59` — `case USE => req.setAccessType(RangerPolicyEngine.ANY_ACCESS)` |
-| User roles + cluster name are read by **reflection on the singleton**, in exception-swallowing `try/catch` | `ranger/AccessRequest.scala:47-56` (`getRolesFromUserAndGroups`), `62-67` (`getClusterName`) |
-| `AccessResource` never emits a `catalog` resource key | `ranger/AccessResource.scala:54-77` — sets only `database`/`table`/`column`/`udf`/`url`; `catalog` is only a constructor field (line 31) |
-| `VIEW` and `INDEX` are collapsed into the `table` resource key | `ranger/AccessResource.scala:64-66` — `case TABLE \| VIEW \| INDEX => setValue("table", ...)` |
-| Service def is taken from the live delegate | `ranger/AccessResource.scala:78` — `resource.setServiceDef(SparkRangerAdminPlugin.getServiceDef)` |
-| Hive-style access enum, decoupled from resource level | `ranger/AccessType.scala:28` — `NONE, CREATE, ALTER, DROP, SELECT, UPDATE, USE, READ, WRITE, ALL, ADMIN, INDEX, TEMPUDFADMIN` |
-| `CREATETABLE` output builds a **table**-level resource with `CREATE` | `ranger/AccessType.scala:42-44` + `ObjectType.scala:31-38` |
-| Main authz path already carries catalog | `ranger/AccessResource.scala:90-100` — `apply(obj, opType)` passes `obj.catalog` |
-| Row filter drops catalog | `rule/rowfilter/RuleApplyRowFilter.scala:45` — `AccessResource(TABLE, db, table, null)` |
-| Data masking drops catalog | `rule/datamasking/RuleApplyDataMaskingStage0.scala:64` — `AccessResource(COLUMN, db, table, attr.name)` |
-| Show filtering drops catalog | `rule/rowfilter/RuleReplaceShowObjectCommands.scala:57,92,113`; `rule/rowfilter/FilteredShowObjectsExec.scala:52,76` |
-| Catalog is already extracted and carried | `serde/Table.scala`, `serde/Database.scala`, `PrivilegeObject.scala` expose `catalog: Option[String]`; filled by `serde/catalogExtractors.scala` and `serde/tableExtractors.scala` |
-| Test policies are **generated**, not hand-written | `src/test/gen/scala/.../gen/PolicyJsonFileGenerator.scala:63-86`, run via `dev/gen/gen_ranger_policy_json.sh` with `-Pgen-policy` and `KYUUBI_UPDATE=1` |
-| The generated file embeds the Hive service def | `src/test/resources/policies_base.json` → `serviceDef.name = "hive"`, resources `[database, url, table, udf, column]`, accessTypes `[select, update, create, drop, alter, index, lock, all, read, write]` |
-| Test client hard-codes the policy file name | `src/test/scala/.../ranger/RangerLocalClient.scala:36` — `getResourceAsStream("sparkSql_hive_jenkins.json")` |
-| Test Ranger conf keys | `src/test/resources/ranger-spark-security.xml` — `ranger.plugin.spark.{service.name, policy.source.impl, policy.rest.url, policy.cache.dir}` |
+|                                                    Fact                                                    |                                                                                                 Evidence                                                                                                  |
+|------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Singleton hard-codes appId/serviceType at class-load                                                       | `ranger/SparkRangerAdminPlugin.scala:30` — `object SparkRangerAdminPlugin extends RangerBasePlugin("spark", "sparkSql") with RangerConfigProvider`                                                        |
+| Eager initialization in the extension constructor                                                          | `ranger/RangerSparkExtension.scala:45` — `SparkRangerAdminPlugin.initialize()` in the class body                                                                                                          |
+| Ranger conf keys interpolate the service type                                                              | `ranger/SparkRangerAdminPlugin.scala:42,60` — `s"ranger.plugin.${getServiceType}..."`                                                                                                                     |
+| `initialize()` also registers the shutdown hook                                                            | `ranger/SparkRangerAdminPlugin.scala:67-85`                                                                                                                                                               |
+| `getRangerConf` is an eager `val` bound to `this` as a `RangerBasePlugin`                                  | `ranger/RangerConfigProvider.scala` — `val getRangerConf = invokeAs(this, "getConfig")`                                                                                                                   |
+| Access string is derived from the Scala enum name                                                          | `ranger/AccessRequest.scala:60` — `req.setAccessType(accessType.toString.toLowerCase)`                                                                                                                    |
+| `USE` is mapped to ANY_ACCESS, not a named access                                                          | `ranger/AccessRequest.scala:59` — `case USE => req.setAccessType(RangerPolicyEngine.ANY_ACCESS)`                                                                                                          |
+| User roles + cluster name are read by **reflection on the singleton**, in exception-swallowing `try/catch` | `ranger/AccessRequest.scala:47-56` (`getRolesFromUserAndGroups`), `62-67` (`getClusterName`)                                                                                                              |
+| `AccessResource` never emits a `catalog` resource key                                                      | `ranger/AccessResource.scala:54-77` — sets only `database`/`table`/`column`/`udf`/`url`; `catalog` is only a constructor field (line 31)                                                                  |
+| `VIEW` and `INDEX` are collapsed into the `table` resource key                                             | `ranger/AccessResource.scala:64-66` — `case TABLE \| VIEW \| INDEX => setValue("table", ...)`                                                                                                             |
+| Service def is taken from the live delegate                                                                | `ranger/AccessResource.scala:78` — `resource.setServiceDef(SparkRangerAdminPlugin.getServiceDef)`                                                                                                         |
+| Hive-style access enum, decoupled from resource level                                                      | `ranger/AccessType.scala:28` — `NONE, CREATE, ALTER, DROP, SELECT, UPDATE, USE, READ, WRITE, ALL, ADMIN, INDEX, TEMPUDFADMIN`                                                                             |
+| `CREATETABLE` output builds a **table**-level resource with `CREATE`                                       | `ranger/AccessType.scala:42-44` + `ObjectType.scala:31-38`                                                                                                                                                |
+| Main authz path already carries catalog                                                                    | `ranger/AccessResource.scala:90-100` — `apply(obj, opType)` passes `obj.catalog`                                                                                                                          |
+| Row filter drops catalog                                                                                   | `rule/rowfilter/RuleApplyRowFilter.scala:45` — `AccessResource(TABLE, db, table, null)`                                                                                                                   |
+| Data masking drops catalog                                                                                 | `rule/datamasking/RuleApplyDataMaskingStage0.scala:64` — `AccessResource(COLUMN, db, table, attr.name)`                                                                                                   |
+| Show filtering drops catalog                                                                               | `rule/rowfilter/RuleReplaceShowObjectCommands.scala:57,92,113`; `rule/rowfilter/FilteredShowObjectsExec.scala:52,76`                                                                                      |
+| Catalog is already extracted and carried                                                                   | `serde/Table.scala`, `serde/Database.scala`, `PrivilegeObject.scala` expose `catalog: Option[String]`; filled by `serde/catalogExtractors.scala` and `serde/tableExtractors.scala`                        |
+| Test policies are **generated**, not hand-written                                                          | `src/test/gen/scala/.../gen/PolicyJsonFileGenerator.scala:63-86`, run via `dev/gen/gen_ranger_policy_json.sh` with `-Pgen-policy` and `KYUUBI_UPDATE=1`                                                   |
+| The generated file embeds the Hive service def                                                             | `src/test/resources/policies_base.json` → `serviceDef.name = "hive"`, resources `[database, url, table, udf, column]`, accessTypes `[select, update, create, drop, alter, index, lock, all, read, write]` |
+| Test client hard-codes the policy file name                                                                | `src/test/scala/.../ranger/RangerLocalClient.scala:36` — `getResourceAsStream("sparkSql_hive_jenkins.json")`                                                                                              |
+| Test Ranger conf keys                                                                                      | `src/test/resources/ranger-spark-security.xml` — `ranger.plugin.spark.{service.name, policy.source.impl, policy.rest.url, policy.cache.dir}`                                                              |
 
 **Good news that narrows the work:** `catalog` already exists end-to-end in
 `PrivilegeObject` and is already passed on the main authorization path. The
@@ -273,29 +273,29 @@ Required change: have the profile/mapper supply the literal access string, and l
 
 #### 4b. Required StarRocks mappings
 
-| Kyuubi operation | StarRocks resource level | Access string |
-|---|---|---|
-| `QUERY`, table scan, `ANALYZE_TABLE`, `SHOW_CREATETABLE`, `SHOW_TBLPROPERTIES`, `SHOWPARTITIONS` | table, or column when columns are present | `select` |
-| `SHOWCOLUMNS`, `DESCTABLE` | column / table | `select` |
-| `CREATEDATABASE` | catalog | `create database` |
-| `CREATETABLE`, `CREATETABLE_AS_SELECT` (output) | database | `create table` |
-| `CREATETABLE_AS_SELECT` (input) | table / column | `select` |
-| `CREATEVIEW` (output) | database | `create view` |
-| `ALTERVIEW_AS` (input) | table / column | `select` |
-| `CREATEFUNCTION` | database | `create function` |
-| `LOAD` (output), insert, insert overwrite | table | `insert` |
-| `LOAD` (input) | table / column | `select` |
-| `UPDATE`, `TRUNCATETABLE`, `PrivilegeObjectActionType` other-than-OTHER writes | table | `update` |
-| Delete operations (`PrivilegeObjectActionType.DELETE`) | matching object level | `delete` for row deletes, `drop` for object removal |
-| `DROPDATABASE` | database | `drop` |
-| `DROPTABLE` | table | `drop` |
-| `DROPVIEW` | view | `drop` |
-| `DROPFUNCTION` | function | `drop` |
-| `ALTERDATABASE`, `ALTERDATABASE_LOCATION` | database | `alter` |
-| `ALTERTABLE_*`, `MSCK` | table | `alter` |
-| `ALTERVIEW_RENAME` | view | `alter` |
-| `SHOWDATABASES`, `SWITCHDATABASE`, `DESCDATABASE`, `SHOWTABLES`, catalog visibility | catalog, and database where Spark exposes it | `usage` |
-| `SHOWFUNCTIONS`, `DESCFUNCTION`, UDF execution | function | `usage` |
+|                                         Kyuubi operation                                         |           StarRocks resource level           |                    Access string                    |
+|--------------------------------------------------------------------------------------------------|----------------------------------------------|-----------------------------------------------------|
+| `QUERY`, table scan, `ANALYZE_TABLE`, `SHOW_CREATETABLE`, `SHOW_TBLPROPERTIES`, `SHOWPARTITIONS` | table, or column when columns are present    | `select`                                            |
+| `SHOWCOLUMNS`, `DESCTABLE`                                                                       | column / table                               | `select`                                            |
+| `CREATEDATABASE`                                                                                 | catalog                                      | `create database`                                   |
+| `CREATETABLE`, `CREATETABLE_AS_SELECT` (output)                                                  | database                                     | `create table`                                      |
+| `CREATETABLE_AS_SELECT` (input)                                                                  | table / column                               | `select`                                            |
+| `CREATEVIEW` (output)                                                                            | database                                     | `create view`                                       |
+| `ALTERVIEW_AS` (input)                                                                           | table / column                               | `select`                                            |
+| `CREATEFUNCTION`                                                                                 | database                                     | `create function`                                   |
+| `LOAD` (output), insert, insert overwrite                                                        | table                                        | `insert`                                            |
+| `LOAD` (input)                                                                                   | table / column                               | `select`                                            |
+| `UPDATE`, `TRUNCATETABLE`, `PrivilegeObjectActionType` other-than-OTHER writes                   | table                                        | `update`                                            |
+| Delete operations (`PrivilegeObjectActionType.DELETE`)                                           | matching object level                        | `delete` for row deletes, `drop` for object removal |
+| `DROPDATABASE`                                                                                   | database                                     | `drop`                                              |
+| `DROPTABLE`                                                                                      | table                                        | `drop`                                              |
+| `DROPVIEW`                                                                                       | view                                         | `drop`                                              |
+| `DROPFUNCTION`                                                                                   | function                                     | `drop`                                              |
+| `ALTERDATABASE`, `ALTERDATABASE_LOCATION`                                                        | database                                     | `alter`                                             |
+| `ALTERTABLE_*`, `MSCK`                                                                           | table                                        | `alter`                                             |
+| `ALTERVIEW_RENAME`                                                                               | view                                         | `alter`                                             |
+| `SHOWDATABASES`, `SWITCHDATABASE`, `DESCDATABASE`, `SHOWTABLES`, catalog visibility              | catalog, and database where Spark exposes it | `usage`                                             |
+| `SHOWFUNCTIONS`, `DESCFUNCTION`, UDF execution                                                   | function                                     | `usage`                                             |
 
 Note the semantic split that `AccessType.scala:81` currently blurs:
 `PrivilegeObjectActionType.DELETE` maps to Hive `DROP`, but StarRocks has both
@@ -533,3 +533,4 @@ The new tests must fail if the StarRocks resource/access mapping is reverted.
   version deployed on the target Ranger admin. Re-verify against the actual
   deployed servicedef before rollout, since access-type lists have grown across
   StarRocks releases.
+

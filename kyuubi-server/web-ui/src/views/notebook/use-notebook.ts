@@ -45,6 +45,9 @@ const PAGE_ROWS = 100
 const isTerminal = (execution: CellExecution) =>
   TERMINAL_EXECUTION_STATES.includes(execution.state)
 
+const isUsableSession = (candidate: NotebookSession) =>
+  !['STOPPING', 'STOPPED', 'LOST', 'FAILED'].includes(candidate.state)
+
 /**
  * Surfaces the server's error envelope, which carries a message safe to display. Falling back to
  * a generic sentence hides exactly the part the user needs, so the envelope wins whenever present.
@@ -79,6 +82,9 @@ export function useNotebook() {
   const pollInFlight = new Set<string>()
   const outputCollections = new Map<string, Promise<void>>()
   const collectedOutputs = new Set<string>()
+  // A change event and a Run click can arrive almost together. Serializing writes by cell makes
+  // the source submitted by Run deterministic instead of allowing an older reload to win.
+  const cellSaveQueues = new Map<string, Promise<boolean>>()
 
   const readOnly = () => notebook.value?.role === 'VIEWER'
 
@@ -86,7 +92,9 @@ export function useNotebook() {
     try {
       const specs = await api.listRuntimeSpecs()
       pythonEnabled.value = specs.some(
-        (spec) => spec.language === 'PYTHON' && spec.enabled
+        (spec) =>
+          spec.enabled &&
+          (spec.supportedLanguages?.includes('PYTHON') || spec.language === 'PYTHON')
       )
     } catch (error) {
       pythonEnabled.value = false
@@ -126,7 +134,7 @@ export function useNotebook() {
         api.listSessions(notebookId)
       ])
       session.value =
-        openSessions.find((candidate) => candidate.state !== 'STOPPED') || null
+        openSessions.find(isUsableSession) || null
       // The list is newest first, so the first hit per cell is the current one.
       history.forEach((execution) => {
         if (execution.cellId && !executions[execution.cellId]) {
@@ -145,7 +153,7 @@ export function useNotebook() {
   }
 
   const ensureSession = async (): Promise<NotebookSession> => {
-    if (session.value && session.value.state !== 'STOPPED') return session.value
+    if (session.value && isUsableSession(session.value)) return session.value
     const created = await api.createSession(
       notebook.value!.id,
       notebook.value?.runtimeProfile || null
@@ -154,24 +162,45 @@ export function useNotebook() {
     return created
   }
 
-  const runCell = async (cell: NotebookCell, source: string) => {
+  const cancelledStarts = new Set<string>()
+
+  /**
+   * Starts one cell. `isCancelled` lets Run all stop cleanly while its first engine session is
+   * still being created: session creation may finish, but no execution is submitted afterwards.
+   */
+  const runCell = async (
+    cell: NotebookCell,
+    source: string,
+    isCancelled?: () => boolean
+  ): Promise<CellExecution | null> => {
     if (!notebook.value?.runtimeProfile) {
       reportError(
         new Error('Please select an Engine profile from the top header bar before running cells.'),
         'No Engine Selected'
       )
-      return
+      return null
     }
     const current = executions[cell.id]
-    if (initializingCells[cell.id] || (current && !isTerminal(current))) return
+    if (initializingCells[cell.id] || (current && !isTerminal(current))) return null
+    cancelledStarts.delete(cell.id)
     initializingCells[cell.id] = true
     try {
+      // The textarea's change event is asynchronous. Persist this exact source before submitting
+      // so a just-edited `%pip install` can never execute the previously saved `%pip list`.
+      if (!(await saveCell(cell, { source }))) return null
+      if (cancelledStarts.delete(cell.id) || isCancelled?.()) return null
+
+      // Reloading after the save gives us the authoritative cell language/version while retaining
+      // the source passed above as the execution snapshot.
+      const storedCell = cells.value.find((candidate) => candidate.id === cell.id) || cell
       const active = await ensureSession()
+      if (cancelledStarts.delete(cell.id) || isCancelled?.()) {
+        return null
+      }
       const execution = await api.submitExecution(active.id, {
         cellId: cell.id,
-        // Kept for older servers; the current one takes the language from the notebook and
-        // ignores this field.
-        language: notebook.value?.language ?? cell.language,
+        // Stored cell language is authoritative. This also supports legacy raw-source requests.
+        language: storedCell.language,
         source,
         // Scoped to this attempt, so a retried click after a network timeout does not run twice.
         clientRequestId: `${cell.id}-${Date.now()}`
@@ -187,14 +216,23 @@ export function useNotebook() {
         outputSequence: 0
       }
       poll(cell.id, execution.id)
+      return execution
     } catch (error) {
       reportError(error, 'The cell could not be started')
+      return null
     } finally {
       delete initializingCells[cell.id]
     }
   }
 
   const stopCell = async (cell: NotebookCell) => {
+    if (initializingCells[cell.id]) {
+      // A session request cannot be cancelled by the execution endpoint because no execution
+      // exists yet. Mark it cancelled so runCell exits before submitting the user's code.
+      cancelledStarts.add(cell.id)
+      ElMessage.info('Engine startup will finish, but this cell will not be run.')
+      return
+    }
     const execution = executions[cell.id]
     if (!execution) return
     try {
@@ -352,20 +390,37 @@ export function useNotebook() {
     cells.value = loaded.cells || []
   }
 
-  const saveCell = async (
+  function saveCell(
     cell: NotebookCell,
     changes: Record<string, string>
-  ) => {
-    try {
-      await api.updateCell(cell.notebookId, cell.id, changes)
-      await reloadCells()
-    } catch (error) {
-      reportError(error, 'The cell could not be saved')
-      await reloadCells()
-    }
+  ): Promise<boolean> {
+    const previous = cellSaveQueues.get(cell.id) || Promise.resolve(true)
+    const next = previous
+      .catch(() => false)
+      .then(async () => {
+        try {
+          await api.updateCell(cell.notebookId, cell.id, changes)
+          await reloadCells()
+          return true
+        } catch (error) {
+          reportError(error, 'The cell could not be saved')
+          return false
+        }
+      })
+    cellSaveQueues.set(cell.id, next)
+    void next.finally(() => {
+      if (cellSaveQueues.get(cell.id) === next) {
+        cellSaveQueues.delete(cell.id)
+      }
+    })
+    return next
   }
 
-  const addCell = async (cellType: 'CODE' | 'MARKDOWN', afterCellId?: string) => {
+  const addCell = async (
+    cellType: 'CODE' | 'MARKDOWN',
+    afterCellId?: string,
+    language: 'SQL' | 'PYTHON' = 'SQL'
+  ) => {
     if (!notebook.value) return
     let position: number | undefined = undefined
     if (afterCellId) {
@@ -375,6 +430,7 @@ export function useNotebook() {
     try {
       await api.createCell(notebook.value.id, {
         cellType,
+        language: cellType === 'CODE' ? language : 'MARKDOWN',
         source: '',
         position
       })

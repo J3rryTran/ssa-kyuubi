@@ -16,12 +16,12 @@ StarRocks và Spark trên cùng dữ liệu Lakehouse.
 
 Quyết định đã chốt với người dùng:
 - **Mục tiêu: đóng góp upstream `apache/kyuubi`** → cần giữ tính tổng quát (mode `spark`
-  mặc định + mode `starrocks` tùy chọn), tương thích ngược, và **xin đồng thuận maintainer**
-  cho config/feature mới (theo `AGENTS.md` mục "Ask first").
+mặc định + mode `starrocks` tùy chọn), tương thích ngược, và **xin đồng thuận maintainer**
+cho config/feature mới (theo `AGENTS.md` mục "Ask first").
 - **Dữ liệu là Lakehouse (Iceberg/Hudi/Paimon)** → tên catalog của Spark **không trùng** tên
-  catalog StarRocks ⇒ **bắt buộc có cơ chế ánh xạ catalog** Spark → StarRocks.
+catalog StarRocks ⇒ **bắt buộc có cơ chế ánh xạ catalog** Spark → StarRocks.
 - **Phạm vi: đầy đủ ngay** (authz + row-filter + data-masking + show-filtering + audit + docs +
-  tests). Đề xuất vẫn chia pha để giảm rủi ro, nhưng tất cả nằm trong cùng phạm vi giao hàng.
+tests). Đề xuất vẫn chia pha để giảm rủi ro, nhưng tất cả nằm trong cùng phạm vi giao hàng.
 
 ---
 
@@ -32,6 +32,7 @@ Quyết định đã chốt với người dùng:
 đơn giản hóa / làm rõ** trước khi code.
 
 ### Điểm mạnh (giữ nguyên)
+
 - **Xác định đúng nút thắt kiến trúc**: `SparkRangerAdminPlugin` là `object` Scala kế thừa
   `RangerBasePlugin("spark", "sparkSql")` — appId/serviceType **hard-code lúc class-load**
   (`SparkRangerAdminPlugin.scala:30`), khởi tạo eager trong constructor của
@@ -48,6 +49,7 @@ Quyết định đã chốt với người dùng:
   access-string chính xác.
 
 ### Điểm yếu / rủi ro / thiếu sót (cần bổ sung)
+
 1. **Đánh giá thấp phần khó nhất — ánh xạ là 2 CHIỀU, không chỉ đổi chuỗi access.** Trong
    StarRocks, đặc quyền gắn với **cấp resource cụ thể**: `create table` cấp trên **DATABASE**
    (resource = catalog+database, *không có* table), `create database` cấp trên **CATALOG**.
@@ -89,21 +91,21 @@ Quyết định đã chốt với người dùng:
 
 ## 3. Phát hiện then chốt từ mã nguồn (đã xác minh)
 
-| Vấn đề | Bằng chứng |
-|---|---|
-| Singleton hard-code appId/serviceType | `SparkRangerAdminPlugin.scala:30` `object ... extends RangerBasePlugin("spark","sparkSql")` |
-| Khởi tạo eager | `RangerSparkExtension.scala:44` gọi `SparkRangerAdminPlugin.initialize()` trong thân class |
-| Config prefix bám serviceType | `SparkRangerAdminPlugin.scala:42,60` `s"ranger.plugin.${getServiceType}..."` |
-| Nhiều call-site bám thẳng singleton | `RuleAuthorization`, `RuleFunctionAuthorization`, `AccessResource.scala:78`, `RuleApplyRowFilter.scala:47`, `RuleApplyDataMaskingStage0.scala:66`, `FilteredShowObjectsExec`, `RuleReplaceShowObjectCommands` |
-| `AccessResource` không có key `catalog` | `AccessResource.scala:55-77` chỉ set `database/table/column/udf/url`; `catalog` chỉ lưu thuộc tính (dòng 31) |
-| `AccessType` kiểu Hive, tách rời cấp resource | `AccessType.scala:24-85` (enum `SELECT/CREATE/DROP/ALTER/USE/UPDATE...`) |
-| Row-filter không truyền catalog | `RuleApplyRowFilter.scala:45` `AccessResource(TABLE, db, table, null)` |
-| Data-mask không truyền catalog | `RuleApplyDataMaskingStage0.scala:64` `AccessResource(COLUMN, db, table, col)` |
-| SHOW filter không truyền catalog | `RuleReplaceShowObjectCommands.scala:52,57,92,113`, `FilteredShowObjectsExec` |
-| Catalog ĐÃ được trích xuất & lưu sẵn | `Table.scala`/`Database.scala`/`PrivilegeObject.scala` có `catalog: Option[String]`; `tableExtractors.scala`/`catalogExtractors.scala` đã điền |
-| Đường authz chính ĐÃ truyền catalog | `AccessResource.scala:90-100` `apply(obj, opType)` truyền `obj.catalog` |
-| Hạ tầng test | `RangerLocalClient.scala` nạp `sparkSql_hive_jenkins.json`; `ranger-spark-security.xml` khai báo `ranger.plugin.spark.*`; suite gốc: `SparkRangerAdminPluginSuite`, `AccessResourceSuite`, `RangerSparkExtensionSuite` |
-| Ranger version | `pom.xml`: `ranger.version=2.6.0`, deps `ranger-plugins-common/-audit/-cred`, `ranger-plugin-classloader` |
+|                    Vấn đề                     |                                                                                                       Bằng chứng                                                                                                       |
+|-----------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Singleton hard-code appId/serviceType         | `SparkRangerAdminPlugin.scala:30` `object ... extends RangerBasePlugin("spark","sparkSql")`                                                                                                                            |
+| Khởi tạo eager                                | `RangerSparkExtension.scala:44` gọi `SparkRangerAdminPlugin.initialize()` trong thân class                                                                                                                             |
+| Config prefix bám serviceType                 | `SparkRangerAdminPlugin.scala:42,60` `s"ranger.plugin.${getServiceType}..."`                                                                                                                                           |
+| Nhiều call-site bám thẳng singleton           | `RuleAuthorization`, `RuleFunctionAuthorization`, `AccessResource.scala:78`, `RuleApplyRowFilter.scala:47`, `RuleApplyDataMaskingStage0.scala:66`, `FilteredShowObjectsExec`, `RuleReplaceShowObjectCommands`          |
+| `AccessResource` không có key `catalog`       | `AccessResource.scala:55-77` chỉ set `database/table/column/udf/url`; `catalog` chỉ lưu thuộc tính (dòng 31)                                                                                                           |
+| `AccessType` kiểu Hive, tách rời cấp resource | `AccessType.scala:24-85` (enum `SELECT/CREATE/DROP/ALTER/USE/UPDATE...`)                                                                                                                                               |
+| Row-filter không truyền catalog               | `RuleApplyRowFilter.scala:45` `AccessResource(TABLE, db, table, null)`                                                                                                                                                 |
+| Data-mask không truyền catalog                | `RuleApplyDataMaskingStage0.scala:64` `AccessResource(COLUMN, db, table, col)`                                                                                                                                         |
+| SHOW filter không truyền catalog              | `RuleReplaceShowObjectCommands.scala:52,57,92,113`, `FilteredShowObjectsExec`                                                                                                                                          |
+| Catalog ĐÃ được trích xuất & lưu sẵn          | `Table.scala`/`Database.scala`/`PrivilegeObject.scala` có `catalog: Option[String]`; `tableExtractors.scala`/`catalogExtractors.scala` đã điền                                                                         |
+| Đường authz chính ĐÃ truyền catalog           | `AccessResource.scala:90-100` `apply(obj, opType)` truyền `obj.catalog`                                                                                                                                                |
+| Hạ tầng test                                  | `RangerLocalClient.scala` nạp `sparkSql_hive_jenkins.json`; `ranger-spark-security.xml` khai báo `ranger.plugin.spark.*`; suite gốc: `SparkRangerAdminPluginSuite`, `AccessResourceSuite`, `RangerSparkExtensionSuite` |
+| Ranger version                                | `pom.xml`: `ranger.version=2.6.0`, deps `ranger-plugins-common/-audit/-cred`, `ranger-plugin-classloader`                                                                                                              |
 
 **Tin tốt:** catalog **đã có sẵn** trong `Table`/`Database`/`PrivilegeObject` và đường authz
 chính đã truyền nó. Khối lượng còn lại tập trung vào: (a) làm `catalog` thành **resource key**,
@@ -119,12 +121,14 @@ Phạm vi: chỉ trong `extensions/spark/kyuubi-spark-authz` + docs + test resou
 hàng (người dùng chọn "đầy đủ ngay"); chia pha chỉ để kiểm soát rủi ro và review.
 
 ### Pha 0 — Pre-flight (theo `AGENTS.md`)
+
 - `git remote -v` xác nhận remote `apache` → `apache/kyuubi`; `git fetch apache master` nếu cũ.
 - Cây làm việc đang dirty (`.gitignore`, `plans/`): **không** đổi nhánh/RAT-check trước khi
   stash; nhánh mới từ `apache/master` (vd `kyuubi-NNNN-starrocks-authz`).
 - **Tạo issue + thảo luận maintainer** trước khi mở PR (feature + config mới = "Ask first").
 
 ### Pha 1 — Trừu tượng hóa & chọn delegate theo config (nền tảng)
+
 **File:** `SparkRangerAdminPlugin.scala`, `RangerSparkExtension.scala`, + 1 file profile mới.
 
 - **Bỏ khởi tạo eager** ở `RangerSparkExtension.scala:44`. Khởi tạo **lazy, idempotent,
@@ -142,6 +146,7 @@ hàng (người dùng chọn "đầy đủ ngay"); chia pha chỉ để kiểm s
   delegate đã chọn.
 
 ### Pha 2 — Profile-aware resource + access mapping (phần khó nhất)
+
 **File mới:** một `AuthzProfile`/`RangerServiceProfile` (sealed trait `SparkProfile` /
 `StarRocksProfile`). **Sửa:** `AccessResource.scala`, `AccessType.scala` (hoặc tách mapper riêng
 cho StarRocks).
@@ -175,6 +180,7 @@ cho StarRocks).
     (hàm chuẩn hóa catalog) dùng chung cho mọi nơi dựng resource.
 
 ### Pha 3 — Truyền catalog vào row-filter / data-masking / show-filtering
+
 **File:** `RuleApplyRowFilter.scala:45`, `RuleApplyDataMaskingStage0.scala:64`,
 `RuleReplaceShowObjectCommands.scala`, `FilteredShowObjectsExec.scala`.
 
@@ -184,32 +190,34 @@ cho StarRocks).
   `catalog`) → hành vi cũ **không đổi**.
 
 ### Pha 4 — Test resources cho StarRocks
+
 **File mới dưới `src/test/resources/`:** `ranger-starrocks-security.xml`,
 `starrocks_<service>.json` (policy + servicedef dựa trên `ranger-servicedef-starrocks.json`
 chính thức), và bản tham chiếu `ranger-servicedef-starrocks.json`.
 - Cho `RangerLocalClient` nhận biết profile để nạp đúng file policy theo service type (thêm biến
-  thể/đối tượng cấu hình thay vì hard-code `sparkSql_hive_jenkins.json`).
+thể/đối tượng cấu hình thay vì hard-code `sparkSql_hive_jenkins.json`).
 
 ### Pha 5 — Tài liệu
+
 **File:** `docs/security/authorization/spark/install.md` (+ `overview.rst` nếu cần).
 - Hướng dẫn bật mode StarRocks: `spark.kyuubi.authz.ranger.service.type=starrocks`,
-  `ranger.plugin.starrocks.service.name`, `...policy.rest.url`, `...policy.cache.dir`.
+`ranger.plugin.starrocks.service.name`, `...policy.rest.url`, `...policy.cache.dir`.
 - Giải thích `catalog.mapping`, fallback `default_catalog`, và **URI không được hỗ trợ** ở mode
-  StarRocks.
+StarRocks.
 
 ---
 
 ## 5. Rủi ro chính & cách kiểm soát
 
-| Rủi ro | Kiểm soát |
-|---|---|
-| **Bypass âm thầm** do lệch tên resource/access | Lấy nguyên văn từ servicedef; test khẳng định **allow/deny thực** với servicedef+policy StarRocks thật |
-| Mapper 2 chiều phức tạp (cấp resource đổi theo op) | Tách `StarRocksAccessMapper` riêng, bảng ánh xạ tường minh + unit test cho từng op |
-| Hồi quy mode `spark` | Không đổi nhánh `spark` trong `AccessResource`/`AccessType`; chạy lại toàn bộ suite cũ (Iceberg/Hudi/Paimon/JDBC V2) |
-| Lazy-init đa luồng | `lazy val`/`synchronized`, đăng ký shutdown hook đúng một lần |
-| Lệch tên catalog Lakehouse ↔ StarRocks | `catalog.mapping` + fallback, áp dụng tại một điểm chuẩn hóa duy nhất |
-| Xung đột classpath khi nạp 2 servicedef | Chỉ nạp delegate của service type đã chọn; servicedef StarRocks chỉ ở test trừ khi maintainer yêu cầu bundle |
-| Phạm vi PR | Tách refactor facade (Pha 1) thành **PR riêng** nếu maintainer muốn — "One concern per PR" |
+|                       Rủi ro                       |                                                      Kiểm soát                                                       |
+|----------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| **Bypass âm thầm** do lệch tên resource/access     | Lấy nguyên văn từ servicedef; test khẳng định **allow/deny thực** với servicedef+policy StarRocks thật               |
+| Mapper 2 chiều phức tạp (cấp resource đổi theo op) | Tách `StarRocksAccessMapper` riêng, bảng ánh xạ tường minh + unit test cho từng op                                   |
+| Hồi quy mode `spark`                               | Không đổi nhánh `spark` trong `AccessResource`/`AccessType`; chạy lại toàn bộ suite cũ (Iceberg/Hudi/Paimon/JDBC V2) |
+| Lazy-init đa luồng                                 | `lazy val`/`synchronized`, đăng ký shutdown hook đúng một lần                                                        |
+| Lệch tên catalog Lakehouse ↔ StarRocks             | `catalog.mapping` + fallback, áp dụng tại một điểm chuẩn hóa duy nhất                                                |
+| Xung đột classpath khi nạp 2 servicedef            | Chỉ nạp delegate của service type đã chọn; servicedef StarRocks chỉ ở test trừ khi maintainer yêu cầu bundle         |
+| Phạm vi PR                                         | Tách refactor facade (Pha 1) thành **PR riêng** nếu maintainer muốn — "One concern per PR"                           |
 
 ---
 
@@ -226,6 +234,7 @@ chính thức), và bản tham chiếu `ranger-servicedef-starrocks.json`.
   masking chỉ áp khi policy khớp catalog; SHOW DATABASES/TABLES/COLUMNS lọc qua resource
   StarRocks; **mode `spark` giữ nguyên** để chứng minh tương thích ngược.
 - **Lệnh** (theo `AGENTS.md`):
+
   ```
   build/mvn test -pl :kyuubi-spark-authz_2.12 -am -DwildcardSuites=org.apache.kyuubi.plugin.spark.authz.ranger.SparkRangerAdminPluginSuite
   build/mvn test -pl :kyuubi-spark-authz_2.12 -am -DwildcardSuites=org.apache.kyuubi.plugin.spark.authz.ranger.AccessResourceSuite

@@ -32,7 +32,7 @@
 
 1. **Owner registry lives in ZooKeeper, not in the store.**
    - On notebook-session open, the owning pod creates an EPHEMERAL znode:
-         <kyuubi.ha.namespace>/notebook-sessions/<sessionId>  ->  "<host>:<rest-port>"
+     <kyuubi.ha.namespace>/notebook-sessions/<sessionId>  ->  "<host>:<rest-port>"
    - Ephemeral = the znode disappears automatically when the owning pod dies -> liveness
      detection for free; no heartbeats, no cleanup jobs.
    - On session close/stop, delete the znode explicitly.
@@ -49,19 +49,19 @@
 
 Apply owner resolution to runtime endpoints only:
 
-    /api/v1/notebook-sessions/{id}            (GET/DELETE and sub-routes :restart :stop)
-    /api/v1/notebook-sessions/{id}/executions
-    /api/v1/notebooks/{id}/executions         (POST run-cell — resolves via the notebook's
-                                               active session)
-    /api/v1/executions/{id} and sub-routes    (/logs /outputs /results /schema :cancel)
+        /api/v1/notebook-sessions/{id}            (GET/DELETE and sub-routes :restart :stop)
+        /api/v1/notebook-sessions/{id}/executions
+        /api/v1/notebooks/{id}/executions         (POST run-cell — resolves via the notebook's
+                                                   active session)
+        /api/v1/executions/{id} and sub-routes    (/logs /outputs /results /schema :cancel)
 
 Resolution order per request:
 1. Session/execution known to the LOCAL session manager -> handle locally (fast path,
-   no ZK round-trip).
+no ZK round-trip).
 2. Not local -> look up the znode. Found and it is another instance -> PROXY to it.
 3. Znode absent (owner dead or session never existed) -> **409** with body
-   `{"error":"runtime lost","action":"restart-session"}`. UI already shows a Restart
-   action on this (verify; adjust UI copy only if needed).
+`{"error":"runtime lost","action":"restart-session"}`. UI already shows a Restart
+action on this (verify; adjust UI copy only if needed).
 
 Notebook/folder CRUD (`/api/v1/notebooks`, `/api/v1/notebook-folders`, revisions, search)
 is NOT routed — it reads the shared store and stays local on every pod.
@@ -79,9 +79,9 @@ is NOT routed — it reads the shared store and stays local on every pod.
    cannot validate the caller's cookie. Handle it like this:
    - The entry pod fully authenticates the request as today (cookie or Bearer).
    - On the forwarded request, replace credentials with internal headers:
-         X-Kyuubi-Proxied: true
-         X-Kyuubi-Real-User: <authenticated username>
-         X-Kyuubi-Internal-Token: <value of conf kyuubi.notebook.proxy.internal.secret>
+     X-Kyuubi-Proxied: true
+     X-Kyuubi-Real-User: <authenticated username>
+     X-Kyuubi-Internal-Token: <value of conf kyuubi.notebook.proxy.internal.secret>
    - The receiving pod accepts `X-Kyuubi-Real-User` ONLY when the internal token matches
      its own conf value AND the request arrives on the REST port; otherwise the headers
      are ignored and normal auth applies. Strip/reject these headers on any request that
@@ -109,8 +109,8 @@ is NOT routed — it reads the shared store and stays local on every pod.
 
 Post-build verification greps:
 
-    unzip -p kyuubi-server_*.jar 'org/apache/kyuubi/server/notebook/**' | strings \
-      | grep -iE 'notebook-sessions/|X-Kyuubi-Proxied|X-Kyuubi-Real-User'
+        unzip -p kyuubi-server_*.jar 'org/apache/kyuubi/server/notebook/**' | strings \
+          | grep -iE 'notebook-sessions/|X-Kyuubi-Proxied|X-Kyuubi-Real-User'
 
 ## 6. Delivery
 

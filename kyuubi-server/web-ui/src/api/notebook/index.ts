@@ -31,7 +31,11 @@ import type {
   NotebookSession,
   ExecutionOutputPage,
   RuntimeSpec,
-  EngineProfile
+  EngineProfile,
+  EngineProfileEngineStatus,
+  EngineProfileRevision,
+  EngineProfileRevisionTermination,
+  PythonEnvironmentRevision
 } from './types'
 
 /**
@@ -351,15 +355,82 @@ export const getExecutionOutputs = (
 export const listEngineProfiles = () =>
   call<EngineProfile[]>({ url: 'api/v1/engine-profiles', method: 'get' })
 
-export const getEngineProfile = (subdomain: string) =>
-  call<EngineProfile>({ url: `api/v1/engine-profiles/${subdomain}`, method: 'get' })
+export const getEngineProfile = (profileId: string) =>
+  call<EngineProfile>({ url: `api/v1/engine-profiles/${profileId}`, method: 'get' })
 
-export const upsertEngineProfile = (subdomain: string, sparkConfig: Record<string, string>) =>
+export interface EngineProfileTimeouts {
+  notebookRuntimeIdleTimeout?: string
+  engineIdleTimeout?: string
+}
+
+export const createEngineProfile = (
+  name: string,
+  sparkConfig: Record<string, string>,
+  timeouts: EngineProfileTimeouts = {}
+) =>
   call<EngineProfile>({
-    url: `api/v1/engine-profiles/${subdomain}`,
-    method: 'put',
-    data: { sparkConfig }
+    url: 'api/v1/engine-profiles',
+    method: 'post',
+    data: { name, sparkConfig, ...timeouts }
   })
 
-export const deleteEngineProfile = (subdomain: string) =>
-  call<void>({ url: `api/v1/engine-profiles/${subdomain}`, method: 'delete' })
+export const updateEngineProfile = (
+  profileId: string,
+  name: string,
+  sparkConfig: Record<string, string>,
+  timeouts: EngineProfileTimeouts = {}
+) =>
+  call<EngineProfile>({
+    url: `api/v1/engine-profiles/${profileId}`,
+    method: 'patch',
+    data: { name, sparkConfig, ...timeouts }
+  })
+
+export const deleteEngineProfile = (profileId: string) =>
+  call<void>({ url: `api/v1/engine-profiles/${profileId}`, method: 'delete' })
+
+export const getEngineProfileEngineStatus = (profileId: string) =>
+  call<EngineProfileEngineStatus>({
+    url: `api/v1/engine-profiles/${profileId}/engine`,
+    method: 'get'
+  })
+
+export const getEngineProfileRevisionEngineStatus = (
+  profileId: string,
+  revision: number
+) =>
+  call<EngineProfileEngineStatus>({
+    url: `api/v1/engine-profiles/${profileId}/revisions/${revision}/engine`,
+    method: 'get'
+  })
+
+export const startEngineProfile = (profileId: string) =>
+  call<EngineProfileEngineStatus>({
+    url: `api/v1/engine-profiles/${profileId}:start`,
+    method: 'post'
+  })
+
+export const stopEngineProfile = (profileId: string) =>
+  call<EngineProfileEngineStatus>({
+    url: `api/v1/engine-profiles/${profileId}:stop`,
+    method: 'post'
+  })
+
+export const listEngineProfileRevisions = (profileId: string) =>
+  call<EngineProfileRevision[]>({
+    url: `api/v1/engine-profiles/${profileId}/revisions`,
+    method: 'get'
+  })
+
+export const listPythonEnvironments = (profileId: string) =>
+  call<PythonEnvironmentRevision[]>({
+    url: `api/v1/engine-profiles/${profileId}/python-environments`,
+    method: 'get'
+  })
+
+export const terminateEngineProfileRevision = (profileId: string, revision: number) =>
+  call<EngineProfileRevisionTermination>({
+    url: `api/v1/engine-profiles/${profileId}/revisions/${revision}:terminate`,
+    method: 'post',
+    data: { confirm: true }
+  })

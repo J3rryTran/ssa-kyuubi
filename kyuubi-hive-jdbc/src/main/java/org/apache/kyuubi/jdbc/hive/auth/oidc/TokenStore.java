@@ -19,7 +19,6 @@ package org.apache.kyuubi.jdbc.hive.auth.oidc;
 
 import java.util.concurrent.ConcurrentHashMap;
 
-
 public final class TokenStore {
 
   private static final ConcurrentHashMap<String, OidcTokens> CACHE = new ConcurrentHashMap<>();

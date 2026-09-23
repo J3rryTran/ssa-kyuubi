@@ -74,8 +74,7 @@ class NotebookRouterSuite extends KyuubiFunSuite {
       === Some(RouteKey.Session("s1")))
     assert(NotebookRoutePaths.sessionKeyOf("/v1/executions/e1/logs")
       === Some(RouteKey.Execution("e1")))
-    assert(NotebookRoutePaths.sessionKeyOf("/v1/notebooks/n1/executions")
-      === Some(RouteKey.Notebook("n1")))
+    assert(NotebookRoutePaths.sessionKeyOf("/v1/notebooks/n1/executions").isEmpty)
 
     // Content is shared, so routing it would buy a network hop and nothing else.
     assert(NotebookRoutePaths.sessionKeyOf("/v1/notebooks/n1").isEmpty)

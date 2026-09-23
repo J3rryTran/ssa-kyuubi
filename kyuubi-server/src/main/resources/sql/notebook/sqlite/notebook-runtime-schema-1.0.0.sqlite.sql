@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS notebook_runtime(
     state TEXT NOT NULL,
     generation INTEGER NOT NULL,
     environment_revision_id TEXT,
+    runtime_idle_timeout_millis INTEGER,
     created_at INTEGER NOT NULL,
     last_activity_at INTEGER NOT NULL,
     stopped_at INTEGER,

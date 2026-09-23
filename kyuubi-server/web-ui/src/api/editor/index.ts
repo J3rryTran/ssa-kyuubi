@@ -17,15 +17,15 @@
 
 import request from '@/utils/request'
 import type {
-  IOpenSessionRequest,
+  IOpenEditorSessionRequest,
   IRunSqlRequest,
   IGetSqlRowsetRequest,
   IGetSqlMetadataRequest
 } from './types'
 
-export function openSession(data: IOpenSessionRequest): any {
+export function openEditorSession(data: IOpenEditorSessionRequest): any {
   return request({
-    url: 'api/v1/sessions',
+    url: 'api/v1/editor-sessions',
     method: 'post',
     data
   })

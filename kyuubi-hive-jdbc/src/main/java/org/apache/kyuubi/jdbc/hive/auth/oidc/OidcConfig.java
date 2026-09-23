@@ -19,9 +19,7 @@ package org.apache.kyuubi.jdbc.hive.auth.oidc;
 
 import java.util.Map;
 
-/**
- * Client-side OIDC configuration parsed from the JDBC session variables.
- */
+/** Client-side OIDC configuration parsed from the JDBC session variables. */
 public class OidcConfig {
 
   /** OIDC flow selection. */

@@ -100,6 +100,11 @@ class UpdateCellConfigRequest {
   @BeanProperty var version: java.lang.Long = _
 }
 
+/** Package names are validated server-side; pip options, URLs and paths are never accepted. */
+class ChangePythonEnvironmentPackagesRequest {
+  @BeanProperty var packages: java.util.List[String] = _
+}
+
 class ReorderCellsRequest {
   @BeanProperty var cellIds: java.util.List[String] = _
   @BeanProperty var version: java.lang.Long = _
@@ -141,13 +146,62 @@ class SetScheduleRequest {
 }
 
 /**
- * PUT /api/v1/engine-profiles/{subdomain}
+ * POST /api/v1/engine-profiles or PATCH /api/v1/engine-profiles/{profileId}
  *
  * `sparkConfig` is a map of Spark property keys to values
  * (e.g. `{"spark.driver.memory":"4g","spark.executor.memory":"8g"}`).
- * The subdomain comes from the path parameter, never from the body.
+ * `name` is a human-facing label that is unique only within the authenticated owner. The
+ * server, not the browser, derives the Kyuubi subdomain from the immutable profile ID and
+ * revision.
  * `owner` is always derived from the authenticated caller.
  */
 class UpsertEngineProfileRequest {
+  @BeanProperty var name: String = _
   @BeanProperty var sparkConfig: java.util.Map[String, String] = _
+  // ISO-8601 duration, for example PT15M. "inherit" clears an existing override.
+  @BeanProperty var notebookRuntimeIdleTimeout: String = _
+  @BeanProperty var engineIdleTimeout: String = _
+}
+
+/** Explicit acknowledgement required before terminating a draining engine revision. */
+class TerminateEngineProfileRevisionRequest {
+  @BeanProperty var confirm: java.lang.Boolean = _
+}
+
+/** Opens a SQL Editor session using a server-authorized Engine Profile. */
+class OpenEditorSessionRequest {
+  @BeanProperty var engineProfileId: String = _
+}
+
+class CreateDbtWorkspaceRequest {
+  @BeanProperty var name: String = _
+  @BeanProperty var projectRef: String = _
+  @BeanProperty var engineProfileId: String = _
+}
+
+class UpdateDbtWorkspaceRequest {
+  @BeanProperty var name: String = _
+  @BeanProperty var projectRef: String = _
+  @BeanProperty var engineProfileId: String = _
+  @BeanProperty var version: java.lang.Long = _
+}
+
+class CreateDbtJobRequest {
+  @BeanProperty var name: String = _
+  @BeanProperty var action: String = _
+  @BeanProperty var selector: String = _
+  @BeanProperty var engineProfileIdOverride: String = _
+}
+
+class UpdateDbtJobRequest {
+  @BeanProperty var name: String = _
+  @BeanProperty var action: String = _
+  @BeanProperty var selector: String = _
+  @BeanProperty var engineProfileIdOverride: String = _
+  @BeanProperty var clearEngineProfileIdOverride: java.lang.Boolean = _
+  @BeanProperty var version: java.lang.Long = _
+}
+
+class DbtPreviewRequest {
+  @BeanProperty var selector: String = _
 }

@@ -1037,7 +1037,6 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
         || sessConfMap.containsKey(JdbcConnectionParams.AUTH_TYPE_JWT_KEY);
   }
 
- 
   private boolean isOidcAuthMode() {
     return OidcParams.AUTH_TYPE_OIDC.equalsIgnoreCase(sessConfMap.get(AUTH_TYPE))
         || "true".equalsIgnoreCase(sessConfMap.get(OidcParams.OIDC_ENABLED))
