@@ -141,18 +141,35 @@ private[v1] class NotebookRuntimesResource extends NotebookApiSupport {
   def restart(@PathParam("runtimeId") runtimeId: String): NotebookRuntimeView = {
     val runtime = notebooks.runtimes.require(principal, runtimeId)
     val session = notebooks.sessions.require(principal, runtime.notebookSessionId)
+    notebooks.sessions.invalidateExecutions(
+      principal,
+      session,
+      "execution canceled because the runtime restarted")
     NotebookRuntimeView(notebooks.runtimes.restart(principal, session, runtime))
   }
 
   @POST
   @Path("{runtimeId: [^:/]+}:stop")
-  def stop(@PathParam("runtimeId") runtimeId: String): NotebookRuntimeView =
-    NotebookRuntimeView(notebooks.runtimes.stop(notebooks.runtimes.require(principal, runtimeId)))
+  def stop(@PathParam("runtimeId") runtimeId: String): NotebookRuntimeView = {
+    val runtime = notebooks.runtimes.require(principal, runtimeId)
+    val session = notebooks.sessions.require(principal, runtime.notebookSessionId)
+    notebooks.sessions.invalidateExecutions(
+      principal,
+      session,
+      "execution canceled because the runtime stopped")
+    NotebookRuntimeView(notebooks.runtimes.stop(runtime))
+  }
 
   @DELETE
   @Path("{runtimeId: [^:/]+}")
   def delete(@PathParam("runtimeId") runtimeId: String): Response = {
-    notebooks.runtimes.stop(notebooks.runtimes.require(principal, runtimeId))
+    val runtime = notebooks.runtimes.require(principal, runtimeId)
+    val session = notebooks.sessions.require(principal, runtime.notebookSessionId)
+    notebooks.sessions.invalidateExecutions(
+      principal,
+      session,
+      "execution canceled because the runtime stopped")
+    notebooks.runtimes.stop(runtime)
     Response.noContent().build()
   }
 }

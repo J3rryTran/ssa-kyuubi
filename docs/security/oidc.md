@@ -142,3 +142,4 @@ Set token via `JWT` env var or `;jwt=<token>`
 | `oidcTokenCache`   | `true`                 | Reuse tokens in JVM                |
 | `oidcBrowser`      | `auto`                 | `auto` \| `none`                   |
 | `oidcLogout`       | `false`                | Call end_session_endpoint on close |
+

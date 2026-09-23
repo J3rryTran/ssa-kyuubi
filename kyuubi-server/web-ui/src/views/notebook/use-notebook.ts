@@ -82,6 +82,9 @@ export function useNotebook() {
   const pollInFlight = new Set<string>()
   const outputCollections = new Map<string, Promise<void>>()
   const collectedOutputs = new Set<string>()
+  // A change event and a Run click can arrive almost together. Serializing writes by cell makes
+  // the source submitted by Run deterministic instead of allowing an older reload to win.
+  const cellSaveQueues = new Map<string, Promise<boolean>>()
 
   const readOnly = () => notebook.value?.role === 'VIEWER'
 
@@ -89,7 +92,9 @@ export function useNotebook() {
     try {
       const specs = await api.listRuntimeSpecs()
       pythonEnabled.value = specs.some(
-        (spec) => spec.language === 'PYTHON' && spec.enabled
+        (spec) =>
+          spec.enabled &&
+          (spec.supportedLanguages?.includes('PYTHON') || spec.language === 'PYTHON')
       )
     } catch (error) {
       pythonEnabled.value = false
@@ -180,15 +185,22 @@ export function useNotebook() {
     cancelledStarts.delete(cell.id)
     initializingCells[cell.id] = true
     try {
+      // The textarea's change event is asynchronous. Persist this exact source before submitting
+      // so a just-edited `%pip install` can never execute the previously saved `%pip list`.
+      if (!(await saveCell(cell, { source }))) return null
+      if (cancelledStarts.delete(cell.id) || isCancelled?.()) return null
+
+      // Reloading after the save gives us the authoritative cell language/version while retaining
+      // the source passed above as the execution snapshot.
+      const storedCell = cells.value.find((candidate) => candidate.id === cell.id) || cell
       const active = await ensureSession()
       if (cancelledStarts.delete(cell.id) || isCancelled?.()) {
         return null
       }
       const execution = await api.submitExecution(active.id, {
         cellId: cell.id,
-        // Kept for older servers; the current one takes the language from the notebook and
-        // ignores this field.
-        language: notebook.value?.language ?? cell.language,
+        // Stored cell language is authoritative. This also supports legacy raw-source requests.
+        language: storedCell.language,
         source,
         // Scoped to this attempt, so a retried click after a network timeout does not run twice.
         clientRequestId: `${cell.id}-${Date.now()}`
@@ -378,20 +390,37 @@ export function useNotebook() {
     cells.value = loaded.cells || []
   }
 
-  const saveCell = async (
+  function saveCell(
     cell: NotebookCell,
     changes: Record<string, string>
-  ) => {
-    try {
-      await api.updateCell(cell.notebookId, cell.id, changes)
-      await reloadCells()
-    } catch (error) {
-      reportError(error, 'The cell could not be saved')
-      await reloadCells()
-    }
+  ): Promise<boolean> {
+    const previous = cellSaveQueues.get(cell.id) || Promise.resolve(true)
+    const next = previous
+      .catch(() => false)
+      .then(async () => {
+        try {
+          await api.updateCell(cell.notebookId, cell.id, changes)
+          await reloadCells()
+          return true
+        } catch (error) {
+          reportError(error, 'The cell could not be saved')
+          return false
+        }
+      })
+    cellSaveQueues.set(cell.id, next)
+    void next.finally(() => {
+      if (cellSaveQueues.get(cell.id) === next) {
+        cellSaveQueues.delete(cell.id)
+      }
+    })
+    return next
   }
 
-  const addCell = async (cellType: 'CODE' | 'MARKDOWN', afterCellId?: string) => {
+  const addCell = async (
+    cellType: 'CODE' | 'MARKDOWN',
+    afterCellId?: string,
+    language: 'SQL' | 'PYTHON' = 'SQL'
+  ) => {
     if (!notebook.value) return
     let position: number | undefined = undefined
     if (afterCellId) {
@@ -401,6 +430,7 @@ export function useNotebook() {
     try {
       await api.createCell(notebook.value.id, {
         cellType,
+        language: cellType === 'CODE' ? language : 'MARKDOWN',
         source: '',
         position
       })

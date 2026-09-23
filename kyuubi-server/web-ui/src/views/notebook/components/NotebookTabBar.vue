@@ -25,11 +25,7 @@
         class="db-tab-item"
         :class="{ active: tab.id === activeTabId }"
         @click="$emit('select-tab', tab.id)">
-        <span
-          class="tab-lang-badge"
-          :class="tab.language === 'PYTHON' ? 'badge-python' : 'badge-sql'">
-          {{ tab.language === 'PYTHON' ? 'PY' : 'SQL' }}
-        </span>
+        <span class="tab-lang-badge badge-notebook">NB</span>
         <span class="tab-title" :title="tab.name">{{ tab.name }}</span>
         <el-icon
           class="tab-close-icon"
@@ -122,13 +118,9 @@
         border-radius: 2px;
         line-height: 1.2;
 
-        &.badge-sql {
+        &.badge-notebook {
           background: #e6f7ff;
           color: #1890ff;
-        }
-        &.badge-python {
-          background: #fff7e6;
-          color: #d46b08;
         }
       }
 

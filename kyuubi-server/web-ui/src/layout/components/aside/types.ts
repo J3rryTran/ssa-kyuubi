@@ -32,11 +32,6 @@ export const MENUS = [
     router: '/editor'
   },
   {
-    label: 'DBT',
-    icon: 'DataAnalysis',
-    router: '/dbt/workspaces'
-  },
-  {
     label: 'Management',
     icon: 'Setting',
     router: '/management/engine',

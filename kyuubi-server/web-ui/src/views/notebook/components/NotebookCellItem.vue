@@ -70,7 +70,17 @@
         <!-- CELL HEADER BAR -->
         <div class="cell-top-bar">
           <div class="bar-left">
-            <span class="cell-lang-tag">{{ languageMagic }}</span>
+            <el-select
+              v-if="isExecutable"
+              class="cell-language-select"
+              :model-value="cell.language"
+              size="small"
+              :disabled="readOnly || isRunning || isInitializing"
+              @change="changeCellLanguage">
+              <el-option label="SQL" value="SQL" />
+              <el-option label="Python" value="PYTHON" :disabled="!pythonEnabled" />
+            </el-select>
+            <span v-else class="cell-lang-tag">%md</span>
             <span v-if="executionTime" class="cell-duration">Took {{ executionTime }}</span>
             <span v-if="isInitializing" class="cell-starting-note">Starting Engine...</span>
             <span v-if="pythonUnavailable" class="cell-warning-note">
@@ -121,6 +131,7 @@
             :placeholder="placeholderText"
             @keydown.enter.ctrl="triggerRun"
             @keydown.enter.shift="triggerRun"
+            @input="isDirty = true"
             @change="onSourceChange" />
         </div>
 
@@ -155,8 +166,17 @@
           round
           class="insert-btn"
           icon="Plus"
-          @click="$emit('add-cell', 'CODE', cell.id)">
-          Code
+          @click="$emit('add-cell', 'CODE', cell.id, 'SQL')">
+          SQL
+        </el-button>
+        <el-button
+          size="small"
+          round
+          class="insert-btn"
+          icon="Plus"
+          :disabled="!pythonEnabled"
+          @click="$emit('add-cell', 'CODE', cell.id, 'PYTHON')">
+          Python
         </el-button>
         <el-button
           size="small"
@@ -186,7 +206,6 @@
       isInitializing?: boolean
       readOnly: boolean
       pythonEnabled: boolean
-      notebookLanguage: string
       index?: number
     }>(),
     {
@@ -204,16 +223,22 @@
     (e: 'save', cell: NotebookCell, changes: Record<string, string>): void
     (e: 'move-up', cell: NotebookCell): void
     (e: 'move-down', cell: NotebookCell): void
-    (e: 'add-cell', type: 'CODE' | 'MARKDOWN', afterCellId: string): void
+    (e: 'add-cell', type: 'CODE' | 'MARKDOWN', afterCellId: string, language?: 'SQL' | 'PYTHON'): void
   }>()
 
   const localSource = ref(props.cell.source)
   const isFocused = ref(false)
+  const isDirty = ref(false)
 
   watch(
     () => props.cell.source,
     (value) => {
-      localSource.value = value
+      // A delayed autosave reload must not overwrite text the user has just typed. Once the
+      // server echoes this exact source back, the local edit is known to be synchronized.
+      if (!isDirty.value || value === localSource.value) {
+        localSource.value = value
+        isDirty.value = false
+      }
     }
   )
 
@@ -227,19 +252,14 @@
   })
 
   const pythonUnavailable = computed(() => {
-    return isExecutable.value && props.notebookLanguage === 'PYTHON' && !props.pythonEnabled
-  })
-
-  const languageMagic = computed(() => {
-    if (props.cell.cellType === 'MARKDOWN') return '%md'
-    return props.notebookLanguage === 'PYTHON' ? '%python' : '%sql'
+    return isExecutable.value && props.cell.language === 'PYTHON' && !props.pythonEnabled
   })
 
   const placeholderText = computed(() => {
     if (props.cell.cellType === 'MARKDOWN') {
       return '# Enter markdown documentation...'
     }
-    return props.notebookLanguage === 'PYTHON'
+    return props.cell.language === 'PYTHON'
       ? '# Enter Python / PySpark code here...'
       : '-- Enter SQL query here...'
   })
@@ -271,7 +291,14 @@
     }
   }
 
+  const changeCellLanguage = (language: 'SQL' | 'PYTHON') => {
+    if (language !== props.cell.language) {
+      emit('save', props.cell, { language })
+    }
+  }
+
   const onSourceChange = () => {
+    isDirty.value = true
     emit('save', props.cell, { source: localSource.value })
   }
 </script>
@@ -375,6 +402,10 @@
               padding: 1px 6px;
               border-radius: 3px;
               border: 1px solid #ffccc7;
+            }
+
+            .cell-language-select {
+              width: 92px;
             }
 
             .cell-duration {

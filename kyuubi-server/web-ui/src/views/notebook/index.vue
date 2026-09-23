@@ -61,14 +61,7 @@
           <div class="db-action-toolbar">
             <div class="toolbar-top-row">
               <div class="title-section">
-                <el-icon class="nb-icon">
-                  <component
-                    :is="
-                      notebook.language === 'PYTHON'
-                        ? 'Opportunity'
-                        : 'DataLine'
-                    " />
-                </el-icon>
+                <el-icon class="nb-icon"><component :is="'Document'" /></el-icon>
 
                 <!-- EDITABLE TITLE -->
                 <div
@@ -87,14 +80,7 @@
                   @blur="saveTitle"
                   @keyup.enter="saveTitle" />
 
-                <!-- LANGUAGE BADGE -->
-                <span
-                  class="nb-lang-tag"
-                  :class="
-                    notebook.language === 'PYTHON' ? 'tag-python' : 'tag-sql'
-                  ">
-                  {{ notebook.language === 'PYTHON' ? 'Python' : 'SQL' }}
-                </span>
+                <span class="nb-lang-tag tag-notebook">Notebook</span>
                 <span class="nb-path">{{
                   notebook.path || '/Workspace/' + notebook.name
                 }}</span>
@@ -223,7 +209,6 @@
               :is-initializing="Boolean(initializingCells[cell.id])"
               :read-only="readOnly()"
               :python-enabled="pythonEnabled"
-              :notebook-language="notebook.language"
               @run="runCell"
               @stop="handleStopCell"
               @remove="removeCell"
@@ -239,11 +224,18 @@
                 type="primary"
                 plain
                 icon="Plus"
-                @click="addCell('CODE')">
-                Add Code Cell
+                @click="addCell('CODE', undefined, 'SQL')">
+                + SQL
+              </el-button>
+              <el-button
+                plain
+                icon="Plus"
+                :disabled="!pythonEnabled"
+                @click="addCell('CODE', undefined, 'PYTHON')">
+                + Python
               </el-button>
               <el-button plain icon="Plus" @click="addCell('MARKDOWN')">
-                Add Text Cell
+                + Text
               </el-button>
             </div>
           </div>
@@ -766,8 +758,12 @@
   }
 
   // CELL OPERATIONS
-  const handleAddCell = (type: 'CODE' | 'MARKDOWN', afterCellId: string) => {
-    addCell(type, afterCellId)
+  const handleAddCell = (
+    type: 'CODE' | 'MARKDOWN',
+    afterCellId: string,
+    language?: 'SQL' | 'PYTHON'
+  ) => {
+    addCell(type, afterCellId, language)
   }
 
   const handleMoveCell = (cell: any, direction: 'up' | 'down') => {
@@ -1084,16 +1080,10 @@
             border-radius: 3px;
             letter-spacing: 0.5px;
 
-            &.tag-sql {
+            &.tag-notebook {
               background: #eff6ff;
               color: #2563eb;
               border: 1px solid #bfdbfe;
-            }
-
-            &.tag-python {
-              background: #fefce8;
-              color: #ca8a04;
-              border: 1px solid #fef08a;
             }
           }
 

@@ -1746,7 +1746,7 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
   override def listPendingPythonEnvironmentChangeRequests(): Seq[PythonEnvironmentChangeRequest] =
     JdbcUtils.executeQueryWithRowMapper(
       "SELECT * FROM notebook_python_environment_change_request " +
-        "WHERE state IN ('PENDING', 'BUILDING') ORDER BY created_at")()(
+        "WHERE state IN ('COLLECTING', 'PENDING', 'BUILDING') ORDER BY created_at")()(
       pythonEnvironmentChangeRequestMapper)
 
   override def updatePythonEnvironmentChangeRequest(

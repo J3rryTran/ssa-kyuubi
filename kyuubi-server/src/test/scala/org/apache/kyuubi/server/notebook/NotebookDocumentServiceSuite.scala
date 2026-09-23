@@ -95,9 +95,8 @@ class NotebookDocumentServiceSuite extends NotebookTestBase {
     }
   }
 
-  // A cell's language is not a choice the client makes: a MARKDOWN cell is always MARKDOWN and a
-  // CODE cell always speaks the notebook's language. A language on the request is therefore
-  // ignored rather than rejected, which is what lets an older client keep posting one.
+  // MARKDOWN is always MARKDOWN. CODE cells own their SQL/Python language independently from the
+  // notebook's legacy/default language field.
 
   test("a markdown cell stays markdown whatever language the request claims") {
     val (notebook, _) = createNotebook(alice, "markdown-check")
@@ -109,14 +108,20 @@ class NotebookDocumentServiceSuite extends NotebookTestBase {
     assert(cell.language === CellLanguage.MARKDOWN)
   }
 
-  test("a code cell takes the notebook's language and ignores the one it was sent") {
+  test("a code cell keeps its requested language and can switch between SQL and Python") {
     val (notebook, _) = createNotebook(alice, "language-check")
     val request = new CreateCellRequest
     request.setCellType("CODE")
-    request.setLanguage("MARKDOWN")
+    request.setLanguage("PYTHON")
     request.setSource("x")
     val cell = documents.createCell(alice, notebook.id, request)
-    assert(cell.language === CellLanguage.SQL)
+    assert(cell.language === CellLanguage.PYTHON)
+    assert(documents.loadNotebook(notebook.id).language === NotebookLanguage.SQL)
+
+    val update = new UpdateCellRequest
+    update.setLanguage("SQL")
+    val changed = documents.updateCell(alice, notebook.id, cell.id, update)
+    assert(changed.language === CellLanguage.SQL)
   }
 
   test("a stale version is rejected") {

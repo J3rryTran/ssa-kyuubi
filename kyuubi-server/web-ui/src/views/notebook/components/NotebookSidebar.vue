@@ -89,25 +89,6 @@
             placeholder="My notebook"
             @keyup.enter="createNotebook" />
         </el-form-item>
-        <el-form-item label="Language">
-          <!--
-            Fixed for the life of the notebook, so it is chosen here rather than per cell.
-            Python is offered only when a Python runtime is actually enabled on this server.
-          -->
-          <el-radio-group v-model="notebookLanguage">
-            <el-radio label="SQL">SQL</el-radio>
-            <el-tooltip
-              :disabled="pythonEnabled"
-              content="This server has no Python runtime enabled"
-              placement="top">
-              <span>
-                <el-radio label="PYTHON" :disabled="!pythonEnabled">
-                  Python
-                </el-radio>
-              </span>
-            </el-tooltip>
-          </el-radio-group>
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="notebookDialog = false">Cancel</el-button>
@@ -155,8 +136,7 @@
   import type {
     EngineProfile,
     Notebook,
-    NotebookFolder,
-    NotebookLanguage
+    NotebookFolder
   } from '@/api/notebook/types'
 
   /**
@@ -170,11 +150,6 @@
   }
 
   const emit = defineEmits<{ (e: 'select', notebookId: string): void }>()
-
-  /** Gate for the Python option; the notebook view already resolves it from runtime-specs. */
-  const props = withDefaults(defineProps<{ pythonEnabled?: boolean }>(), {
-    pythonEnabled: false
-  })
 
   const LOCAL_STORAGE_KEY = 'kyuubi_notebook_engine_profiles'
 
@@ -191,7 +166,6 @@
 
   const notebookDialog = ref(false)
   const notebookName = ref('')
-  const notebookLanguage = ref<NotebookLanguage>('SQL')
   const notebookEngineProfile = ref('default')
   const engineConfigDialogVisible = ref(false)
   const engineProfiles = ref<EngineProfile[]>(loadEngineProfiles())
@@ -277,10 +251,6 @@
       return
     }
     notebookName.value = defaultNotebookName()
-    // A server without Python cannot offer it, so never open the dialog pre-set to it.
-    notebookLanguage.value = props.pythonEnabled
-      ? notebookLanguage.value
-      : 'SQL'
     notebookDialog.value = true
   }
 
@@ -312,7 +282,7 @@
       return
     }
     try {
-      await api.createNotebook(name, null, notebookLanguage.value, null)
+      await api.createNotebook(name, null, 'SQL', null)
       notebookDialog.value = false
       await reload()
     } catch (error) {

@@ -30,9 +30,9 @@ import org.apache.kyuubi.server.engineprofile.{EngineProfileRuntimeService, Engi
 import org.apache.kyuubi.server.metadata.jdbc.DatabaseType.SQLITE
 import org.apache.kyuubi.server.metadata.jdbc.JDBCMetadataStoreConf.METADATA_STORE_JDBC_DATABASE_TYPE
 import org.apache.kyuubi.server.notebook.NotebookConf._
-import org.apache.kyuubi.server.notebook.api.{ExecutionState, NotebookErrorCode, NotebookException, NotebookSession, NotebookStatusView}
+import org.apache.kyuubi.server.notebook.api.{CellLanguage, ExecutionState, NotebookErrorCode, NotebookException, NotebookSession, NotebookStatusView}
 import org.apache.kyuubi.server.notebook.routing.{NotebookSessionRegistry, RouteKey}
-import org.apache.kyuubi.server.notebook.runtime.{KyuubiSqlRuntimeAdapter, PySparkRuntimeAdapter, RuntimeAdapterRegistry}
+import org.apache.kyuubi.server.notebook.runtime.{RuntimeAdapterRegistry, SparkNotebookRuntimeAdapter}
 import org.apache.kyuubi.server.notebook.service._
 import org.apache.kyuubi.server.notebook.store.{ExecutionFilter, NotebookStore}
 import org.apache.kyuubi.service.{AbstractService, BackendService}
@@ -136,11 +136,10 @@ class NotebookManager(
       DisabledDbtRunner
     }
     _dbt = new DbtWorkspaceService(conf, _dbtStore, _engineProfiles, dbtRunner)
-    // Python runs in the Spark engine, never on this server: one notebook session is one engine,
-    // and the engine's python worker is what makes a name bound in one cell outlive it.
+    // One notebook session owns one Kyuubi/Spark session. Individual cells select SQL or Python
+    // at operation submission time, preserving both SQL session state and Python globals.
     _registry = new RuntimeAdapterRegistry(Seq(
-      new KyuubiSqlRuntimeAdapter(backendService, instanceUri, conf),
-      new PySparkRuntimeAdapter(backendService, instanceUri, conf)))
+      new SparkNotebookRuntimeAdapter(backendService, instanceUri, conf)))
     _sessionRegistry = new NotebookSessionRegistry(conf, () => discoveryClient)
     _runtimes = new NotebookRuntimeService(
       _store,
@@ -165,6 +164,7 @@ class NotebookManager(
       _runtimes,
       _registry,
       Some(_pythonEnvironments))
+    _sessions.onBeforeRuntimeInvalidation(_executions.invalidateSession)
     super.initialize(conf)
   }
 
@@ -279,9 +279,8 @@ class NotebookManager(
       // no environment manager behind it any more: Python is available when the engine's
       // runtime is registered, and its packages come from the Spark image.
       pythonRuntimeManager = {
-        val pythonReady = _registry.specs.exists { spec =>
-          spec.id == PySparkRuntimeAdapter.SPEC_ID && spec.enabled
-        }
+        val pythonReady = _registry.specs.exists(spec =>
+          spec.enabled && spec.supportedLanguages.contains(CellLanguage.PYTHON.toString))
         if (pythonReady) "HEALTHY" else "UNAVAILABLE"
       },
       activeSessions = liveSessions.size,

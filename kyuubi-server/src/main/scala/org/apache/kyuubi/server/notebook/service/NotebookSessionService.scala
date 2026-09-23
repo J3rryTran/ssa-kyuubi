@@ -47,6 +47,25 @@ class NotebookSessionService(
     instanceUri: () => String,
     registry: () => Option[NotebookSessionRegistry] = () => None) extends Logging {
 
+  // The execution service is constructed after sessions. Keep this narrow lifecycle callback
+  // rather than making either service own the other or bypassing this service from REST.
+  @volatile private var beforeRuntimeInvalidation
+      : (NotebookPrincipal, NotebookSession, String) => Unit =
+    (_, _, _) => ()
+
+  def onBeforeRuntimeInvalidation(
+      callback: (NotebookPrincipal, NotebookSession, String) => Unit): Unit = {
+    beforeRuntimeInvalidation = callback
+  }
+
+  /** Lets runtime-scoped REST actions apply the same execution invalidation as session actions. */
+  def invalidateExecutions(
+      principal: NotebookPrincipal,
+      session: NotebookSession,
+      reason: String): Unit = {
+    beforeRuntimeInvalidation(principal, session, reason)
+  }
+
   def create(
       principal: NotebookPrincipal,
       notebookId: String,
@@ -125,6 +144,7 @@ class NotebookSessionService(
 
   def restart(principal: NotebookPrincipal, sessionId: String): NotebookSession = {
     val session = require(principal, sessionId)
+    invalidateExecutions(principal, session, "execution canceled because the session restarted")
     runtimes.listFor(session).foreach(runtime => runtimes.restart(principal, session, runtime))
     touch(session, NotebookSessionState.IDLE)
   }
@@ -133,6 +153,7 @@ class NotebookSessionService(
   def reset(principal: NotebookPrincipal, sessionId: String): NotebookSession = {
     val session = require(principal, sessionId)
     val resetting = touch(session, NotebookSessionState.RESETTING)
+    invalidateExecutions(principal, resetting, "execution canceled because the session reset")
     runtimes.listFor(resetting).foreach(runtime =>
       runtimes.restart(principal, resetting, runtime))
     touch(resetting, NotebookSessionState.IDLE)
@@ -145,6 +166,7 @@ class NotebookSessionService(
       session
     } else {
       val stopping = touch(session, NotebookSessionState.STOPPING)
+      invalidateExecutions(principal, stopping, "execution canceled because the session stopped")
       runtimes.listFor(stopping).foreach(runtime => runtimes.stop(runtime))
       val now = System.currentTimeMillis()
       val stopped = stopping.copy(
@@ -278,14 +300,13 @@ class NotebookRuntimeService(
     runtime
   }
 
-  /** Reuses the session's live runtime for a language, starting one only when there is none. */
+  /** Reuses the session's one live Spark runtime, starting it only when there is none. */
   def ensureFor(
       principal: NotebookPrincipal,
       session: NotebookSession,
-      language: CellLanguage.Value,
       requestedSpecId: Option[String],
       configuration: Map[String, String]): NotebookRuntime = {
-    val specId = requestedSpecId.getOrElse(registry.defaultSpecFor(language).id)
+    val specId = requestedSpecId.getOrElse(registry.defaultSpecFor(CellLanguage.SQL).id)
 
     val profileSnapshot = resolveProfileSnapshot(principal, session)
     val profileConfig = profileSessionConfig(profileSnapshot)
@@ -293,14 +314,14 @@ class NotebookRuntimeService(
     val runtimeIdleTimeoutMillis = profileSnapshot.flatMap(
       EngineProfileSnapshot.notebookRuntimeIdleTimeoutMillis)
 
-    listFor(session).find(runtime => runtime.runtimeSpecId == specId) match {
+    listFor(session).headOption match {
       case Some(runtime) =>
         // Editing, adding, moving or deleting a cell touches notebook.updatedAt for document
         // optimistic locking. Those changes must not recreate a Python worker: its global
         // namespace is the state shared by notebook cells. A selected Engine Profile is changed
         // through the explicit UI/session lifecycle, which stops the session before its next
         // runtime is created.
-        warn(s"Reusing existing runtime ${runtime.id} for session ${session.id}")
+        warn(s"Reusing Spark runtime ${runtime.id} for session ${session.id}")
         runtime
       case None =>
         warn(s"No existing runtime found. Creating new runtime for session ${session.id}")
@@ -320,6 +341,9 @@ class NotebookRuntimeService(
       configuration: Map[String, String],
       runtimeIdleTimeoutMillis: Option[Long] = None,
       environmentRevisionId: Option[String] = None): NotebookRuntime = {
+    // A notebook session is deliberately a single Spark conversation. The explicit runtime API
+    // is retained for compatibility, but cannot create a second live session behind a notebook.
+    listFor(session).headOption.foreach(return _)
     val adapter = registry.get(runtimeSpecId)
     val spec = adapter.runtimeSpec
     if (!spec.enabled) {
@@ -437,12 +461,11 @@ class NotebookRuntimeService(
       session: NotebookSession): Option[EngineProfileSnapshot] = {
     val profileId = store.getNotebook(session.notebookId).flatMap(_.runtimeProfile)
       .orElse(session.runtimeProfile)
-    // A completed Python environment build is deliberately not applied to a live engine. Doing
-    // so changes the profile subdomain and prevents another notebook from reusing that engine.
-    // Once Kyuubi has removed the current engine's discovery node, promote the READY
-    // environment before taking the launch snapshot for the next engine.
+    // A completed Python environment build is deliberately not applied to a live engine. The
+    // service also prevents a replacement Driver from starting with env-N while env-N+1 is being
+    // restored after the old Driver disappeared.
     profileId.foreach(id =>
-      pythonEnvironments.foreach(_.promoteReadyEnvironmentIfEngineStopped(id)))
+      pythonEnvironments.foreach(_.prepareForEngineLaunch(id)))
     profileId.flatMap(id =>
       engineProfiles.map(_.snapshotForUse(
         id,

@@ -19,6 +19,7 @@ package org.apache.kyuubi.server.notebook.service
 
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
@@ -59,6 +60,13 @@ class NotebookExecutionService(
    * rows the client never saw.
    */
   private val lastResultPages = new ConcurrentHashMap[String, DeliveredPage]()
+  private val sessionSubmissionLocks = new ConcurrentHashMap[String, Object]()
+  // Operation overlays are deliberately kept only while this server owns the session. The durable
+  // execution record is sufficient for history; after a server restart reconciliation marks an
+  // unstarted request LOST instead of replaying code with a configuration we cannot verify.
+  private val queuedConfigurations = new ConcurrentHashMap[String, Map[String, String]]()
+  private val queuedOrder = new ConcurrentHashMap[String, Long]()
+  private val nextQueuedOrder = new AtomicLong(0L)
   private val maxLogLines = conf.get(NOTEBOOK_EXECUTION_LOG_MAX_LINES)
   private val maxEventWaitMillis = conf.get(NOTEBOOK_EVENT_MAX_WAIT_MS)
 
@@ -67,54 +75,83 @@ class NotebookExecutionService(
       sessionId: String,
       request: SubmitExecutionRequest): CellExecution = {
     val session = sessions.require(principal, sessionId)
-    val notebook = documents.loadNotebook(session.notebookId)
-    permissions.requireWrite(notebook, principal)
+    sessionLock(session.id).synchronized {
+      val notebook = documents.loadNotebook(session.notebookId)
+      permissions.requireWrite(notebook, principal)
 
-    val requestId = Option(request.getClientRequestId).map(_.trim).filter(_.nonEmpty)
-    val (source, cell) = resolveSource(session.notebookId, request)
-    val language = resolveLanguage(notebook)
+      val requestId = Option(request.getClientRequestId).map(_.trim).filter(_.nonEmpty)
+      val (source, cell) = resolveSource(session.notebookId, request)
+      val language = resolveLanguage(notebook, cell, request)
 
-    // Idempotency is checked before anything is started, so a retried POST cannot submit twice.
-    val alreadySubmitted =
-      requestId.flatMap(id => store.findExecutionByRequestId(principal.user, id)).map { existing =>
-        if (existing.sourceSnapshot != source || existing.language != language) {
-          throw new NotebookException(
-            NotebookErrorCode.VERSION_CONFLICT,
-            "clientRequestId was already used with a different request")
-        }
-        existing
+      // Idempotency is checked before anything is started, so a retried POST cannot submit twice.
+      val alreadySubmitted =
+        requestId.flatMap(id => store.findExecutionByRequestId(principal.user, id))
+          .map { existing =>
+            if (existing.sourceSnapshot != source || existing.language != language) {
+              throw new NotebookException(
+                NotebookErrorCode.VERSION_CONFLICT,
+                "clientRequestId was already used with a different request")
+            }
+            existing
+          }
+      alreadySubmitted.getOrElse {
+        validatePythonEnvironmentIntent(session, notebook.runtimeProfile, language, source)
+        val queued = enqueueExecution(
+          principal,
+          session,
+          request,
+          source,
+          cell,
+          language,
+          requestId)
+        drainQueue(principal, session)
+        store.getExecution(queued.id).getOrElse(queued)
       }
-    if (alreadySubmitted.isDefined) {
-      alreadySubmitted.get
-    } else {
-      persistPythonEnvironmentIntent(principal, session, notebook.runtimeProfile, language, source)
-      startExecution(principal, session, request, source, cell, language, requestId)
     }
   }
 
-  private def persistPythonEnvironmentIntent(
-      principal: NotebookPrincipal,
+  /**
+   * Reject `%pip` before it reaches the live Python worker when there is no profile to own the
+   * durable environment. The intent itself is recorded only after the operation succeeds.
+   */
+  private def validatePythonEnvironmentIntent(
       session: NotebookSession,
       notebookProfile: Option[String],
       language: CellLanguage.Value,
       source: String): Unit = {
     if (language == CellLanguage.PYTHON && pythonEnvironments.exists(_.isEnabled)) {
-      PythonEnvironmentIntent.parse(source).foreach { intent =>
-        val profileId = notebookProfile.orElse(session.runtimeProfile).getOrElse {
+      PythonEnvironmentIntent.parse(source).foreach { _ =>
+        notebookProfile.orElse(session.runtimeProfile).getOrElse {
+          throw NotebookException.invalid(
+            "%pip install/uninstall requires a selected Engine Profile so its environment can " +
+              "persist")
+        }
+      }
+    }
+  }
+
+  /** Persists only package changes confirmed by a successful live-engine `%pip` operation. */
+  private def persistSuccessfulPythonEnvironmentIntent(execution: CellExecution): Unit = {
+    if (execution.language == CellLanguage.PYTHON && pythonEnvironments.exists(_.isEnabled)) {
+      PythonEnvironmentIntent.parse(execution.sourceSnapshot).foreach { intent =>
+        val session = sessions.load(execution.notebookSessionId)
+        val profileId = session.runtimeProfile.orElse(
+          documents.loadNotebook(execution.notebookId).runtimeProfile).getOrElse {
           throw NotebookException.invalid(
             "%pip install/uninstall requires a selected Engine Profile so its environment can " +
               "persist")
         }
         pythonEnvironments.foreach(_.requestPackageChange(
-          EngineProfilePrincipal(principal.user, principal.admin),
+          EngineProfilePrincipal(execution.submittedBy, admin = false),
           profileId,
           intent.operation,
-          intent.packages))
+          intent.packages,
+          hotInstallSucceeded = true))
       }
     }
   }
 
-  private def startExecution(
+  private def enqueueExecution(
       principal: NotebookPrincipal,
       session: NotebookSession,
       request: SubmitExecutionRequest,
@@ -126,12 +163,11 @@ class NotebookExecutionService(
     val runtime = runtimes.ensureFor(
       principal,
       session,
-      language,
       Option(request.getRuntimeId).flatMap {
         runtimeId => Some(runtimes.require(principal, runtimeId).runtimeSpecId)
       },
       configuration)
-    if (runtime.language != language) {
+    if (!registry.get(runtime.runtimeSpecId).supports(language)) {
       throw new NotebookException(
         NotebookErrorCode.UNSUPPORTED_LANGUAGE,
         s"runtime ${runtime.id} cannot run $language")
@@ -161,7 +197,70 @@ class NotebookExecutionService(
       internalOperationHandle = None,
       version = 1L)
     store.createExecution(queued)
+    queuedConfigurations.put(queued.id, configuration)
+    queuedOrder.put(queued.id, nextQueuedOrder.incrementAndGet())
     emit(queued, "QUEUED", None)
+
+    queued
+  }
+
+  /** Starts the oldest queued execution only after every previous operation has settled. */
+  private def drainQueue(principal: NotebookPrincipal, session: NotebookSession): Unit = {
+    var mayStartNext = true
+    while (mayStartNext) {
+      val active = store.listExecutions(ExecutionFilter(
+        notebookSessionId = Some(session.id),
+        states = Set(
+          ExecutionState.STARTING.toString,
+          ExecutionState.RUNNING.toString,
+          ExecutionState.CANCELING.toString),
+        limit = 1))
+      val pending = store.listExecutions(ExecutionFilter(
+        notebookSessionId = Some(session.id),
+        states = Set(ExecutionState.QUEUED.toString),
+        limit = Int.MaxValue)).sortBy { execution =>
+        (Option(queuedOrder.get(execution.id)).getOrElse(Long.MaxValue), execution.submittedAt)
+      }.headOption
+      if (active.nonEmpty || pending.isEmpty) {
+        mayStartNext = false
+      } else {
+        val execution = pending.get
+        try startQueued(principal, session, execution)
+        catch {
+          // `startQueued` records a terminal failure. Loop so a bad cell never blocks the rest
+          // of the queue; the caller still observes that failure through its execution resource.
+          case NonFatal(e) =>
+            warn(s"Failed to start queued execution ${execution.id}", e)
+            fail(
+              execution,
+              NotebookErrorCode.KYUUBI_UNAVAILABLE.toString,
+              "the queued statement could not be accepted")
+        }
+      }
+    }
+  }
+
+  private def startQueued(
+      principal: NotebookPrincipal,
+      session: NotebookSession,
+      queued: CellExecution): Unit = {
+    val runtime = runtimes.load(queued.runtimeId)
+    if (runtime.generation != queued.runtimeGeneration ||
+      RuntimeState.terminal.contains(runtime.state)) {
+      lose(queued, "the runtime was restarted before this queued execution could begin")
+      queuedConfigurations.remove(queued.id)
+      queuedOrder.remove(queued.id)
+      return
+    }
+    val configuration = Option(queuedConfigurations.remove(queued.id)).getOrElse(Map.empty)
+    queuedOrder.remove(queued.id)
+    if (!registry.get(runtime.runtimeSpecId).supports(queued.language)) {
+      fail(
+        queued,
+        NotebookErrorCode.UNSUPPORTED_LANGUAGE.toString,
+        s"runtime ${runtime.id} cannot run ${queued.language}")
+      return
+    }
 
     try {
       val submitted = registry.get(runtime.runtimeSpecId).execute(runtime, queued, configuration)
@@ -173,22 +272,15 @@ class NotebookExecutionService(
       emit(started, "STARTING", None)
       // The idle reaper measures from here, so a runtime in use is never reclaimed.
       runtimes.touchActivity(runtime)
-      started
     } catch {
       case e: NotebookException =>
         fail(queued, e.code.toString, e.message)
-        throw e
       case NonFatal(e) =>
         warn(s"Failed to submit execution ${queued.id}", e)
         fail(
           queued,
           NotebookErrorCode.KYUUBI_UNAVAILABLE.toString,
           "the statement was not accepted")
-        throw new NotebookException(
-          NotebookErrorCode.KYUUBI_UNAVAILABLE,
-          "the statement was not accepted",
-          retryable = true,
-          cause = e)
     }
   }
 
@@ -213,13 +305,21 @@ class NotebookExecutionService(
   def refresh(execution: CellExecution): CellExecution = {
     if (ExecutionState.terminal.contains(execution.state)) {
       execution
+    } else if (execution.state == ExecutionState.QUEUED) {
+      val session = sessions.load(execution.notebookSessionId)
+      sessionLock(session.id).synchronized {
+        drainQueue(NotebookPrincipal(execution.submittedBy, admin = false), session)
+        store.getExecution(execution.id).getOrElse(execution)
+      }
     } else {
       val runtime = runtimes.load(execution.runtimeId)
       if (runtime.generation != execution.runtimeGeneration ||
         RuntimeState.terminal.contains(runtime.state)) {
         // The runtime this ran on is gone or was restarted; the outcome can no longer be
         // established, and unknown work is never reported as successful.
-        return lose(execution, "the runtime that was running this execution is gone")
+        val lost = lose(execution, "the runtime that was running this execution is gone")
+        drainAfterTerminal(execution)
+        return lost
       }
       val status =
         try {
@@ -227,7 +327,9 @@ class NotebookExecutionService(
         } catch {
           case NonFatal(e) =>
             warn(s"Failed to read status of execution ${execution.id}", e)
-            return lose(execution, "the execution state could not be established")
+            val lost = lose(execution, "the execution state could not be established")
+            drainAfterTerminal(execution)
+            return lost
         }
       if (status.state == execution.state) {
         execution
@@ -241,6 +343,17 @@ class NotebookExecutionService(
           version = execution.version + 1)
         store.updateExecution(updated, execution.version)
         emit(updated, status.state.toString, status.errorMessage)
+        if (updated.state == ExecutionState.SUCCEEDED) {
+          try persistSuccessfulPythonEnvironmentIntent(updated)
+          catch {
+            case NonFatal(e) =>
+              // The cell already completed in the live Driver. Do not rewrite that successful
+              // outcome because recording its next-engine environment failed; reconciliation or
+              // an explicit package request can be retried independently.
+              warn(s"Failed to record Python environment intent for ${updated.id}", e)
+          }
+        }
+        if (ExecutionState.terminal.contains(updated.state)) drainAfterTerminal(updated)
         updated
       }
     }
@@ -258,6 +371,17 @@ class NotebookExecutionService(
     val execution = require(principal, executionId)
     if (ExecutionState.terminal.contains(execution.state)) {
       execution
+    } else if (execution.state == ExecutionState.QUEUED) {
+      val canceled = execution.copy(
+        state = ExecutionState.CANCELED,
+        finishedAt = Some(System.currentTimeMillis()),
+        errorMessage = Some("execution canceled before it started"),
+        version = execution.version + 1)
+      store.updateExecution(canceled, execution.version)
+      queuedConfigurations.remove(execution.id)
+      queuedOrder.remove(execution.id)
+      emit(canceled, "CANCELED", canceled.errorMessage)
+      canceled
     } else {
       val runtime = runtimes.load(execution.runtimeId)
       try registry.get(runtime.runtimeSpecId).interruptExecution(execution)
@@ -402,6 +526,11 @@ class NotebookExecutionService(
   }
 
   private def tabular(execution: CellExecution) = {
+    if (execution.language != CellLanguage.SQL) {
+      throw new NotebookException(
+        NotebookErrorCode.NO_TABULAR_RESULT,
+        s"${execution.language} executions do not produce a tabular result")
+    }
     val runtime = runtimes.load(execution.runtimeId)
     registry.tabular(runtime.runtimeSpecId).getOrElse {
       throw new NotebookException(
@@ -413,6 +542,55 @@ class NotebookExecutionService(
   // -------------------------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------------------------
+
+  private def sessionLock(sessionId: String): Object =
+    sessionSubmissionLocks.computeIfAbsent(sessionId, _ => new Object())
+
+  private def drainAfterTerminal(execution: CellExecution): Unit = {
+    val session = sessions.load(execution.notebookSessionId)
+    sessionLock(session.id).synchronized {
+      drainQueue(NotebookPrincipal(execution.submittedBy, admin = false), session)
+    }
+  }
+
+  /** Called before session restart/stop closes the shared Kyuubi session. */
+  def invalidateSession(
+      principal: NotebookPrincipal,
+      session: NotebookSession,
+      reason: String): Unit = {
+    sessionLock(session.id).synchronized {
+      val active = store.listExecutions(ExecutionFilter(
+        notebookSessionId = Some(session.id),
+        states = (ExecutionState.values -- ExecutionState.terminal).map(_.toString),
+        limit = Int.MaxValue))
+      active.foreach { execution =>
+        if (execution.state != ExecutionState.QUEUED) {
+          try {
+            val runtime = runtimes.load(execution.runtimeId)
+            registry.get(runtime.runtimeSpecId).interruptExecution(execution)
+          } catch { case NonFatal(e) => warn(s"Failed to interrupt ${execution.id}", e) }
+        }
+        queuedConfigurations.remove(execution.id)
+        queuedOrder.remove(execution.id)
+        val invalidated = execution.copy(
+          state = if (execution.state == ExecutionState.QUEUED) {
+            ExecutionState.CANCELED
+          } else {
+            ExecutionState.LOST
+          },
+          finishedAt = Some(System.currentTimeMillis()),
+          errorCode = if (execution.state == ExecutionState.QUEUED) {
+            None
+          } else {
+            Some(NotebookErrorCode.RUNTIME_LOST.toString)
+          },
+          errorMessage = Some(reason),
+          version = execution.version + 1)
+        store.updateExecution(invalidated, execution.version)
+        emit(invalidated, invalidated.state.toString, invalidated.errorMessage)
+      }
+    }
+  }
 
   private def resolveSource(
       notebookId: String,
@@ -435,14 +613,24 @@ class NotebookExecutionService(
   }
 
   /**
-   * The notebook decides what language a cell runs as.
-   *
-   * `SubmitExecutionRequest.language` is still accepted on the wire so existing clients do not
-   * break, but it is no longer consulted: a notebook is single-language, and honouring a
-   * per-request value would let a caller run Python inside a SQL notebook.
+   * A stored cell is the source of truth. `SubmitExecutionRequest.language` remains only for the
+   * legacy/raw-source API, where no cell exists from which to obtain a language.
    */
-  private def resolveLanguage(notebook: Notebook): CellLanguage.Value = {
-    val language = NotebookLanguage.toCellLanguage(notebook.language)
+  private def resolveLanguage(
+      notebook: Notebook,
+      cell: Option[NotebookCell],
+      request: SubmitExecutionRequest): CellLanguage.Value = {
+    val language = cell.map { value =>
+      if (value.cellType != CellType.CODE) {
+        throw NotebookException.invalid("only CODE cells can be executed")
+      }
+      value.language
+    }.getOrElse {
+      Option(request.getLanguage).map(_.trim).filter(_.nonEmpty)
+        .flatMap(raw => CellLanguage.values.find(_.toString.equalsIgnoreCase(raw)))
+        // Compatibility for clients that still submit raw source without a language.
+        .getOrElse(NotebookLanguage.toCellLanguage(notebook.language))
+    }
     if (!CellLanguage.executable.contains(language)) {
       throw new NotebookException(
         NotebookErrorCode.UNSUPPORTED_LANGUAGE,

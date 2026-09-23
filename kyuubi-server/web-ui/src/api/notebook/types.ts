@@ -59,7 +59,7 @@ export interface NotebookCell {
   version: number
 }
 
-/** A notebook is single-language; every CODE cell in it uses this. */
+/** Legacy/default preference for new code cells; each CODE cell owns its execution language. */
 export type NotebookLanguage = 'SQL' | 'PYTHON'
 
 export interface Notebook {
@@ -204,6 +204,7 @@ export interface RuntimeSpec {
   language: string
   version: string
   enabled: boolean
+  supportedLanguages?: CellLanguage[]
 }
 
 export interface CurrentUser {

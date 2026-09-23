@@ -87,14 +87,7 @@
               <el-icon v-else-if="data.isFolder" class="folder-icon">
                 <Folder />
               </el-icon>
-              <span
-                v-else
-                class="lang-badge"
-                :class="
-                  data.language === 'PYTHON' ? 'lang-python' : 'lang-sql'
-                ">
-                {{ data.language === 'PYTHON' ? 'PY' : 'SQL' }}
-              </span>
+              <span v-else class="lang-badge lang-notebook">NB</span>
               <span class="node-label" :title="data.label">{{
                 data.label
               }}</span>
@@ -164,12 +157,6 @@
             placeholder="Untitled Notebook"
             @keyup.enter="createNotebook" />
         </el-form-item>
-        <el-form-item label="Language">
-          <el-radio-group v-model="notebookLanguage">
-            <el-radio label="SQL">SQL</el-radio>
-            <el-radio label="PYTHON">Python</el-radio>
-          </el-radio-group>
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="notebookDialog = false">Cancel</el-button>
@@ -233,8 +220,7 @@
   import * as api from '@/api/notebook'
   import type {
     Notebook,
-    NotebookFolder,
-    NotebookLanguage
+    NotebookFolder
   } from '@/api/notebook/types'
   import {
     defaultCloneNotebookName,
@@ -268,7 +254,6 @@
 
   const notebookDialog = ref(false)
   const notebookName = ref('')
-  const notebookLanguage = ref<NotebookLanguage>('SQL')
 
   const folderDialog = ref(false)
   const folderName = ref('')
@@ -517,7 +502,6 @@
   const openNewNotebookDialog = (folderId: string | null = null) => {
     currentParentId.value = folderId
     notebookName.value = defaultNotebookName()
-    notebookLanguage.value = 'SQL'
     notebookDialog.value = true
   }
 
@@ -531,11 +515,7 @@
     const name = notebookName.value.trim()
     if (!name) return
     try {
-      const created = await api.createNotebook(
-        name,
-        currentParentId.value,
-        notebookLanguage.value
-      )
+      const created = await api.createNotebook(name, currentParentId.value)
       notebookDialog.value = false
       notebookName.value = ''
       ElMessage.success('Notebook created')
@@ -833,16 +813,10 @@
             letter-spacing: 0.5px;
             line-height: 1.2;
 
-            &.lang-sql {
+            &.lang-notebook {
               background: #e6f7ff;
               color: #1890ff;
               border: 1px solid #91d5ff;
-            }
-
-            &.lang-python {
-              background: #fff7e6;
-              color: #d46b08;
-              border: 1px solid #ffd591;
             }
           }
 

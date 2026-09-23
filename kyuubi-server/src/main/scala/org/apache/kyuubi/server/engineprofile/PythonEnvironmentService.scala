@@ -33,7 +33,7 @@ import org.apache.kyuubi.ha.HighAvailabilityConf.HA_NAMESPACE
 import org.apache.kyuubi.ha.client.DiscoveryClientProvider.withDiscoveryClient
 import org.apache.kyuubi.ha.client.DiscoveryPaths
 import org.apache.kyuubi.server.notebook.NotebookConf._
-import org.apache.kyuubi.server.notebook.api.{EngineProfile, NotebookException, PythonEnvironmentChangeRequest, PythonEnvironmentRevision}
+import org.apache.kyuubi.server.notebook.api.{EngineProfile, NotebookErrorCode, NotebookException, PythonEnvironmentChangeRequest, PythonEnvironmentRevision}
 import org.apache.kyuubi.server.notebook.store.NotebookStore
 
 /**
@@ -80,71 +80,70 @@ class PythonEnvironmentService(
     }
 
   /**
-   * Persists an allowlisted package change before dispatching its builder Job.
+   * Records a package intent while the current engine is alive.
    *
-   * Requests for one profile are serialized: an active request is returned instead of creating
-   * another writer for the same PVC. The current profile revision keeps serving live engines
-   * until the new environment is fully built and can safely be promoted for a new engine.
+   * The Python worker performs the hot install immediately. Durable work intentionally waits for
+   * the Driver to disappear, so all changes made during one engine lifetime become one immutable
+   * environment instead of one Builder Job per `%pip` cell.
    */
   def requestPackageChange(
       principal: EngineProfilePrincipal,
       profileId: String,
       operation: String,
-      packages: Seq[String]): PythonEnvironmentChangeRequest = synchronized {
+      packages: Seq[String],
+      hotInstallSucceeded: Boolean = false): PythonEnvironmentChangeRequest = synchronized {
     requireEnabled()
     val profile = engineProfiles.getOwned(profileId, principal)
     val normalized = PythonEnvironmentService.normalizePackages(packages)
     val normalizedOperation = PythonEnvironmentOperation.normalize(operation)
-    val active = store.listPendingPythonEnvironmentChangeRequests().find(_.profileId == profileId)
-    active.getOrElse {
-      val now = System.currentTimeMillis()
-      val nextRevision = store.listPythonEnvironmentRevisions(profileId)
-        .map(_.revision).foldLeft(0L)(math.max) + 1L
-      val environment = PythonEnvironmentRevision(
-        id = UUID.randomUUID().toString,
-        profileId = profileId,
-        revision = nextRevision,
-        pvcName = PythonEnvironmentService.pvcName(profileId),
-        relativePath = PythonEnvironmentService.relativePath(nextRevision),
-        state = PythonEnvironmentState.PENDING,
-        requirementsLock = None,
-        metadata = None,
-        contentChecksum = None,
-        baseImage = requiredBaseImage,
-        createdAt = now,
-        readyAt = None,
-        retiredAt = None)
-      val request = PythonEnvironmentChangeRequest(
-        id = UUID.randomUUID().toString,
-        profileId = profileId,
-        requestedBy = principal.user,
-        operation = normalizedOperation,
-        requestedPackages = normalized,
-        expectedProfileRevision = profile.revision,
-        state = PythonEnvironmentState.PENDING,
-        hotInstallState = "NOT_REQUESTED",
-        resultingEnvironmentRevisionId = Some(environment.id),
-        errorSummary = None,
-        createdAt = now,
-        updatedAt = now)
-      store.createPythonEnvironmentRevision(environment)
-      store.createPythonEnvironmentChangeRequest(request)
-      dispatch(request, environment)
-      store.getPythonEnvironmentChangeRequest(request.id).getOrElse(request)
+    val now = System.currentTimeMillis()
+    val request = PythonEnvironmentChangeRequest(
+      id = UUID.randomUUID().toString,
+      profileId = profileId,
+      requestedBy = principal.user,
+      operation = normalizedOperation,
+      requestedPackages = normalized,
+      expectedProfileRevision = profile.revision,
+      state = PythonEnvironmentState.COLLECTING,
+      hotInstallState = if (hotInstallSucceeded) "SUCCEEDED" else "NOT_REQUESTED",
+      resultingEnvironmentRevisionId = None,
+      errorSummary = None,
+      createdAt = now,
+      updatedAt = now)
+    store.createPythonEnvironmentChangeRequest(request)
+    request
+  }
+
+  /** Reconciles engine-stop sealing and durable Builder Jobs after a Kyuubi restart. */
+  def reconcile(): Unit = {
+    if (enabled) {
+      store.listPendingPythonEnvironmentChangeRequests().map(_.profileId).distinct.foreach {
+        reconcileProfile
+      }
     }
   }
 
-  /** Reattaches durable builder Jobs after a Kyuubi restart without submitting duplicates. */
-  def reconcile(): Unit = {
-    if (enabled) {
-      store.listPendingPythonEnvironmentChangeRequests().foreach { request =>
-        request.resultingEnvironmentRevisionId.flatMap(store.getPythonEnvironmentRevision).foreach {
-          environment =>
-            if (request.state == PythonEnvironmentState.PENDING) dispatch(request, environment)
-            else if (request.state == PythonEnvironmentState.BUILDING) {
-              reconcileBuild(request, environment)
-            }
-        }
+  /**
+   * Called before a new Kyuubi session can launch an engine. A pending durable environment is a
+   * correctness boundary: launching from env-N after the live Driver died would make packages
+   * that were just installed silently disappear.
+   */
+  def prepareForEngineLaunch(profileId: String): Unit = synchronized {
+    if (enabled && profileId != EngineProfileService.DefaultProfileId) {
+      reconcileProfile(profileId)
+      recoverCompletedBuilds(profileId)
+      promoteReadyEnvironmentIfEngineStopped(profileId)
+      val profile = store.getEngineProfile(profileId)
+      val unsettled = pendingRequests(profileId)
+      if (profile.exists(current => unsettled.nonEmpty && !hasLiveEngine(current))) {
+        throw new NotebookException(
+          NotebookErrorCode.PYTHON_ENVIRONMENT_RESTORING,
+          "Restoring Python environment before starting a new Spark engine",
+          retryable = true,
+          details = Map(
+            "profileId" -> profileId,
+            "requestIds" -> unsettled.map(_.id).mkString(","),
+            "state" -> unsettled.map(_.state).distinct.mkString(",")))
       }
     }
   }
@@ -175,12 +174,68 @@ class PythonEnvironmentService(
     }
   }
 
+  private def reconcileProfile(profileId: String): Unit = synchronized {
+    val profile = store.getEngineProfile(profileId)
+    profile.foreach { current =>
+      val requests = pendingRequests(profileId)
+      if (requests.exists(_.state == PythonEnvironmentState.COLLECTING) && !hasLiveEngine(
+          current)) {
+        sealAndDispatch(current, requests.filter(_.state == PythonEnvironmentState.COLLECTING))
+      }
+      pendingRequests(profileId).groupBy(_.resultingEnvironmentRevisionId).foreach {
+        case (Some(environmentId), grouped) =>
+          store.getPythonEnvironmentRevision(environmentId).foreach { environment =>
+            val requirements = requirementsFor(profileId, grouped)
+            environment.state match {
+              case PythonEnvironmentState.PENDING => dispatch(environment, grouped, requirements)
+              case PythonEnvironmentState.BUILDING =>
+                reconcileBuild(environment, grouped, requirements)
+              case _ =>
+            }
+          }
+        case _ =>
+      }
+    }
+  }
+
+  private def sealAndDispatch(
+      profile: EngineProfile,
+      requests: Seq[PythonEnvironmentChangeRequest]): Unit = {
+    val now = System.currentTimeMillis()
+    val nextRevision = store.listPythonEnvironmentRevisions(profile.profileId)
+      .map(_.revision).foldLeft(0L)(math.max) + 1L
+    val environment = PythonEnvironmentRevision(
+      id = UUID.randomUUID().toString,
+      profileId = profile.profileId,
+      revision = nextRevision,
+      pvcName = PythonEnvironmentService.pvcName(profile.profileId),
+      relativePath = PythonEnvironmentService.relativePath(nextRevision),
+      state = PythonEnvironmentState.PENDING,
+      requirementsLock = None,
+      metadata = None,
+      contentChecksum = None,
+      baseImage = requiredBaseImage,
+      createdAt = now,
+      readyAt = None,
+      retiredAt = None)
+    store.createPythonEnvironmentRevision(environment)
+    val sealedRequests = requests.map { request =>
+      val sealedRequest = request.copy(
+        state = PythonEnvironmentState.PENDING,
+        resultingEnvironmentRevisionId = Some(environment.id),
+        updatedAt = now)
+      store.updatePythonEnvironmentChangeRequest(sealedRequest)
+      sealedRequest
+    }
+    dispatch(environment, sealedRequests, requirementsFor(profile.profileId, sealedRequests))
+  }
+
   private def dispatch(
-      request: PythonEnvironmentChangeRequest,
-      environment: PythonEnvironmentRevision): Unit = {
+      environment: PythonEnvironmentRevision,
+      requests: Seq[PythonEnvironmentChangeRequest],
+      requirements: Seq[String]): Unit = {
     try {
       ensurePvc(environment)
-      val requirements = requirementsFor(request)
       val configMapName = PythonEnvironmentService.resourceName("kyuubi-python-env", environment.id)
       val labels = Map(
         "app.kubernetes.io/managed-by" -> "kyuubi-python-environment",
@@ -192,7 +247,9 @@ class PythonEnvironmentService(
         .endMetadata()
         .addToData("requirements.txt", requirements.mkString("\n") + "\n")
         .build()
-      kubernetes.configMaps().inNamespace(namespace).resource(configMap).createOrReplace()
+      createIfAbsent(s"ConfigMap $configMapName") {
+        kubernetes.configMaps().inNamespace(namespace).resource(configMap).create()
+      }
       val jobName = PythonEnvironmentService.resourceName("kyuubi-python-build", environment.id)
       val job = new JobBuilder()
         .withNewMetadata()
@@ -235,41 +292,61 @@ class PythonEnvironmentService(
         .endTemplate()
         .endSpec()
         .build()
-      kubernetes.batch().v1().jobs().inNamespace(namespace).resource(job).createOrReplace()
+      createIfAbsent(s"Job $jobName") {
+        kubernetes.batch().v1().jobs().inNamespace(namespace).resource(job).create()
+      }
       store.updatePythonEnvironmentRevision(
         environment.copy(state = PythonEnvironmentState.BUILDING))
-      store.updatePythonEnvironmentChangeRequest(request.copy(
-        state = PythonEnvironmentState.BUILDING,
-        updatedAt = System.currentTimeMillis()))
+      updateRequests(requests, PythonEnvironmentState.BUILDING)
     } catch {
-      case NonFatal(error) => fail(request, environment, error.getMessage)
+      case NonFatal(error) => fail(environment, requests, error.getMessage)
     }
   }
 
   private def reconcileBuild(
-      request: PythonEnvironmentChangeRequest,
-      environment: PythonEnvironmentRevision): Unit = {
+      environment: PythonEnvironmentRevision,
+      requests: Seq[PythonEnvironmentChangeRequest],
+      requirements: Seq[String]): Unit = {
     val jobName = PythonEnvironmentService.resourceName("kyuubi-python-build", environment.id)
     val job = kubernetes.batch().v1().jobs().inNamespace(namespace).withName(jobName).get()
-    val conditions = Option(job).flatMap(value => Option(value.getStatus))
-      .flatMap(status => Option(status.getConditions)).map(_.asScala).getOrElse(Seq.empty)
-    if (conditions.exists(condition =>
-        condition.getType == "Complete" && condition.getStatus == "True")) {
+    if (isCompleted(job)) {
       val now = System.currentTimeMillis()
       val ready = environment.copy(
         state = PythonEnvironmentState.READY,
         relativePath = PythonEnvironmentService.relativePath(environment.revision),
-        requirementsLock = Some(requirementsFor(request).mkString("\n")),
+        requirementsLock = Some(requirements.mkString("\n")),
         readyAt = Some(now))
       store.updatePythonEnvironmentRevision(ready)
-      store.updatePythonEnvironmentChangeRequest(request.copy(
-        state = PythonEnvironmentState.READY,
-        updatedAt = now))
-    } else if (conditions.exists(c => c.getType == "Failed" && c.getStatus == "True")) {
-      val detail = conditions.find(_.getType == "Failed").flatMap(c => Option(c.getMessage))
+      updateRequests(requests, PythonEnvironmentState.READY, now)
+    } else if (isFailed(job)) {
+      val detail = jobConditions(job).find(_.getType == "Failed").flatMap(c => Option(c.getMessage))
         .getOrElse("Python environment builder Job failed")
-      fail(request, environment, detail)
+      fail(environment, requests, detail)
     }
+  }
+
+  /**
+   * Recovers only the narrow failure mode where another Kyuubi replica completed the builder
+   * Job while this replica failed an idempotent resource creation. A completed Job proves that
+   * the builder wrote COMPLETE and atomically published the environment directory; a genuinely
+   * failed Job is never revived.
+   */
+  private def recoverCompletedBuilds(profileId: String): Unit = {
+    store.listPythonEnvironmentRevisions(profileId)
+      .filter(_.state == PythonEnvironmentState.FAILED)
+      .filter(environment => isCompleted(builderJob(environment)))
+      .foreach { environment =>
+        val requirements = builderRequirements(environment)
+        val ready = environment.copy(
+          state = PythonEnvironmentState.READY,
+          relativePath = PythonEnvironmentService.relativePath(environment.revision),
+          requirementsLock = Some(requirements.mkString("\n")),
+          readyAt = Some(System.currentTimeMillis()))
+        store.updatePythonEnvironmentRevision(ready)
+        warn(
+          s"Recovered Python environment ${environment.id}: its Kubernetes builder Job " +
+            "completed after a prior reconciliation failure")
+      }
   }
 
   private def ensurePvc(environment: PythonEnvironmentRevision): Unit = {
@@ -289,35 +366,100 @@ class PythonEnvironmentService(
           .addToRequests("storage", new Quantity(pvcSize))
           .build())
       if (storageClass.nonEmpty) builder.withStorageClassName(storageClass)
-      claims.resource(builder.endSpec().build()).create()
+      createIfAbsent(s"PVC ${environment.pvcName}") {
+        claims.resource(builder.endSpec().build()).create()
+      }
     }
   }
 
-  private def requirementsFor(request: PythonEnvironmentChangeRequest): Seq[String] = {
-    val previous = store.listPythonEnvironmentRevisions(request.profileId)
-      .find(_.state == PythonEnvironmentState.READY)
+  private def builderJob(environment: PythonEnvironmentRevision) = {
+    val name = PythonEnvironmentService.resourceName("kyuubi-python-build", environment.id)
+    kubernetes.batch().v1().jobs().inNamespace(namespace).withName(name).get()
+  }
+
+  private def jobConditions(job: io.fabric8.kubernetes.api.model.batch.v1.Job) =
+    Option(job).flatMap(value => Option(value.getStatus))
+      .flatMap(status => Option(status.getConditions)).map(_.asScala).getOrElse(Seq.empty)
+
+  private def isCompleted(job: io.fabric8.kubernetes.api.model.batch.v1.Job): Boolean =
+    jobConditions(job).exists(condition =>
+      condition.getType == "Complete" && condition.getStatus == "True")
+
+  private def isFailed(job: io.fabric8.kubernetes.api.model.batch.v1.Job): Boolean =
+    jobConditions(job).exists(condition =>
+      condition.getType == "Failed" && condition.getStatus == "True")
+
+  private def builderRequirements(environment: PythonEnvironmentRevision): Seq[String] = {
+    val name = PythonEnvironmentService.resourceName("kyuubi-python-env", environment.id)
+    Option(kubernetes.configMaps().inNamespace(namespace).withName(name).get())
+      .flatMap(configMap => Option(configMap.getData))
+      .flatMap(data => Option(data.get("requirements.txt")))
+      .map(_.split("\\r?\\n").toSeq.filter(_.nonEmpty))
+      .getOrElse(Seq.empty)
+  }
+
+  private def createIfAbsent(resource: String)(create: => Unit): Unit = {
+    try {
+      create
+    } catch {
+      case error: io.fabric8.kubernetes.client.KubernetesClientException
+          if error.getCode == 409 =>
+        info(s"$resource was created concurrently by another Kyuubi replica")
+    }
+  }
+
+  private def pendingRequests(profileId: String): Seq[PythonEnvironmentChangeRequest] =
+    store.listPendingPythonEnvironmentChangeRequests().filter(_.profileId == profileId)
+
+  /**
+   * Applies ordered intents to the last published environment and returns a standalone lockfile.
+   */
+  private def requirementsFor(
+      profileId: String,
+      requests: Seq[PythonEnvironmentChangeRequest]): Seq[String] = {
+    val previous = store.listPythonEnvironmentRevisions(profileId)
+      .filter(_.state == PythonEnvironmentState.READY)
+      .sortBy(_.revision)
+      .lastOption
       .flatMap(_.requirementsLock)
       .map(_.split("\\r?\\n").toSeq.filter(_.nonEmpty))
       .getOrElse(Seq.empty)
-    request.operation match {
-      case PythonEnvironmentOperation.INSTALL =>
-        (previous ++ request.requestedPackages).distinct.sorted
-      case PythonEnvironmentOperation.UNINSTALL =>
-        previous.filterNot(value =>
-          request.requestedPackages.exists(name => value.startsWith(name)))
-    }
+    requests.sortBy(_.createdAt).foldLeft(previous) { (requirements, request) =>
+      request.operation match {
+        case PythonEnvironmentOperation.INSTALL =>
+          request.requestedPackages.foldLeft(requirements) { (current, requirement) =>
+            current.filterNot(PythonEnvironmentService.requirementName(_) ==
+              PythonEnvironmentService.requirementName(requirement)) :+ requirement
+          }
+        case PythonEnvironmentOperation.UNINSTALL =>
+          requirements.filterNot(value =>
+            request.requestedPackages.exists(name =>
+              PythonEnvironmentService.requirementName(value) ==
+                PythonEnvironmentService.requirementName(name)))
+      }
+    }.distinct.sortBy(PythonEnvironmentService.requirementName)
   }
 
   private def fail(
-      request: PythonEnvironmentChangeRequest,
       environment: PythonEnvironmentRevision,
+      requests: Seq[PythonEnvironmentChangeRequest],
       detail: String): Unit = {
     val now = System.currentTimeMillis()
     store.updatePythonEnvironmentRevision(environment.copy(state = PythonEnvironmentState.FAILED))
-    store.updatePythonEnvironmentChangeRequest(request.copy(
-      state = PythonEnvironmentState.FAILED,
-      errorSummary = Option(detail).filter(_.nonEmpty),
-      updatedAt = now))
+    requests.foreach { request =>
+      store.updatePythonEnvironmentChangeRequest(request.copy(
+        state = PythonEnvironmentState.FAILED,
+        errorSummary = Option(detail).filter(_.nonEmpty),
+        updatedAt = now))
+    }
+  }
+
+  private def updateRequests(
+      requests: Seq[PythonEnvironmentChangeRequest],
+      state: String,
+      now: Long = System.currentTimeMillis()): Unit = {
+    requests.foreach(request =>
+      store.updatePythonEnvironmentChangeRequest(request.copy(state = state, updatedAt = now)))
   }
 
   private def requireEnabled(): Unit = {
@@ -388,6 +530,7 @@ class PythonEnvironmentService(
 }
 
 object PythonEnvironmentState {
+  val COLLECTING = "COLLECTING"
   val PENDING = "PENDING"
   val BUILDING = "BUILDING"
   val READY = "READY"
@@ -424,6 +567,10 @@ object PythonEnvironmentService {
     }
     normalized
   }
+
+  /** Package identity ignores an exact-version suffix when intents replace or remove a package. */
+  private[engineprofile] def requirementName(requirement: String): String =
+    requirement.takeWhile(_ != '=').toLowerCase
 
   /** PVC identity derives from immutable profile ID, never owner or mutable display name. */
   def pvcName(profileId: String): String =

@@ -84,6 +84,10 @@ class EngineProfileRuntimeService(
   }
 
   def start(principal: EngineProfilePrincipal, profileId: String): EngineProfileEngineStatusView = {
+    // A READY Python environment becomes part of the immutable launch configuration only after
+    // the old Driver has disappeared. Do this before taking the snapshot so an explicit Start
+    // cannot accidentally recreate the previous profile revision without its environment.
+    pythonEnvironments.foreach(_.prepareForEngineLaunch(profileId))
     val snapshot = profiles.snapshotForUse(profileId, principal)
     if (discoveryNodes(principal.user, snapshot.subdomain).nonEmpty) {
       return view(snapshot, RUNNING, 1)

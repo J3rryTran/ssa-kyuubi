@@ -533,3 +533,4 @@ The new tests must fail if the StarRocks resource/access mapping is reverted.
   version deployed on the target Ranger admin. Re-verify against the actual
   deployed servicedef before rollout, since access-type lists have grown across
   StarRocks releases.
+

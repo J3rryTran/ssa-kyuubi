@@ -114,14 +114,9 @@
                     class="dir-icon folder-icon">
                     <Folder />
                   </el-icon>
-                  <span
-                    v-else
-                    class="lang-badge-mini"
-                    :class="
-                      data.language === 'PYTHON' ? 'lang-python' : 'lang-sql'
-                    ">
-                    {{ data.language === 'PYTHON' ? 'PY' : 'SQL' }}
-                  </span>
+                  <el-icon v-else class="item-icon notebook-icon">
+                    <Document />
+                  </el-icon>
 
                   <span class="tree-node-label" :title="data.label">{{
                     data.label
@@ -166,13 +161,7 @@
                   <span class="item-name folder-name">{{ row.name }}</span>
                 </template>
                 <template v-else>
-                  <span
-                    class="lang-badge"
-                    :class="
-                      row.language === 'PYTHON' ? 'lang-python' : 'lang-sql'
-                    ">
-                    {{ row.language === 'PYTHON' ? 'PY' : 'SQL' }}
-                  </span>
+                  <el-icon class="item-icon notebook-icon"><Document /></el-icon>
                   <span
                     class="item-name notebook-name"
                     @click.stop="openNotebook(row.id)">
@@ -189,16 +178,6 @@
               <span class="type-badge">{{
                 row.isFolder ? 'Folder' : 'Notebook'
               }}</span>
-            </template>
-          </el-table-column>
-
-          <!-- LANGUAGE COLUMN -->
-          <el-table-column label="Language" width="120">
-            <template #default="{ row }">
-              <span v-if="!row.isFolder" class="lang-text">
-                {{ row.language === 'PYTHON' ? 'Python' : 'SQL' }}
-              </span>
-              <span v-else class="text-muted">—</span>
             </template>
           </el-table-column>
 
@@ -320,12 +299,6 @@
             placeholder="e.g. Sales Analysis 2026"
             @keyup.enter="handleCreateNotebook" />
         </el-form-item>
-        <el-form-item label="Default Language" required>
-          <el-radio-group v-model="newNotebookLanguage">
-            <el-radio label="SQL">SQL (SparkSQL)</el-radio>
-            <el-radio label="PYTHON">Python (PySpark)</el-radio>
-          </el-radio-group>
-        </el-form-item>
         <el-form-item label="Destination Folder">
           <el-select
             v-model="destinationFolderId"
@@ -436,8 +409,7 @@
   import * as api from '@/api/notebook'
   import type {
     Notebook,
-    NotebookFolder,
-    NotebookLanguage
+    NotebookFolder
   } from '@/api/notebook/types'
   import {
     defaultCloneNotebookName,
@@ -531,7 +503,6 @@
   // Dialog states
   const notebookDialog = ref(false)
   const newNotebookName = ref('')
-  const newNotebookLanguage = ref<NotebookLanguage>('SQL')
   const destinationFolderId = ref<string | null>(null)
 
   const folderDialog = ref(false)
@@ -555,7 +526,6 @@
     isFolder: boolean
     isRoot?: boolean
     parentId?: string | null
-    language?: string
     count?: number
     children?: DirectoryTreeNode[]
   }
@@ -585,8 +555,7 @@
         id: nb.id,
         label: nb.name,
         isFolder: false,
-        parentId: nb.folderId || null,
-        language: nb.language || 'SQL'
+        parentId: nb.folderId || null
       }
       if (nb.folderId && folderNodes.has(nb.folderId)) {
         folderNodes.get(nb.folderId)!.children!.push(nbNode)
@@ -850,7 +819,6 @@
 
   const openCreateNotebookDialog = () => {
     newNotebookName.value = defaultNotebookName()
-    newNotebookLanguage.value = 'SQL'
     destinationFolderId.value = currentFolderId.value
     notebookDialog.value = true
   }
@@ -859,10 +827,9 @@
     const name = newNotebookName.value.trim()
     if (!name) return
     const folderId = destinationFolderId.value
-    const lang = newNotebookLanguage.value
-
     try {
-      const created = await api.createNotebook(name, folderId, lang)
+      // `language` remains a legacy API default. Individual CODE cells choose SQL or Python.
+      const created = await api.createNotebook(name, folderId, 'SQL')
       notebookDialog.value = false
       newNotebookName.value = ''
       ElMessage.success('Notebook created')
@@ -1217,27 +1184,6 @@
           }
         }
 
-        .lang-badge-mini {
-          font-size: 9px;
-          font-weight: 800;
-          padding: 1px 4px;
-          border-radius: 3px;
-          line-height: 1.2;
-          flex-shrink: 0;
-
-          &.lang-sql {
-            background: #e6f4ff;
-            color: #0958d9;
-            border: 1px solid #91caff;
-          }
-
-          &.lang-python {
-            background: #fff7e6;
-            color: #d46b08;
-            border: 1px solid #ffd591;
-          }
-        }
-
         .tree-node-label {
           white-space: nowrap;
           overflow: hidden;
@@ -1319,24 +1265,9 @@
         color: #ff7043;
       }
 
-      .lang-badge {
-        font-size: 10px;
-        font-weight: 800;
-        padding: 2px 5px;
-        border-radius: 3px;
-        letter-spacing: 0.5px;
-
-        &.lang-sql {
-          background: #e6f4ff;
-          color: #0958d9;
-          border: 1px solid #91caff;
-        }
-
-        &.lang-python {
-          background: #fff7e6;
-          color: #d46b08;
-          border: 1px solid #ffd591;
-        }
+      .notebook-icon {
+        font-size: 18px;
+        color: #4b75c9;
       }
 
       .item-name {
@@ -1367,12 +1298,6 @@
     .type-badge {
       font-size: 12px;
       color: #57606a;
-    }
-
-    .lang-text {
-      font-size: 12px;
-      font-weight: 500;
-      color: #24292e;
     }
 
     .text-muted {

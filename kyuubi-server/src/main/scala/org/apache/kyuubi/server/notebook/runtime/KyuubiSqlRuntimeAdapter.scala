@@ -22,7 +22,7 @@ import scala.util.control.NonFatal
 
 import org.apache.kyuubi.Logging
 import org.apache.kyuubi.config.KyuubiConf
-import org.apache.kyuubi.config.KyuubiConf.{ARROW_BASED_ROWSET_TIMESTAMP_AS_STRING, OPERATION_RESULT_FORMAT}
+import org.apache.kyuubi.config.KyuubiConf.{ARROW_BASED_ROWSET_TIMESTAMP_AS_STRING, ENGINE_SPARK_OUTPUT_MODE, OPERATION_LANGUAGE, OPERATION_RESULT_FORMAT}
 import org.apache.kyuubi.operation.{FetchOrientation, OperationHandle, OperationState}
 import org.apache.kyuubi.server.api.v1.ArrowRowSetConverter
 import org.apache.kyuubi.server.notebook.NotebookConf.NOTEBOOK_MAX_PAGE_SIZE
@@ -32,35 +32,40 @@ import org.apache.kyuubi.session.SessionHandle
 import org.apache.kyuubi.shaded.hive.service.rpc.thrift.{TProtocolVersion, TRowSet}
 
 /**
- * Runs SQL cells through the Kyuubi backend that hosts this notebook server.
+ * Runs SQL and Python cells through one Kyuubi Spark session.
  *
  * The adapter talks to the same [[BackendService]] the REST session and operation resources use,
  * which is what "use the existing Kyuubi primitives" means in practice: one Kyuubi session per
- * notebook runtime, one asynchronous operation per execution. Handles never leave this class.
+ * notebook runtime, one asynchronous operation per execution. Python is selected only in the
+ * operation overlay, so Spark SQL state and the engine's session-scoped Python worker are shared.
  *
  * Cleanup is deliberately done with `cancelOperation`/`closeOperation`/`closeSession` rather than
  * the admin endpoints, so an ordinary notebook user needs no administrator rights.
  */
-class KyuubiSqlRuntimeAdapter(
+class SparkNotebookRuntimeAdapter(
     backendService: () => BackendService,
     instanceUri: () => String,
     conf: KyuubiConf)
   extends TabularNotebookRuntimeAdapter with Logging {
 
-  import KyuubiSqlRuntimeAdapter._
+  import SparkNotebookRuntimeAdapter._
 
   private val maxResultRows = conf.get(NOTEBOOK_MAX_PAGE_SIZE)
 
   override val runtimeType: String = RUNTIME_TYPE
 
+  override val legacyRuntimeSpecIds: Seq[String] = Seq("kyuubi-sql", "pyspark")
+
   override val runtimeSpec: RuntimeSpec = RuntimeSpec(
     id = SPEC_ID,
-    displayName = "Kyuubi SQL",
+    displayName = "Spark Notebook",
+    // This remains the legacy/default display field. `supportedLanguages` is the capability.
     language = CellLanguage.SQL.toString,
     version = org.apache.kyuubi.KYUUBI_VERSION,
     enabled = true,
     configurableKeys = Seq("kyuubi.engine.share.level", "spark.sql.shuffle.partitions"),
-    limits = Map("maxResultRows" -> maxResultRows.toString))
+    limits = Map("maxResultRows" -> maxResultRows.toString, "packagesSource" -> "spark-image"),
+    supportedLanguages = Seq(CellLanguage.SQL.toString, CellLanguage.PYTHON.toString))
 
   override def startRuntime(
       runtime: NotebookRuntime,
@@ -76,7 +81,9 @@ class KyuubiSqlRuntimeAdapter(
       configuration ++ Map(
         KYUUBI_SESSION_TAG -> s"notebook-runtime-${runtime.id}",
         "kyuubi.engine.share.level.subdomain" -> subdomain,
-        "kyuubi.engine.share.level.sub.domain" -> subdomain))
+        "kyuubi.engine.share.level.sub.domain" -> subdomain,
+        // The mode affects Python response serialization only; SQL still returns a TRowSet.
+        ENGINE_SPARK_OUTPUT_MODE.key -> NOTEBOOK_OUTPUT_MODE))
     AdapterRuntime(handle.identifier.toString, Some(instanceUri()))
   }
 
@@ -92,7 +99,7 @@ class KyuubiSqlRuntimeAdapter(
           // there is no way to tell those apart from here, so it is reported as LOST rather
           // than guessed to be healthy.
           case NonFatal(_) =>
-            AdapterRuntimeStatus(RuntimeState.LOST, Some("the SQL session is gone"))
+            AdapterRuntimeStatus(RuntimeState.LOST, Some("the Spark session is gone"))
         }
     }
   }
@@ -102,12 +109,20 @@ class KyuubiSqlRuntimeAdapter(
       execution: CellExecution,
       configuration: Map[String, String]): AdapterExecution = {
     val sessionHandle = requireSession(runtime)
+    val overlay = execution.language match {
+      case CellLanguage.PYTHON => configuration + (OPERATION_LANGUAGE.key -> "PYTHON")
+      case CellLanguage.SQL => configuration - OPERATION_LANGUAGE.key
+      case language =>
+        throw new NotebookException(
+          NotebookErrorCode.UNSUPPORTED_LANGUAGE,
+          s"$language cannot be executed by a Spark notebook runtime")
+    }
     val operationHandle =
       try {
         backendService().executeStatement(
           sessionHandle,
           execution.sourceSnapshot,
-          configuration,
+          overlay,
           // Always asynchronous: a synchronous call would tie the statement to the request
           // thread and make a browser refresh lose the work.
           runAsync = true,
@@ -116,7 +131,7 @@ class KyuubiSqlRuntimeAdapter(
         case NonFatal(e) =>
           throw new NotebookException(
             NotebookErrorCode.KYUUBI_SESSION_LOST,
-            "the SQL session is no longer usable; restart the notebook session",
+            "the Spark session is no longer usable; restart the notebook session",
             retryable = true,
             cause = e)
       }
@@ -133,9 +148,9 @@ class KyuubiSqlRuntimeAdapter(
         state = normalize(status.state),
         startedAt = Option(status.start).filter(_ > 0),
         finishedAt = Option(status.completed).filter(_ > 0),
-        errorCode = status.exception.map(_ => SQL_EXECUTION_FAILED),
-        errorMessage = status.exception.map(e => safeMessage(e.getMessage)),
-        hasResultSet = status.hasResultSet)
+        errorCode = status.exception.map(_ => failureCode(execution.language)),
+        errorMessage = status.exception.map(e => failureMessage(execution.language, e.getMessage)),
+        hasResultSet = execution.language == CellLanguage.SQL && status.hasResultSet)
     } catch {
       case NonFatal(e) =>
         debug(s"Operation for execution ${execution.id} is no longer known", e)
@@ -163,6 +178,31 @@ class KyuubiSqlRuntimeAdapter(
     }
   }
 
+  override def fetchOutputs(
+      execution: CellExecution,
+      afterSequence: Long,
+      limit: Int): Seq[AdapterOutput] = {
+    if (execution.language != CellLanguage.PYTHON) {
+      return Seq.empty
+    }
+    val handle = execution.internalOperationHandle.getOrElse(return Seq.empty)
+    val produced =
+      try {
+        val status = backendService().getOperationStatus(OperationHandle(handle), None)
+        status.exception match {
+          case Some(error) => PySparkResponseCodec.errorOutputs(error.getMessage)
+          case None if status.state == OperationState.FINISHED =>
+            PySparkResponseCodec.bundleOutputs(firstColumnOfFirstRow(handle))
+          case None => Seq.empty
+        }
+      } catch {
+        case NonFatal(e) =>
+          debug(s"Outputs for execution ${execution.id} are unavailable", e)
+          Seq.empty
+      }
+    produced.filter(_.sequence > afterSequence).take(math.max(limit, 0))
+  }
+
   override def restartRuntime(
       runtime: NotebookRuntime,
       configuration: Map[String, String]): AdapterRuntime = {
@@ -174,7 +214,7 @@ class KyuubiSqlRuntimeAdapter(
     runtime.internalRuntimeHandle.foreach { handle =>
       try backendService().closeSession(SessionHandle.fromUUID(handle))
       catch {
-        case NonFatal(e) => debug(s"Failed to close SQL session of runtime ${runtime.id}", e)
+        case NonFatal(e) => debug(s"Failed to close Spark session of runtime ${runtime.id}", e)
       }
     }
   }
@@ -275,7 +315,7 @@ class KyuubiSqlRuntimeAdapter(
     val handle = runtime.internalRuntimeHandle.getOrElse {
       throw new NotebookException(
         NotebookErrorCode.RUNTIME_LOST,
-        "the runtime has no live SQL session; restart it",
+        "the runtime has no live Spark session; restart it",
         retryable = true)
     }
     SessionHandle.fromUUID(handle)
@@ -287,6 +327,16 @@ class KyuubiSqlRuntimeAdapter(
     } else {
       rowSet.getColumns.get(0).getStringVal.getValues.asScala
     }
+  }
+
+  private def firstColumnOfFirstRow(handle: String): Option[String] = {
+    val response = backendService().fetchResults(
+      OperationHandle(handle),
+      FetchOrientation.FETCH_FIRST,
+      1,
+      fetchLog = false)
+    ThriftRowSetConverter.toRows(response.getResults).headOption
+      .flatMap(_.headOption).flatMap(Option(_))
   }
 
   private def resultFormatOf(handle: String): String =
@@ -325,15 +375,35 @@ class KyuubiSqlRuntimeAdapter(
   /** Engine errors can be long and carry stack traces; only the first line is safe to surface. */
   private def safeMessage(message: String): String =
     Option(message).map(_.split("\n").head.take(1024)).getOrElse("the statement failed")
+
+  private def failureCode(language: CellLanguage.Value): String =
+    if (language == CellLanguage.PYTHON) PYTHON_EXECUTION_FAILED else SQL_EXECUTION_FAILED
+
+  private def failureMessage(language: CellLanguage.Value, message: String): String =
+    if (language == CellLanguage.PYTHON) PySparkResponseCodec.summarize(message)
+    else safeMessage(message)
 }
 
-object KyuubiSqlRuntimeAdapter {
-  val SPEC_ID = "kyuubi-sql"
-  val RUNTIME_TYPE = "SQL"
+object SparkNotebookRuntimeAdapter {
+  val SPEC_ID = "spark-notebook"
+  val RUNTIME_TYPE = "SPARK_NOTEBOOK"
 
   /** Error code carried on a failed SQL execution; the message itself comes from the engine. */
   val SQL_EXECUTION_FAILED = "SQL_EXECUTION_FAILED"
+  val PYTHON_EXECUTION_FAILED = "PYTHON_EXECUTION_FAILED"
 
+  private val NOTEBOOK_OUTPUT_MODE = "NOTEBOOK"
   private val LOCAL_IP = "127.0.0.1"
   private val KYUUBI_SESSION_TAG = "kyuubi.session.name"
 }
+
+/**
+ * Compatibility shim for direct adapter tests and old extensions. It is intentionally not
+ * registered by [[NotebookManager]], so new notebook sessions always use the unified runtime.
+ */
+@deprecated("Use SparkNotebookRuntimeAdapter", "1.10.3")
+class KyuubiSqlRuntimeAdapter(
+    backendService: () => BackendService,
+    instanceUri: () => String,
+    conf: KyuubiConf)
+  extends SparkNotebookRuntimeAdapter(backendService, instanceUri, conf)

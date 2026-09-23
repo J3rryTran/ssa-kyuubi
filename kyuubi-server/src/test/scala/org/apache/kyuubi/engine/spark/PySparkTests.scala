@@ -19,7 +19,7 @@ package org.apache.kyuubi.engine.spark
 
 import java.io.PrintWriter
 import java.nio.file.Files
-import java.sql.SQLTimeoutException
+import java.sql.{SQLException, SQLTimeoutException}
 import java.util.Properties
 
 import scala.sys.process._
@@ -130,6 +130,58 @@ class PySparkTests extends WithKyuubiServer with HiveJDBCTestHelper {
       assert(resultSet3.getString("key") === "hello")
       assert(resultSet3.getString("value") === "kyuubi")
     })
+  }
+
+  test("P0 unified notebook session interleaves SQL and Python operations") {
+    checkPythonRuntimeAndVersion()
+    withSessionConf(Map(KyuubiConf.ENGINE_SPARK_OUTPUT_MODE.key -> "NOTEBOOK"))()() {
+      val driver = new KyuubiHiveDriver()
+      val connection = driver.connect(getJdbcUrl, new Properties())
+      val statement = connection.createStatement().asInstanceOf[KyuubiStatement]
+      try {
+        // Python -> SQL: the Python operation creates state in the session SparkSession, then a
+        // regular SQL operation reads the same temp view and must still return a normal rowset.
+        val pythonView = statement.executePython(
+          """df = spark.createDataFrame([(1, "a")], ["id", "name"])
+            |df.createOrReplaceTempView("p0_python_view")
+            |p0_marker = "visible-in-later-python-cell"
+            |""".stripMargin)
+        assert(pythonView.next())
+
+        val sqlFromPython = statement.executeQuery("SELECT id, name FROM p0_python_view")
+        assert(sqlFromPython.next())
+        assert(sqlFromPython.getInt("id") === 1)
+        assert(sqlFromPython.getString("name") === "a")
+        assert(!sqlFromPython.next())
+
+        // SQL -> Python: session-scoped SQL objects must be visible to the same Python worker.
+        statement.execute("CREATE OR REPLACE TEMP VIEW p0_sql_view AS SELECT 2 AS id")
+        val pythonFromSql = statement.executePython(
+          """assert spark.table("p0_sql_view").collect()[0]["id"] == 2
+            |assert p0_marker == "visible-in-later-python-cell"
+            |""".stripMargin)
+        assert(pythonFromSql.next())
+      } finally {
+        statement.close()
+        connection.close()
+      }
+
+      // A new Kyuubi session gets a new SparkSession and Python worker. Neither session-scoped
+      // SQL state nor Python globals from the closed notebook session may leak into it.
+      val isolatedConnection = driver.connect(getJdbcUrl, new Properties())
+      val isolatedStatement = isolatedConnection.createStatement().asInstanceOf[KyuubiStatement]
+      try {
+        intercept[SQLException] {
+          isolatedStatement.executeQuery("SELECT * FROM p0_python_view")
+        }
+        val noPythonLeak = isolatedStatement.executePython(
+          "assert 'p0_marker' not in globals()")
+        assert(noPythonLeak.next())
+      } finally {
+        isolatedStatement.close()
+        isolatedConnection.close()
+      }
+    }
   }
 
   test("Support python magic syntax for python notebook") {
