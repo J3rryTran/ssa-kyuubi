@@ -23,9 +23,12 @@ import java.util.UUID
 
 import org.apache.kyuubi.KyuubiFunSuite
 import org.apache.kyuubi.config.KyuubiConf
+import org.apache.kyuubi.ha.HighAvailabilityConf.{HA_ADDRESSES, HA_NAMESPACE}
 import org.apache.kyuubi.server.metadata.jdbc.JDBCMetadataStoreConf._
+import org.apache.kyuubi.server.notebook.NotebookConf.ENGINE_PROFILE_STORE_FS_ROOT
 import org.apache.kyuubi.server.notebook.api.CreateNotebookRequest
 import org.apache.kyuubi.server.notebook.service.NotebookPrincipal
+import org.apache.kyuubi.zookeeper.{EmbeddedZookeeper, ZookeeperConf}
 
 /**
  * Reproduces an upgrade rather than a fresh install: the `notebook` table already exists without
@@ -36,6 +39,20 @@ import org.apache.kyuubi.server.notebook.service.NotebookPrincipal
  * the column has to come from the migration instead.
  */
 class NotebookSchemaUpgradeSuite extends KyuubiFunSuite {
+
+  private val zkServer = new EmbeddedZookeeper()
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    val zkConf = new KyuubiConf(false).set(ZookeeperConf.ZK_CLIENT_PORT, 0)
+    zkServer.initialize(zkConf)
+    zkServer.start()
+  }
+
+  override def afterAll(): Unit = {
+    zkServer.stop()
+    super.afterAll()
+  }
 
   /** The notebook table exactly as the previous release shipped it: no `language`. */
   private val previousReleaseDdl =
@@ -74,10 +91,14 @@ class NotebookSchemaUpgradeSuite extends KyuubiFunSuite {
   }
 
   private def started(url: String): NotebookManager = {
+    val profileRoot = Files.createTempDirectory("kyuubi-engine-profile-upgrade")
     val conf = new KyuubiConf(false)
       .set(METADATA_STORE_JDBC_DATABASE_TYPE, "SQLITE")
       .set(METADATA_STORE_JDBC_URL, url)
       .set(METADATA_STORE_JDBC_DATABASE_SCHEMA_INIT, false)
+      .set(HA_ADDRESSES, zkServer.getConnectString)
+      .set(HA_NAMESPACE, s"notebook-upgrade-${UUID.randomUUID()}")
+      .set(ENGINE_PROFILE_STORE_FS_ROOT, profileRoot.toUri.toString)
     val manager = new NotebookManager(
       () => throw new IllegalStateException("the backend service must not be used here"),
       () => "test-instance")

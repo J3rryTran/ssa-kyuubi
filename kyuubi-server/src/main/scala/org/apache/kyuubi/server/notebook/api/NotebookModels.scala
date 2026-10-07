@@ -17,6 +17,8 @@
 
 package org.apache.kyuubi.server.notebook.api
 
+import com.fasterxml.jackson.annotation.JsonIgnore
+
 import org.apache.kyuubi.server.notebook.api.CellLanguage.CellLanguage
 import org.apache.kyuubi.server.notebook.api.CellType.CellType
 import org.apache.kyuubi.server.notebook.api.FailurePolicy.FailurePolicy
@@ -149,9 +151,10 @@ object NotebookDocument {
 }
 
 /**
- * An engine profile stores the Spark configuration that should be applied whenever a runtime is
- * started under the named subdomain. `sparkConfig` is a flat map of Spark property keys to
- * values (e.g. `"spark.driver.memory" -> "4g"`); it is serialised as JSON in the database.
+ * An engine profile stores the one current Spark configuration that should be applied whenever a
+ * runtime is started under its stable subdomain. `sparkConfig` is a flat map of Spark property
+ * keys to values (e.g. `"spark.driver.memory" -> "4g"`); it is serialised as JSON in the
+ * database.
  *
  * `owner` is the principal who created the profile and is derived from the authenticated caller
  * on write; it is never accepted from the request body.
@@ -164,21 +167,29 @@ case class EngineProfile(
     sparkConfig: Map[String, String],
     notebookRuntimeIdleTimeout: Option[String],
     engineIdleTimeout: Option[String],
-    revision: Long,
     createdAt: Long,
     updatedAt: Long,
-    pythonEnvironmentRevisionId: Option[String] = None)
+    pythonEnvironmentRevisionId: Option[String] = None,
+    /**
+     * Store-private optimistic-write token. JDBC maps this to the compatibility `revision`
+     * column; it is never an engine identity, configuration-history item, or REST field.
+     */
+    @JsonIgnore private[server] version: Long = 1L)
 
-/** Immutable configuration captured for one Engine Profile revision. */
-case class EngineProfileRevision(
+/**
+ * A short-lived, server-owned Engine Profile version lease for one external DBT run.
+ *
+ * The row lives in the shared notebook metadata store rather than in a Kyuubi replica. This is
+ * necessary because dbt can open several Thrift sessions concurrently and a load balancer may
+ * send those sessions to different frontend pods.
+ */
+case class EngineProfileRunSnapshot(
+    runId: String,
     profileId: String,
-    revision: Long,
-    subdomain: String,
-    sparkConfig: Map[String, String],
-    notebookRuntimeIdleTimeout: Option[String],
-    engineIdleTimeout: Option[String],
+    owner: String,
+    profileVersion: Long,
     createdAt: Long,
-    pythonEnvironmentRevisionId: Option[String] = None)
+    expiresAt: Long)
 
 /** Immutable Python environment built for one Engine Profile. */
 case class PythonEnvironmentRevision(
@@ -203,7 +214,7 @@ case class PythonEnvironmentChangeRequest(
     requestedBy: String,
     operation: String,
     requestedPackages: Seq[String],
-    expectedProfileRevision: Long,
+    expectedProfileVersion: Long,
     state: String,
     hotInstallState: String,
     resultingEnvironmentRevisionId: Option[String],

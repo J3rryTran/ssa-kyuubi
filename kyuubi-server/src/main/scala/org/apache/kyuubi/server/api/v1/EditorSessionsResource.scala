@@ -54,6 +54,7 @@ private[v1] class EditorSessionsResource extends NotebookApiSupport {
     val config = snapshot.sparkConfig ++ EngineProfileSnapshot.engineSessionConfig(snapshot) ++
       notebooks.pythonEnvironments.launchConfig(snapshot) ++ Map(
         "kyuubi.engine.type" -> "SPARK_SQL",
+        "kyuubi.engine.share.level" -> "USER",
         "kyuubi.engine.share.level.subdomain" -> snapshot.subdomain,
         "kyuubi.engine.share.level.sub.domain" -> snapshot.subdomain,
         KYUUBI_CLIENT_IP_KEY -> ipAddress,

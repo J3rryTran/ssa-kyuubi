@@ -150,9 +150,12 @@ class SetScheduleRequest {
  *
  * `sparkConfig` is a map of Spark property keys to values
  * (e.g. `{"spark.driver.memory":"4g","spark.executor.memory":"8g"}`).
+ * PATCH retains the previous Spark map when `sparkConfig` is omitted; a supplied map replaces it
+ * completely, including an empty map to inherit cluster defaults. Omitted timeout fields retain
+ * their previous overrides, while `inherit` clears an override.
  * `name` is a human-facing label that is unique only within the authenticated owner. The
  * server, not the browser, derives the Kyuubi subdomain from the immutable profile ID and
- * revision.
+ * configuration.
  * `owner` is always derived from the authenticated caller.
  */
 class UpsertEngineProfileRequest {
@@ -161,11 +164,6 @@ class UpsertEngineProfileRequest {
   // ISO-8601 duration, for example PT15M. "inherit" clears an existing override.
   @BeanProperty var notebookRuntimeIdleTimeout: String = _
   @BeanProperty var engineIdleTimeout: String = _
-}
-
-/** Explicit acknowledgement required before terminating a draining engine revision. */
-class TerminateEngineProfileRevisionRequest {
-  @BeanProperty var confirm: java.lang.Boolean = _
 }
 
 /** Opens a SQL Editor session using a server-authorized Engine Profile. */

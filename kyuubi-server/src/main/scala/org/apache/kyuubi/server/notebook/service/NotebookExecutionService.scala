@@ -74,7 +74,7 @@ class NotebookExecutionService(
       principal: NotebookPrincipal,
       sessionId: String,
       request: SubmitExecutionRequest): CellExecution = {
-    val session = sessions.require(principal, sessionId)
+    val session = sessions.requireForExecution(principal, sessionId)
     sessionLock(session.id).synchronized {
       val notebook = documents.loadNotebook(session.notebookId)
       permissions.requireWrite(notebook, principal)
@@ -214,7 +214,20 @@ class NotebookExecutionService(
           ExecutionState.STARTING.toString,
           ExecutionState.RUNNING.toString,
           ExecutionState.CANCELING.toString),
-        limit = 1))
+        limit = 1)).headOption.filterNot { execution =>
+        val stale =
+          try {
+            val runtime = runtimes.load(execution.runtimeId)
+            runtime.generation != execution.runtimeGeneration ||
+            RuntimeState.terminal.contains(runtime.state)
+          } catch {
+            case NonFatal(_) => true
+          }
+        if (stale) {
+          lose(execution, "the runtime that was running this execution is gone")
+        }
+        stale
+      }
       val pending = store.listExecutions(ExecutionFilter(
         notebookSessionId = Some(session.id),
         states = Set(ExecutionState.QUEUED.toString),
@@ -274,6 +287,13 @@ class NotebookExecutionService(
       runtimes.touchActivity(runtime)
     } catch {
       case e: NotebookException =>
+        if (e.code == NotebookErrorCode.KYUUBI_SESSION_LOST) {
+          // The operation was never accepted, so retaining this runtime would make every later
+          // cell repeat the same stale-session failure. The next submission creates a fresh
+          // Kyuubi/Spark session for this notebook session.
+          runtimes.markLost(runtime)
+          warn(s"Spark session was lost while submitting execution ${queued.id}", e)
+        }
         fail(queued, e.code.toString, e.message)
       case NonFatal(e) =>
         warn(s"Failed to submit execution ${queued.id}", e)
@@ -332,6 +352,7 @@ class NotebookExecutionService(
             return lost
         }
       if (status.state == execution.state) {
+        runtimes.touchActivity(runtime)
         execution
       } else {
         val updated = execution.copy(
@@ -343,6 +364,9 @@ class NotebookExecutionService(
           version = execution.version + 1)
         store.updateExecution(updated, execution.version)
         emit(updated, status.state.toString, status.errorMessage)
+        if (!ExecutionState.terminal.contains(updated.state)) {
+          runtimes.touchActivity(runtime)
+        }
         if (updated.state == ExecutionState.SUCCEEDED) {
           try persistSuccessfulPythonEnvironmentIntent(updated)
           catch {
@@ -692,8 +716,10 @@ class NotebookExecutionService(
       states = (ExecutionState.values -- ExecutionState.terminal).map(_.toString),
       limit = RECONCILE_BATCH))
     unfinished.foreach { execution =>
-      try lose(execution, "the server restarted while this execution was running")
-      catch { case NonFatal(e) => warn(s"Failed to reconcile execution ${execution.id}", e) }
+      store.getSession(execution.notebookSessionId).filter(sessions.isLocalFrontend).foreach { _ =>
+        try lose(execution, "the server restarted while this execution was running")
+        catch { case NonFatal(e) => warn(s"Failed to reconcile execution ${execution.id}", e) }
+      }
     }
   }
 }

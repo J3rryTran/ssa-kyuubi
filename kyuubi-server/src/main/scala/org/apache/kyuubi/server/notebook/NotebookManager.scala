@@ -26,7 +26,7 @@ import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.ha.HighAvailabilityConf.HA_ADDRESSES
 import org.apache.kyuubi.ha.client.{DiscoveryClient, DiscoveryClientProvider}
 import org.apache.kyuubi.server.dbt.{DbtStore, DbtWorkspaceService, DisabledDbtRunner, JDBCDbtStore, KubernetesJobDbtRunner}
-import org.apache.kyuubi.server.engineprofile.{EngineProfileRuntimeService, EngineProfileService, PythonEnvironmentService}
+import org.apache.kyuubi.server.engineprofile.{EngineProfileRunSnapshotService, EngineProfileRuntimeService, EngineProfileService, EngineProfileStore, PythonEnvironmentService}
 import org.apache.kyuubi.server.metadata.jdbc.DatabaseType.SQLITE
 import org.apache.kyuubi.server.metadata.jdbc.JDBCMetadataStoreConf.METADATA_STORE_JDBC_DATABASE_TYPE
 import org.apache.kyuubi.server.notebook.NotebookConf._
@@ -55,6 +55,7 @@ class NotebookManager(
   @volatile private var _content: NotebookContentService = _
   @volatile private var _schedules: NotebookScheduleService = _
   @volatile private var _engineProfiles: EngineProfileService = _
+  @volatile private var _engineProfileRunSnapshots: EngineProfileRunSnapshotService = _
   @volatile private var _engineProfileRuntimes: EngineProfileRuntimeService = _
   @volatile private var _pythonEnvironments: PythonEnvironmentService = _
   @volatile private var _dbtStore: DbtStore = _
@@ -97,6 +98,7 @@ class NotebookManager(
   def content: NotebookContentService = _content
   def schedules: NotebookScheduleService = _schedules
   def engineProfiles: EngineProfileService = _engineProfiles
+  def engineProfileRunSnapshots: EngineProfileRunSnapshotService = _engineProfileRunSnapshots
   def engineProfileRuntimes: EngineProfileRuntimeService = _engineProfileRuntimes
   def pythonEnvironments: PythonEnvironmentService = _pythonEnvironments
   def dbt: DbtWorkspaceService = _dbt
@@ -115,7 +117,15 @@ class NotebookManager(
     _documents = new NotebookDocumentService(conf, _store, _permissions, _revisions)
     _content = new NotebookContentService(conf, _store, _documents, _revisions, _permissions)
     _schedules = new NotebookScheduleService(_store, _permissions)
-    _engineProfiles = new EngineProfileService(_store)
+    _engineProfiles = new EngineProfileService(
+      conf,
+      EngineProfileStore.create(conf),
+      _store)
+    _engineProfiles.initialize()
+    _engineProfileRunSnapshots = new EngineProfileRunSnapshotService(
+      _store,
+      _engineProfiles,
+      conf.get(DBT_ENGINE_PROFILE_RUN_SNAPSHOT_TTL))
     _pythonEnvironments = new PythonEnvironmentService(conf, _store, _engineProfiles)
     _engineProfileRuntimes = new EngineProfileRuntimeService(
       conf,
@@ -136,6 +146,13 @@ class NotebookManager(
       DisabledDbtRunner
     }
     _dbt = new DbtWorkspaceService(conf, _dbtStore, _engineProfiles, dbtRunner)
+    _engineProfiles.onBeforeUpdate { (principal, profile) =>
+      _engineProfileRuntimes.requireStopped(principal, profile.profileId)
+      if (_dbt.hasActiveRunsForProfile(profile.profileId)) {
+        throw NotebookException.invalid(
+          "cannot change an Engine Profile while a DBT run is active")
+      }
+    }
     // One notebook session owns one Kyuubi/Spark session. Individual cells select SQL or Python
     // at operation submission time, preserving both SQL session state and Python globals.
     _registry = new RuntimeAdapterRegistry(Seq(
@@ -198,6 +215,9 @@ class NotebookManager(
   private lazy val pythonEnvironmentReconciler =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("python-environment-reconciler")
 
+  private lazy val engineProfileRunSnapshotReaper =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("engine-profile-run-snapshot-reaper")
+
   override def start(): Unit = {
     // Nothing that was running can have survived; saying so up front beats letting the first
     // poll of a stale execution report a confusing failure.
@@ -213,6 +233,17 @@ class NotebookManager(
         interval,
         TimeUnit.MILLISECONDS)
     }
+    val runSnapshotInterval = math.max(
+      1000L,
+      math.min(
+        conf.get(DBT_ENGINE_PROFILE_RUN_SNAPSHOT_TTL),
+        TimeUnit.MINUTES.toMillis(5)))
+    scheduleTolerableRunnableWithFixedDelay(
+      engineProfileRunSnapshotReaper,
+      () => _engineProfileRunSnapshots.reapExpired(),
+      runSnapshotInterval,
+      runSnapshotInterval,
+      TimeUnit.MILLISECONDS)
     if (conf.get(DBT_RUNNER_ENABLED)) {
       val interval = conf.get(DBT_RUNNER_RECONCILE_INTERVAL)
       scheduleTolerableRunnableWithFixedDelay(
@@ -239,8 +270,13 @@ class NotebookManager(
     ThreadUtils.shutdown(idleReaper)
     ThreadUtils.shutdown(dbtReconciler)
     ThreadUtils.shutdown(pythonEnvironmentReconciler)
+    ThreadUtils.shutdown(engineProfileRunSnapshotReaper)
     if (_engineProfileRuntimes != null) {
       _engineProfileRuntimes.close()
+    }
+    if (_engineProfiles != null) {
+      try _engineProfiles.close()
+      catch { case NonFatal(e) => warn("Failed to close the Engine Profile store", e) }
     }
     if (_store != null) {
       try _store.close()
@@ -265,6 +301,7 @@ class NotebookManager(
     val persistence =
       try {
         _store.healthCheck()
+        _engineProfiles.healthCheck()
         "HEALTHY"
       } catch {
         case NonFatal(e) =>

@@ -153,7 +153,17 @@ export function useNotebook() {
   }
 
   const ensureSession = async (): Promise<NotebookSession> => {
-    if (session.value && isUsableSession(session.value)) return session.value
+    if (session.value && isUsableSession(session.value)) {
+      // An idle reaper can stop a server-side session while an old browser tab still holds its
+      // last IDLE view. Refresh that one row before submitting so the tab opens a new session
+      // instead of enqueuing work behind a runtime that no longer exists.
+      const current = (await api.listSessions(notebook.value!.id))
+        .find((candidate) => candidate.id === session.value?.id)
+      if (current && isUsableSession(current)) {
+        session.value = current
+        return current
+      }
+    }
     const created = await api.createSession(
       notebook.value!.id,
       notebook.value?.runtimeProfile || null

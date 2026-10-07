@@ -117,45 +117,17 @@ CREATE TABLE IF NOT EXISTS notebook_schedule(
     version bigint NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS notebook_engine_profile(
-    subdomain varchar(128) PRIMARY KEY NOT NULL,
-    owner varchar(255) NOT NULL,
-    spark_config text NOT NULL,
-    created_at bigint NOT NULL,
-    updated_at bigint NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS notebook_engine_profile_owner_index ON notebook_engine_profile(owner);
-
-CREATE TABLE IF NOT EXISTS notebook_engine_profile_v2(
-    profile_id varchar(64) PRIMARY KEY NOT NULL,
-    owner varchar(255) NOT NULL,
-    name varchar(128) NOT NULL,
-    subdomain varchar(128) NOT NULL UNIQUE,
-    spark_config text NOT NULL,
-    notebook_runtime_idle_timeout varchar(32),
-    engine_idle_timeout varchar(32),
-    python_environment_revision_id varchar(64),
-    revision bigint NOT NULL,
-    created_at bigint NOT NULL,
-    updated_at bigint NOT NULL,
-    UNIQUE(owner, name)
-);
-
-CREATE TABLE IF NOT EXISTS notebook_engine_profile_revision(
+CREATE TABLE IF NOT EXISTS notebook_engine_profile_run_snapshot(
+    run_id varchar(128) PRIMARY KEY NOT NULL,
     profile_id varchar(64) NOT NULL,
+    owner varchar(255) NOT NULL,
     revision bigint NOT NULL,
-    subdomain varchar(128) NOT NULL UNIQUE,
-    spark_config text NOT NULL,
-    notebook_runtime_idle_timeout varchar(32),
-    engine_idle_timeout varchar(32),
-    python_environment_revision_id varchar(64),
     created_at bigint NOT NULL,
-    PRIMARY KEY(profile_id, revision)
+    expires_at bigint NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS notebook_engine_profile_v2_owner_index
-ON notebook_engine_profile_v2(owner);
+CREATE INDEX IF NOT EXISTS notebook_engine_profile_run_snapshot_expiry_index
+ON notebook_engine_profile_run_snapshot(expires_at);
 
 CREATE TABLE IF NOT EXISTS notebook_python_environment_revision(
     id varchar(64) PRIMARY KEY NOT NULL,

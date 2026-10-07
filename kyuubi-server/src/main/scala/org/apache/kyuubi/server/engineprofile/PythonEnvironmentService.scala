@@ -103,7 +103,7 @@ class PythonEnvironmentService(
       requestedBy = principal.user,
       operation = normalizedOperation,
       requestedPackages = normalized,
-      expectedProfileRevision = profile.revision,
+      expectedProfileVersion = profile.version,
       state = PythonEnvironmentState.COLLECTING,
       hotInstallState = if (hotInstallSucceeded) "SUCCEEDED" else "NOT_REQUESTED",
       resultingEnvironmentRevisionId = None,
@@ -117,7 +117,8 @@ class PythonEnvironmentService(
   /** Reconciles engine-stop sealing and durable Builder Jobs after a Kyuubi restart. */
   def reconcile(): Unit = {
     if (enabled) {
-      store.listPendingPythonEnvironmentChangeRequests().map(_.profileId).distinct.foreach {
+      (store.listPendingPythonEnvironmentChangeRequests().map(_.profileId) ++
+        store.listBuildingPythonEnvironmentProfileIds()).distinct.foreach {
         reconcileProfile
       }
     }
@@ -133,7 +134,7 @@ class PythonEnvironmentService(
       reconcileProfile(profileId)
       recoverCompletedBuilds(profileId)
       promoteReadyEnvironmentIfEngineStopped(profileId)
-      val profile = store.getEngineProfile(profileId)
+      val profile = engineProfiles.find(profileId)
       val unsettled = pendingRequests(profileId)
       if (profile.exists(current => unsettled.nonEmpty && !hasLiveEngine(current))) {
         throw new NotebookException(
@@ -150,7 +151,7 @@ class PythonEnvironmentService(
 
   /**
    * Makes the most recent READY environment the profile's next immutable launch revision only
-   * after Kyuubi no longer advertises the current profile revision's Spark engine.
+   * after Kyuubi no longer advertises the current profile's Spark engine.
    *
    * A READY environment is intentionally not promoted from [[reconcileBuild]]. A promotion
    * changes the profile subdomain, and doing that while Kyuubi still has the old driver would
@@ -159,7 +160,7 @@ class PythonEnvironmentService(
    * controls durable PVC-backed packages for the next engine generation.
    */
   def promoteReadyEnvironmentIfEngineStopped(profileId: String): Unit = synchronized {
-    val current = store.getEngineProfile(profileId)
+    val current = engineProfiles.find(profileId)
     if (enabled && profileId != EngineProfileService.DefaultProfileId &&
       current.exists(profile => !hasLiveEngine(profile))) {
       val latestReady = store.listPythonEnvironmentRevisions(profileId)
@@ -175,37 +176,69 @@ class PythonEnvironmentService(
   }
 
   private def reconcileProfile(profileId: String): Unit = synchronized {
-    val profile = store.getEngineProfile(profileId)
+    val profile = engineProfiles.find(profileId)
     profile.foreach { current =>
       val requests = pendingRequests(profileId)
       if (requests.exists(_.state == PythonEnvironmentState.COLLECTING) && !hasLiveEngine(
           current)) {
-        sealAndDispatch(current, requests.filter(_.state == PythonEnvironmentState.COLLECTING))
+        claimCollectingRequests(current)
       }
-      pendingRequests(profileId).groupBy(_.resultingEnvironmentRevisionId).foreach {
+      val groupedRequests = pendingRequests(profileId).groupBy(_.resultingEnvironmentRevisionId)
+      groupedRequests.foreach {
         case (Some(environmentId), grouped) =>
-          store.getPythonEnvironmentRevision(environmentId).foreach { environment =>
-            val requirements = requirementsFor(profileId, grouped)
-            environment.state match {
-              case PythonEnvironmentState.PENDING => dispatch(environment, grouped, requirements)
-              case PythonEnvironmentState.BUILDING =>
-                reconcileBuild(environment, grouped, requirements)
-              case _ =>
+          store.getPythonEnvironmentRevision(environmentId)
+            .orElse(ensureClaimedEnvironment(current, environmentId)).foreach { environment =>
+              val requirements = requirementsFor(profileId, grouped)
+              environment.state match {
+                case PythonEnvironmentState.PENDING => dispatch(environment, grouped, requirements)
+                case PythonEnvironmentState.BUILDING =>
+                  reconcileBuild(environment, grouped, requirements)
+                case _ =>
+              }
             }
-          }
         case _ =>
       }
+      val claimedEnvironmentIds = groupedRequests.keySet.collect { case Some(id) => id }.toSet
+      retireOrphanedBuildingEnvironments(profileId, claimedEnvironmentIds)
     }
   }
 
-  private def sealAndDispatch(
+  /**
+   * Claims requests in the shared database before allocating an environment revision. A JVM
+   * `synchronized` block does not protect two Kyuubi replicas, whereas this conditional update
+   * makes exactly one replica the builder owner for a batch of collecting requests.
+   */
+  private def claimCollectingRequests(profile: EngineProfile): Unit = {
+    val now = System.currentTimeMillis()
+    val environmentId = UUID.randomUUID().toString
+    val claimed = store.claimCollectingPythonEnvironmentChangeRequests(
+      profile.profileId,
+      environmentId,
+      now)
+    if (claimed) {
+      info(
+        s"Claimed collecting Python environment requests for profile ${profile.profileId} " +
+          s"as environment $environmentId")
+    } else {
+      info(
+        s"Python environment requests for profile ${profile.profileId} were claimed by " +
+          "another Kyuubi replica")
+    }
+  }
+
+  /**
+   * A replica can crash after its database claim and before inserting the environment row. The
+   * claim already gives every replica the same environment ID, so a later reconciliation can
+   * safely finish that work without opening a second Builder Job for the same request batch.
+   */
+  private def ensureClaimedEnvironment(
       profile: EngineProfile,
-      requests: Seq[PythonEnvironmentChangeRequest]): Unit = {
+      environmentId: String): Option[PythonEnvironmentRevision] = {
     val now = System.currentTimeMillis()
     val nextRevision = store.listPythonEnvironmentRevisions(profile.profileId)
       .map(_.revision).foldLeft(0L)(math.max) + 1L
     val environment = PythonEnvironmentRevision(
-      id = UUID.randomUUID().toString,
+      id = environmentId,
       profileId = profile.profileId,
       revision = nextRevision,
       pvcName = PythonEnvironmentService.pvcName(profile.profileId),
@@ -218,16 +251,22 @@ class PythonEnvironmentService(
       createdAt = now,
       readyAt = None,
       retiredAt = None)
-    store.createPythonEnvironmentRevision(environment)
-    val sealedRequests = requests.map { request =>
-      val sealedRequest = request.copy(
-        state = PythonEnvironmentState.PENDING,
-        resultingEnvironmentRevisionId = Some(environment.id),
-        updatedAt = now)
-      store.updatePythonEnvironmentChangeRequest(sealedRequest)
-      sealedRequest
+    try {
+      store.createPythonEnvironmentRevision(environment)
+      Some(environment)
+    } catch {
+      case NonFatal(error) =>
+        store.getPythonEnvironmentRevision(environmentId).orElse {
+          // A different claimed batch can win the next numeric revision concurrently. Leave this
+          // request in PENDING: the following reconciliation recomputes a free revision instead
+          // of changing its immutable environment ID or dispatching a duplicate Job.
+          warn(
+            s"Could not create claimed Python environment $environmentId for profile " +
+              s"${profile.profileId}; reconciliation will retry",
+            error)
+          None
+        }
     }
-    dispatch(environment, sealedRequests, requirementsFor(profile.profileId, sealedRequests))
   }
 
   private def dispatch(
@@ -322,7 +361,37 @@ class PythonEnvironmentService(
       val detail = jobConditions(job).find(_.getType == "Failed").flatMap(c => Option(c.getMessage))
         .getOrElse("Python environment builder Job failed")
       fail(environment, requests, detail)
+    } else if (job == null) {
+      fail(
+        environment,
+        requests,
+        s"Python environment builder Job $jobName is no longer present")
     }
+  }
+
+  /**
+   * A BUILDING row with neither a pending request nor a Kubernetes Job cannot ever become READY.
+   * It is retired rather than retried so it does not consume a revision or confuse the lifecycle
+   * UI after a race/crash that happened before the claim was fully persisted.
+   */
+  private def retireOrphanedBuildingEnvironments(
+      profileId: String,
+      claimedEnvironmentIds: Set[String]): Unit = {
+    store.listPythonEnvironmentRevisions(profileId)
+      .filter(_.state == PythonEnvironmentState.BUILDING)
+      .filterNot(environment => claimedEnvironmentIds.contains(environment.id))
+      .foreach { environment =>
+        val job = builderJob(environment)
+        if (job == null || isCompleted(job) || isFailed(job)) {
+          val retired = environment.copy(
+            state = PythonEnvironmentState.RETIRED,
+            retiredAt = Some(System.currentTimeMillis()))
+          store.updatePythonEnvironmentRevision(retired)
+          warn(
+            s"Retired orphaned Python environment ${environment.id}: its builder Job is " +
+              "missing or terminal and no pending request claims it")
+        }
+      }
   }
 
   /**
@@ -525,7 +594,9 @@ class PythonEnvironmentService(
       s"$executorPrefix.mount.path" -> mountPath,
       s"$executorPrefix.mount.readOnly" -> "true",
       "spark.pyspark.driver.python" -> python,
-      "spark.pyspark.python" -> python)
+      "spark.pyspark.python" -> python,
+      "spark.kubernetes.driverEnv.PYSPARK_PYTHON" -> python,
+      "spark.executorEnv.PYSPARK_PYTHON" -> python)
   }
 }
 

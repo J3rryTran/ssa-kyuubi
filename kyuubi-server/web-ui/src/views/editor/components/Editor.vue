@@ -160,7 +160,7 @@
     IError
   } from './types'
 
-  import { listEngineProfiles } from '@/api/notebook'
+  import { getDefaultEngineProfileConfig, listEngineProfiles } from '@/api/notebook'
   import type { EngineProfile } from '@/api/notebook/types'
 
   const { t } = useI18n()
@@ -171,80 +171,62 @@
   const engineProfiles = ref<EngineProfile[]>([])
   const selectedEngine = ref('default')
 
+  const defaultEngineProfile: EngineProfile = {
+    name: 'default',
+    profileId: 'default',
+    subdomain: 'default'
+  }
+
   const parseProfile = (apiProfile: EngineProfile): EngineProfile => {
     const sparkConfig = apiProfile.sparkConfig || {}
-    const isDefault = apiProfile.subdomain === 'default'
     return {
       ...apiProfile,
       name: apiProfile.name || apiProfile.subdomain,
-      driverMemory: sparkConfig['spark.driver.memory'] || apiProfile.driverMemory || (isDefault ? '1g' : ''),
-      executorMemory: sparkConfig['spark.executor.memory'] || apiProfile.executorMemory || (isDefault ? '2g' : ''),
-      driverCores: sparkConfig['spark.driver.cores'] ? Number(sparkConfig['spark.driver.cores']) : apiProfile.driverCores || (isDefault ? 1 : undefined),
-      executorCores: sparkConfig['spark.executor.cores'] ? Number(sparkConfig['spark.executor.cores']) : apiProfile.executorCores || (isDefault ? 1 : undefined),
-      executorInstances: sparkConfig['spark.executor.instances'] ? Number(sparkConfig['spark.executor.instances']) : apiProfile.executorInstances || (isDefault ? 1 : undefined)
+      driverMemory: sparkConfig['spark.driver.memory'] || apiProfile.driverMemory,
+      executorMemory: sparkConfig['spark.executor.memory'] || apiProfile.executorMemory,
+      driverCores: sparkConfig['spark.driver.cores']
+        ? Number(sparkConfig['spark.driver.cores'])
+        : apiProfile.driverCores,
+      executorCores: sparkConfig['spark.executor.cores']
+        ? Number(sparkConfig['spark.executor.cores'])
+        : apiProfile.executorCores,
+      executorInstances: sparkConfig['spark.executor.instances']
+        ? Number(sparkConfig['spark.executor.instances'])
+        : apiProfile.executorInstances
     }
   }
 
   const loadEngineProfiles = async () => {
+    let defaultProfile = defaultEngineProfile
+    try {
+      const sparkConfig = await getDefaultEngineProfileConfig()
+      defaultProfile = parseProfile({ ...defaultEngineProfile, sparkConfig })
+    } catch (e) {
+      console.error('Failed to load default engine resource configuration:', e)
+    }
     try {
       const res = await listEngineProfiles()
-      if (Array.isArray(res) && res.length > 0) {
-        const mapped: EngineProfile[] = res.map(parseProfile)
-        if (!mapped.some((p) => p.subdomain === 'default')) {
-          mapped.unshift({
-            name: 'default',
-            profileId: 'default',
-            subdomain: 'default',
-            driverMemory: '1g',
-            driverCores: 1,
-            executorMemory: '2g',
-            executorCores: 1,
-            executorInstances: 1
-          })
-        }
-        engineProfiles.value = mapped
-      } else {
-        engineProfiles.value = [
-          {
-            name: 'default',
-            profileId: 'default',
-            subdomain: 'default',
-            driverMemory: '1g',
-            driverCores: 1,
-            executorMemory: '2g',
-            executorCores: 1,
-            executorInstances: 1
-          }
-        ]
-      }
+      const mapped: EngineProfile[] = Array.isArray(res)
+        ? res.filter((p) => p.profileId !== 'default').map(parseProfile)
+        : []
+      engineProfiles.value = [defaultProfile, ...mapped]
     } catch {
-      engineProfiles.value = [
-        {
-          name: 'default',
-          profileId: 'default',
-          subdomain: 'default',
-          driverMemory: '1g',
-          driverCores: 1,
-          executorMemory: '2g',
-          executorCores: 1,
-          executorInstances: 1
-        }
-      ]
+      engineProfiles.value = [defaultProfile]
     }
     if (engineProfiles.value.length > 0 && !engineProfiles.value.some((p) => p.profileId === selectedEngine.value)) {
       selectedEngine.value = engineProfiles.value[0].profileId
     }
   }
 
-  const formatSpecs = (p: any): string => {
-    const sparkConfig = p?.sparkConfig || {}
-    const isDefault = p?.subdomain === 'default'
-    const driver = sparkConfig['spark.driver.memory'] || p?.driverMemory || (isDefault ? '1g' : undefined)
-    const exec = sparkConfig['spark.executor.memory'] || p?.executorMemory || (isDefault ? '2g' : undefined)
-    const cores = sparkConfig['spark.executor.cores'] || p?.executorCores || (isDefault ? 1 : undefined)
-    const inst = sparkConfig['spark.executor.instances'] || p?.executorInstances || (isDefault ? 1 : undefined)
+  const formatSpecs = (p: EngineProfile): string => {
+    const sparkConfig = p.sparkConfig || {}
+    const driver = sparkConfig['spark.driver.memory'] || p.driverMemory
+    const driverCores = sparkConfig['spark.driver.cores'] || p.driverCores
+    const exec = sparkConfig['spark.executor.memory'] || p.executorMemory
+    const cores = sparkConfig['spark.executor.cores'] || p.executorCores
+    const inst = sparkConfig['spark.executor.instances'] || p.executorInstances
 
-    if (!driver && !exec && !cores && !inst) {
+    if (!driver && !driverCores && !exec && !cores && !inst) {
       if (p?.subdomain === 'default') {
         return 'Default cluster compute settings'
       }
@@ -252,7 +234,13 @@
     }
 
     const parts: string[] = []
-    if (driver) parts.push(`Driver: ${String(driver).toUpperCase()}`)
+    if (driver || driverCores) {
+      const details = [
+        driver ? String(driver).toUpperCase() : null,
+        driverCores ? `${driverCores}c` : null
+      ]
+      parts.push(`Driver: ${details.filter(Boolean).join(' / ')}`)
+    }
     if (exec) parts.push(`Exec: ${String(exec).toUpperCase()}`)
     const execDetails: string[] = []
     if (cores) execDetails.push(`${cores} cores`)

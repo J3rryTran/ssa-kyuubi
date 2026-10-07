@@ -26,10 +26,10 @@ import org.apache.kyuubi.Logging
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.config.KyuubiReservedKeys
 import org.apache.kyuubi.engine.ApplicationManagerInfo
-import org.apache.kyuubi.ha.HighAvailabilityConf.HA_NAMESPACE
+import org.apache.kyuubi.ha.HighAvailabilityConf.{HA_ADDRESSES, HA_NAMESPACE}
 import org.apache.kyuubi.ha.client.DiscoveryClientProvider.withDiscoveryClient
 import org.apache.kyuubi.ha.client.DiscoveryPaths
-import org.apache.kyuubi.server.notebook.api.EngineProfileEngineStatusView
+import org.apache.kyuubi.server.notebook.api.{EngineProfileEngineStatusView, NotebookException}
 import org.apache.kyuubi.service.BackendService
 import org.apache.kyuubi.session.KyuubiSessionManager
 import org.apache.kyuubi.shaded.hive.service.rpc.thrift.TProtocolVersion
@@ -55,16 +55,13 @@ class EngineProfileRuntimeService(
     status(snapshot)
   }
 
-  /** Returns discovery-backed status for one immutable profile revision. */
-  def status(
-      principal: EngineProfilePrincipal,
-      profileId: String,
-      revision: Long): EngineProfileEngineStatusView = {
-    val snapshot = profiles.snapshotForRevision(profileId, revision, principal)
-    status(snapshot)
-  }
-
   private def status(snapshot: EngineProfileSnapshot): EngineProfileEngineStatusView = {
+    if (conf.get(HA_ADDRESSES).trim.isEmpty) {
+      return Option(transitions.get(transitionKey(snapshot))) match {
+        case Some(transition) => view(snapshot, transition.state, 0, transition.errorSummary)
+        case None => view(snapshot, STOPPED, 0)
+      }
+    }
     try {
       val nodes = discoveryNodes(snapshot.owner, snapshot.subdomain)
       if (nodes.nonEmpty) {
@@ -86,7 +83,7 @@ class EngineProfileRuntimeService(
   def start(principal: EngineProfilePrincipal, profileId: String): EngineProfileEngineStatusView = {
     // A READY Python environment becomes part of the immutable launch configuration only after
     // the old Driver has disappeared. Do this before taking the snapshot so an explicit Start
-    // cannot accidentally recreate the previous profile revision without its environment.
+    // cannot accidentally recreate the previous profile configuration without its environment.
     pythonEnvironments.foreach(_.prepareForEngineLaunch(profileId))
     val snapshot = profiles.snapshotForUse(profileId, principal)
     if (discoveryNodes(principal.user, snapshot.subdomain).nonEmpty) {
@@ -108,6 +105,19 @@ class EngineProfileRuntimeService(
     view(snapshot, STOPPING, 0)
   }
 
+  /**
+   * Configuration changes are safe only after the profile's stable-subdomain engine disappears.
+   * Treat an unreadable discovery state as active: accepting a change in that state could launch
+   * new sessions with a configuration that conflicts with live compute.
+   */
+  def requireStopped(principal: EngineProfilePrincipal, profileId: String): Unit = {
+    val current = status(principal, profileId)
+    if (current.state != STOPPED) {
+      throw NotebookException.invalid(
+        s"stop the Engine Profile engine before changing its configuration: ${current.state}")
+    }
+  }
+
   def close(): Unit = ThreadUtils.shutdown(lifecycleExecutor)
 
   private def bootstrap(
@@ -118,6 +128,8 @@ class EngineProfileRuntimeService(
         EngineProfileSnapshot.engineSessionConfig(snapshot) ++
         pythonEnvironments.map(_.launchConfig(snapshot)).getOrElse(Map.empty) ++
         Map(
+          "kyuubi.engine.type" -> "SPARK_SQL",
+          "kyuubi.engine.share.level" -> "USER",
           "kyuubi.engine.share.level.subdomain" -> snapshot.subdomain,
           "kyuubi.engine.share.level.sub.domain" -> snapshot.subdomain,
           "kyuubi.session.tag" -> s"engine-profile-warmup-${snapshot.profileId}")
@@ -203,7 +215,6 @@ class EngineProfileRuntimeService(
       errorSummary: Option[String] = None): EngineProfileEngineStatusView =
     EngineProfileEngineStatusView(
       snapshot.profileId,
-      snapshot.revision,
       state,
       engineCount,
       errorSummary)
@@ -215,7 +226,7 @@ class EngineProfileRuntimeService(
       subdomain)
 
   private def transitionKey(snapshot: EngineProfileSnapshot): String =
-    s"${snapshot.profileId}:${snapshot.revision}"
+    snapshot.profileId
 }
 
 object EngineProfileRuntimeService {

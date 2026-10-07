@@ -460,18 +460,12 @@
 
   // ENGINE PROFILES (BACKEND DB INTEGRATED)
   const engineConfigDialogVisible = ref(false)
-  const engineProfiles = ref<EngineProfile[]>([
-    {
-      profileId: 'default',
-      name: 'default',
-      subdomain: 'default',
-      driverMemory: '1g',
-      driverCores: 1,
-      executorMemory: '2g',
-      executorCores: 1,
-      executorInstances: 1
-    }
-  ])
+  const defaultEngineProfile: EngineProfile = {
+    profileId: 'default',
+    name: 'default',
+    subdomain: 'default'
+  }
+  const engineProfiles = ref<EngineProfile[]>([defaultEngineProfile])
 
   const route = useRoute()
 
@@ -486,78 +480,42 @@
 
   const parseProfile = (apiProfile: EngineProfile): EngineProfile => {
     const sparkConfig = apiProfile.sparkConfig || {}
-    const isDefault = apiProfile.subdomain === 'default'
     return {
       ...apiProfile,
       name: apiProfile.name || apiProfile.subdomain,
-      driverMemory:
-        sparkConfig['spark.driver.memory'] ||
-        apiProfile.driverMemory ||
-        (isDefault ? '1g' : ''),
-      executorMemory:
-        sparkConfig['spark.executor.memory'] ||
-        apiProfile.executorMemory ||
-        (isDefault ? '2g' : ''),
+      driverMemory: sparkConfig['spark.driver.memory'] || apiProfile.driverMemory,
+      executorMemory: sparkConfig['spark.executor.memory'] || apiProfile.executorMemory,
       driverCores: sparkConfig['spark.driver.cores']
         ? Number(sparkConfig['spark.driver.cores'])
-        : apiProfile.driverCores || (isDefault ? 1 : undefined),
+        : apiProfile.driverCores,
       executorCores: sparkConfig['spark.executor.cores']
         ? Number(sparkConfig['spark.executor.cores'])
-        : apiProfile.executorCores || (isDefault ? 1 : undefined),
+        : apiProfile.executorCores,
       executorInstances: sparkConfig['spark.executor.instances']
         ? Number(sparkConfig['spark.executor.instances'])
-        : apiProfile.executorInstances || (isDefault ? 1 : undefined)
+        : apiProfile.executorInstances
     }
   }
 
   const refreshEngineProfiles = async () => {
+    let defaultProfile = defaultEngineProfile
+    try {
+      const sparkConfig = await api.getDefaultEngineProfileConfig()
+      defaultProfile = parseProfile({ ...defaultEngineProfile, sparkConfig })
+    } catch (e) {
+      console.error('Failed to load default engine resource configuration:', e)
+    }
     let loadedFromBackend = false
     try {
       const res = await api.listEngineProfiles()
       loadedFromBackend = true
-      if (Array.isArray(res) && res.length > 0) {
-        const mapped = res.map(parseProfile)
-        if (!mapped.some((p) => p.subdomain === 'default')) {
-          mapped.unshift({
-            profileId: 'default',
-            name: 'default',
-            subdomain: 'default',
-            driverMemory: '1g',
-            driverCores: 1,
-            executorMemory: '2g',
-            executorCores: 1,
-            executorInstances: 1
-          })
-        }
-        engineProfiles.value = mapped
-      } else {
-        engineProfiles.value = [
-          {
-            profileId: 'default',
-            name: 'default',
-            subdomain: 'default',
-            driverMemory: '1g',
-            driverCores: 1,
-            executorMemory: '2g',
-            executorCores: 1,
-            executorInstances: 1
-          }
-        ]
-      }
+      const mapped = Array.isArray(res)
+        ? res.filter((p) => p.profileId !== 'default').map(parseProfile)
+        : []
+      engineProfiles.value = [defaultProfile, ...mapped]
     } catch (e) {
       console.error('Failed to load engine profiles from backend:', e)
-      engineProfiles.value = [
-        {
-          profileId: 'default',
-          name: 'default',
-          subdomain: 'default',
-          driverMemory: '1g',
-          driverCores: 1,
-          executorMemory: '2g',
-          executorCores: 1,
-          executorInstances: 1
-        }
-      ]
+      engineProfiles.value = [defaultProfile]
     }
 
     // Only treat a missing profile as deleted after a successful API response. A network/API
@@ -574,25 +532,13 @@
 
   const formatSpecs = (p: EngineProfile): string => {
     const sparkConfig = p.sparkConfig || {}
-    const isDefault = p.subdomain === 'default'
-    const driver =
-      sparkConfig['spark.driver.memory'] ||
-      p.driverMemory ||
-      (isDefault ? '1g' : undefined)
-    const exec =
-      sparkConfig['spark.executor.memory'] ||
-      p.executorMemory ||
-      (isDefault ? '2g' : undefined)
-    const cores =
-      sparkConfig['spark.executor.cores'] ||
-      p.executorCores ||
-      (isDefault ? 1 : undefined)
-    const inst =
-      sparkConfig['spark.executor.instances'] ||
-      p.executorInstances ||
-      (isDefault ? 1 : undefined)
+    const driver = sparkConfig['spark.driver.memory'] || p.driverMemory
+    const driverCores = sparkConfig['spark.driver.cores'] || p.driverCores
+    const exec = sparkConfig['spark.executor.memory'] || p.executorMemory
+    const cores = sparkConfig['spark.executor.cores'] || p.executorCores
+    const inst = sparkConfig['spark.executor.instances'] || p.executorInstances
 
-    if (!driver && !exec && !cores && !inst) {
+    if (!driver && !driverCores && !exec && !cores && !inst) {
       if (p.subdomain === 'default') {
         return 'Default cluster compute settings'
       }
@@ -600,7 +546,13 @@
     }
 
     const parts: string[] = []
-    if (driver) parts.push(`Driver: ${String(driver).toUpperCase()}`)
+    if (driver || driverCores) {
+      const details = [
+        driver ? String(driver).toUpperCase() : null,
+        driverCores ? `${driverCores}c` : null
+      ]
+      parts.push(`Driver: ${details.filter(Boolean).join(' / ')}`)
+    }
     if (exec) parts.push(`Exec: ${String(exec).toUpperCase()}`)
     const execDetails: string[] = []
     if (cores) execDetails.push(`${cores} cores`)

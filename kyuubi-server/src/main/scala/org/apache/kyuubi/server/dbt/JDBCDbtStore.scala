@@ -214,8 +214,7 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
         rs.getLong("profile_captured_at"),
         Option(rs.getString("profile_notebook_runtime_idle_timeout")),
         Option(rs.getString("profile_engine_idle_timeout")),
-        Option(rs.getString("profile_python_environment_revision_id")),
-        rs.getLong("profile_revision")),
+        Option(rs.getString("profile_python_environment_revision_id"))),
       DbtRunState.withName(rs.getString("state")),
       Option(rs.getString("runner_run_id")),
       Option(rs.getString("dispatch_token")),
@@ -255,7 +254,7 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
         s.setString(14, profile.notebookRuntimeIdleTimeout.orNull)
         s.setString(15, profile.engineIdleTimeout.orNull)
         s.setString(16, profile.pythonEnvironmentRevisionId.orNull)
-        s.setLong(17, profile.revision)
+        s.setLong(17, 0L) // Legacy physical column; profile version is not a DBT runtime input.
         s.setString(18, run.state.toString); s.setString(19, run.runnerRunId.orNull)
         s.setString(20, run.dispatchToken.orNull); s.setString(21, run.runnerJobUid.orNull)
         s.setLong(22, run.createdAt)

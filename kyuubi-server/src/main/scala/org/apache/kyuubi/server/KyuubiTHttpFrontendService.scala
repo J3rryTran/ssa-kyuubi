@@ -76,6 +76,13 @@ final class KyuubiTHttpFrontendService(
 
   override protected def hadoopConf: Configuration = KyuubiServer.getHadoopConf()
 
+  override protected def resolveSessionConfiguration(
+      _realUser: String,
+      sessionUser: String,
+      configuration: Map[String, String]): Map[String, String] =
+    serverable.asInstanceOf[KyuubiServer]
+      .resolveEngineProfileSessionConfiguration(sessionUser, configuration)
+
   private lazy val defaultFetchSize = conf.get(KYUUBI_SERVER_THRIFT_RESULTSET_DEFAULT_FETCH_SIZE)
 
   /**

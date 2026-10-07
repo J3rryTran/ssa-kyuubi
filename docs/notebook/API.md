@@ -251,29 +251,33 @@ on one long-lived HTTP request.
 
 ## Engine Profiles and Python environments
 
-An Engine Profile is a user-owned resource policy. Its immutable revision controls Spark resource
-configuration, generated engine subdomain, timeout policy, and optional persistent Python
-environment. The server derives the owner from the authenticated principal; callers never provide a
-user-controlled Kyuubi subdomain.
+An Engine Profile is a user-owned resource policy with one current Spark configuration, stable
+generated engine subdomain, timeout policy, and optional persistent Python environment. The server
+derives the owner from the authenticated principal; callers never provide a user-controlled Kyuubi
+subdomain.
 
 |  Method  |                           Endpoint                            |                          Description                          |
 |----------|---------------------------------------------------------------|---------------------------------------------------------------|
 | `GET`    | `/engine-profiles`                                            | List profiles owned by the caller.                            |
-| `POST`   | `/engine-profiles`                                            | Create a profile and its initial revision.                    |
+| `POST`   | `/engine-profiles`                                            | Create a profile.                                             |
+| `GET`    | `/engine-profiles/default/config`                             | Read allowlisted resource settings for the built-in default.  |
 | `GET`    | `/engine-profiles/{profileId}`                                | Get a profile.                                                |
-| `PATCH`  | `/engine-profiles/{profileId}`                                | Create a new immutable profile revision.                      |
-| `DELETE` | `/engine-profiles/{profileId}`                                | Delete an unused profile.                                     |
-| `GET`    | `/engine-profiles/{profileId}/engine`                         | Get active revision engine status.                            |
+| `PATCH`  | `/engine-profiles/{profileId}`                                | Update a stopped profile's current configuration.              |
+| `DELETE` | `/engine-profiles/{profileId}`                                | Delete a stopped profile after environment changes finish.    |
+| `GET`    | `/engine-profiles/{profileId}/engine`                         | Get current profile engine status.                             |
 | `POST`   | `/engine-profiles/{profileId}:start`                          | Warm or start an engine.                                      |
 | `POST`   | `/engine-profiles/{profileId}:stop`                           | Stop the active engine.                                       |
-| `GET`    | `/engine-profiles/{profileId}/revisions`                      | List immutable profile revisions.                             |
-| `GET`    | `/engine-profiles/{profileId}/revisions/{revision}/engine`    | Get engine status for one revision.                           |
-| `POST`   | `/engine-profiles/{profileId}/revisions/{revision}:terminate` | Terminate a draining revision; body requires `confirm: true`. |
 | `GET`    | `/engine-profiles/{profileId}/python-environments`            | List persistent Python environment revisions.                 |
 | `POST`   | `/engine-profiles/{profileId}/python-packages:install`        | Request package installation.                                 |
 | `POST`   | `/engine-profiles/{profileId}/python-packages:uninstall`      | Request package removal.                                      |
 | `GET`    | `/engine-profiles/{profileId}/environment-builds/{requestId}` | Get asynchronous environment-build state.                     |
 | `PUT`    | `/engine-profiles/{legacyProfileId}`                          | Legacy upsert endpoint retained for compatibility.            |
+
+The built-in `default` profile has no persisted resource overlay. Its config endpoint returns only
+explicit Driver/Executor memory, cores, and executor instances from the server's
+`spark-defaults.conf` and Kyuubi launch settings (the latter take precedence). Missing keys
+mean no explicit value was configured; the response is not a snapshot of a running engine and
+never contains credentials or arbitrary Spark properties.
 
 Create or update profile request:
 
@@ -288,6 +292,12 @@ Create or update profile request:
   "engineIdleTimeout": "PT30M"
 }
 ```
+
+For `PATCH`, omitted `sparkConfig` and idle-timeout fields retain their previous values. A supplied
+`sparkConfig` replaces the whole map; use `"inherit"` to clear a timeout override. Deleting a
+profile is rejected while compute or Python environment changes are active. Once they finish,
+deletion removes the current profile; persistent Python environment PVCs are retained for
+separate safe cleanup.
 
 Package-change requests accept package names only:
 

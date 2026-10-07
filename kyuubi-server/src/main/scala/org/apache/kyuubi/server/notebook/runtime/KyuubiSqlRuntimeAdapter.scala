@@ -29,7 +29,7 @@ import org.apache.kyuubi.server.notebook.NotebookConf.NOTEBOOK_MAX_PAGE_SIZE
 import org.apache.kyuubi.server.notebook.api._
 import org.apache.kyuubi.service.BackendService
 import org.apache.kyuubi.session.SessionHandle
-import org.apache.kyuubi.shaded.hive.service.rpc.thrift.{TProtocolVersion, TRowSet}
+import org.apache.kyuubi.shaded.hive.service.rpc.thrift.{TGetInfoType, TProtocolVersion, TRowSet}
 
 /**
  * Runs SQL and Python cells through one Kyuubi Spark session.
@@ -92,13 +92,18 @@ class SparkNotebookRuntimeAdapter(
       case None => AdapterRuntimeStatus(RuntimeState.STOPPED, None)
       case Some(handle) =>
         try {
-          backendService().sessionManager.getSession(SessionHandle.fromUUID(handle))
+          val sessionHandle = SessionHandle.fromUUID(handle)
+          backendService().sessionManager.getSession(sessionHandle)
+          // A frontend session row can survive after its Spark engine has died. Probe through
+          // Kyuubi's engine client before reusing a notebook's one shared runtime.
+          backendService().getInfo(sessionHandle, TGetInfoType.CLI_DBMS_NAME)
           AdapterRuntimeStatus(RuntimeState.IDLE, None)
         } catch {
           // The session manager forgets a session that was closed or lost with its server, and
           // there is no way to tell those apart from here, so it is reported as LOST rather
           // than guessed to be healthy.
-          case NonFatal(_) =>
+          case NonFatal(error) =>
+            warn(s"Spark session for runtime ${runtime.id} failed its health check", error)
             AdapterRuntimeStatus(RuntimeState.LOST, Some("the Spark session is gone"))
         }
     }
@@ -129,6 +134,7 @@ class SparkNotebookRuntimeAdapter(
           queryTimeout = 0L)
       } catch {
         case NonFatal(e) =>
+          warn(s"Spark session for runtime ${runtime.id} rejected execution ${execution.id}", e)
           throw new NotebookException(
             NotebookErrorCode.KYUUBI_SESSION_LOST,
             "the Spark session is no longer usable; restart the notebook session",

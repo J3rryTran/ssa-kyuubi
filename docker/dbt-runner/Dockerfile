@@ -16,8 +16,11 @@
 #
 
 FROM python:3.12-slim
+LABEL org.opencontainers.image.version="0.1.1"
 
-RUN pip install --no-cache-dir dbt-core==1.12.0 'dbt-spark[PyHive]==1.10.3' && \
+COPY docker/dbt-kyuubi /opt/dbt-kyuubi
+
+RUN pip install --no-cache-dir dbt-core==1.12.0 'dbt-spark[PyHive]==1.10.3' /opt/dbt-kyuubi && \
     useradd --create-home --uid 10001 dbt
 
 ENV HOME=/home/dbt

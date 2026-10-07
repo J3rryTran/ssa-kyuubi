@@ -179,28 +179,23 @@ trait NotebookStore extends AutoCloseable {
   def listRuns(notebookId: String, limit: Int): Seq[NotebookRun]
   def updateRun(run: NotebookRun, expectedVersion: Long): Boolean
 
-  // ---------------------------------------------------------------------------------------------
-  // Engine profiles
-  // ---------------------------------------------------------------------------------------------
-
   /**
-   * Creates or replaces the engine profile for `profileId`. The store treats this as a simple
-   * upsert: the caller (service layer) is responsible for any ownership check before invoking it.
+   * Atomically creates a profile configuration pin for one external DBT run.
+   *
+   * @return true when this caller won the create race; false when another Kyuubi replica has
+   *         already pinned the same run ID.
    */
-  def upsertEngineProfile(profile: EngineProfile): Unit
-
-  /** Returns the profile for `subdomain`, or `None` when no profile has been saved. */
-  def getEngineProfile(profileId: String): Option[EngineProfile]
-
-  /** Lists all engine profiles owned by `owner`. */
-  def listEngineProfiles(owner: String): Seq[EngineProfile]
-
-  /** Lists immutable configuration snapshots, newest revision first. */
-  def listEngineProfileRevisions(profileId: String): Seq[EngineProfileRevision]
+  def createEngineProfileRunSnapshot(snapshot: EngineProfileRunSnapshot): Boolean
+  def getEngineProfileRunSnapshot(runId: String): Option[EngineProfileRunSnapshot]
+  def touchEngineProfileRunSnapshot(runId: String, expiresAt: Long): Boolean
+  def deleteExpiredEngineProfileRunSnapshots(expiredBefore: Long): Int
 
   def createPythonEnvironmentRevision(environment: PythonEnvironmentRevision): Unit
   def getPythonEnvironmentRevision(id: String): Option[PythonEnvironmentRevision]
   def listPythonEnvironmentRevisions(profileId: String): Seq[PythonEnvironmentRevision]
+
+  /** Profile IDs that have a builder environment in BUILDING state. */
+  def listBuildingPythonEnvironmentProfileIds(): Seq[String]
   def updatePythonEnvironmentRevision(environment: PythonEnvironmentRevision): Boolean
 
   def createPythonEnvironmentChangeRequest(request: PythonEnvironmentChangeRequest): Unit
@@ -209,11 +204,18 @@ trait NotebookStore extends AutoCloseable {
   def updatePythonEnvironmentChangeRequest(request: PythonEnvironmentChangeRequest): Boolean
 
   /**
-   * Deletes the profile for `profileId`.
+   * Atomically assigns every collecting package change for one profile to an environment build.
    *
-   * @return true when a row was actually removed, false when nothing matched.
+   * The compare-and-set lives in the shared metadata store, rather than in a JVM lock, because
+   * multiple Kyuubi replicas reconcile the same profile after a Spark engine stops.
+   *
+   * @return true only for the replica that claimed at least one request
    */
-  def deleteEngineProfile(profileId: String, owner: String): Boolean
+  def claimCollectingPythonEnvironmentChangeRequests(
+      profileId: String,
+      environmentRevisionId: String,
+      updatedAt: Long): Boolean
+
 }
 
 /**

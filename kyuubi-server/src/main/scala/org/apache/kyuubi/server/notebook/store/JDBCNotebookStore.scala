@@ -84,7 +84,6 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
   override def initSchema(): Unit = {
     SCHEMA_RESOURCES.foreach(applySchema)
     addMissingColumns()
-    migrateLegacyEngineProfiles()
   }
 
   /**
@@ -1450,10 +1449,10 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       sparkConfig = configMap,
       notebookRuntimeIdleTimeout = optString(rs, "notebook_runtime_idle_timeout"),
       engineIdleTimeout = optString(rs, "engine_idle_timeout"),
-      revision = rs.getLong("revision"),
       createdAt = rs.getLong("created_at"),
       updatedAt = rs.getLong("updated_at"),
-      pythonEnvironmentRevisionId = optString(rs, "python_environment_revision_id"))
+      pythonEnvironmentRevisionId = optString(rs, "python_environment_revision_id"),
+      version = rs.getLong("revision"))
   }
 
   private def pythonEnvironmentRevisionMapper(rs: ResultSet): PythonEnvironmentRevision =
@@ -1483,7 +1482,7 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       requestedBy = rs.getString("requested_by"),
       operation = rs.getString("operation"),
       requestedPackages = packages,
-      expectedProfileRevision = rs.getLong("expected_profile_revision"),
+      expectedProfileVersion = rs.getLong("expected_profile_revision"),
       state = rs.getString("state"),
       hotInstallState = rs.getString("hot_install_state"),
       resultingEnvironmentRevisionId = optString(rs, "resulting_environment_revision_id"),
@@ -1586,86 +1585,116 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
   }
 
   /**
-   * The profile row is replaced atomically and its immutable revision snapshot is appended. The
-   * revision table means an already-started engine/run can always be audited against the config
-   * that created its Kyuubi subdomain.
+   * Replaces the one current Engine Profile row. The physical `revision` column is retained as
+   * the store-private optimistic-write version during the JDBC compatibility period; historical
+   * rows in `notebook_engine_profile_revision` are intentionally neither read nor appended.
    */
-  override def upsertEngineProfile(profile: EngineProfile): Unit = {
+  private[store] def upsertEngineProfile(profile: EngineProfile): Boolean = {
     val configJson = mapper.writeValueAsString(profile.sparkConfig)
     inTransaction { conn =>
-      update(conn, "DELETE FROM notebook_engine_profile_v2 WHERE profile_id = ?") { stmt =>
-        stmt.setString(1, profile.profileId)
-      }
-      update(
-        conn,
-        """INSERT INTO notebook_engine_profile_v2
-          |    (profile_id, owner, name, subdomain, spark_config, notebook_runtime_idle_timeout,
-          |     engine_idle_timeout, python_environment_revision_id, revision, created_at,
-          |     updated_at)
-          |VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin) { stmt =>
-        stmt.setString(1, profile.profileId)
-        stmt.setString(2, profile.owner)
-        stmt.setString(3, profile.name)
-        stmt.setString(4, profile.subdomain)
-        stmt.setString(5, configJson)
-        stmt.setString(6, profile.notebookRuntimeIdleTimeout.orNull)
-        stmt.setString(7, profile.engineIdleTimeout.orNull)
-        stmt.setString(8, profile.pythonEnvironmentRevisionId.orNull)
-        stmt.setLong(9, profile.revision)
-        stmt.setLong(10, profile.createdAt)
-        stmt.setLong(11, profile.updatedAt)
-      }
-      update(
-        conn,
-        """INSERT INTO notebook_engine_profile_revision
-          |    (profile_id, revision, subdomain, spark_config, notebook_runtime_idle_timeout,
-          |     engine_idle_timeout, python_environment_revision_id, created_at)
-          |VALUES(?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin) { stmt =>
-        stmt.setString(1, profile.profileId)
-        stmt.setLong(2, profile.revision)
-        stmt.setString(3, profile.subdomain)
-        stmt.setString(4, configJson)
-        stmt.setString(5, profile.notebookRuntimeIdleTimeout.orNull)
-        stmt.setString(6, profile.engineIdleTimeout.orNull)
-        stmt.setString(7, profile.pythonEnvironmentRevisionId.orNull)
-        stmt.setLong(8, profile.updatedAt)
+      if (profile.version == 1L) {
+        update(
+          conn,
+          """INSERT INTO notebook_engine_profile_v2
+            |    (profile_id, owner, name, subdomain, spark_config, notebook_runtime_idle_timeout,
+            |     engine_idle_timeout, python_environment_revision_id, revision, created_at,
+            |     updated_at)
+            |VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin) { stmt =>
+          stmt.setString(1, profile.profileId)
+          stmt.setString(2, profile.owner)
+          stmt.setString(3, profile.name)
+          stmt.setString(4, profile.subdomain)
+          stmt.setString(5, configJson)
+          stmt.setString(6, profile.notebookRuntimeIdleTimeout.orNull)
+          stmt.setString(7, profile.engineIdleTimeout.orNull)
+          stmt.setString(8, profile.pythonEnvironmentRevisionId.orNull)
+          stmt.setLong(9, profile.version)
+          stmt.setLong(10, profile.createdAt)
+          stmt.setLong(11, profile.updatedAt)
+        } == 1
+      } else {
+        update(
+          conn,
+          """UPDATE notebook_engine_profile_v2
+            |SET owner = ?, name = ?, subdomain = ?, spark_config = ?,
+            |    notebook_runtime_idle_timeout = ?, engine_idle_timeout = ?,
+            |    python_environment_revision_id = ?, revision = ?, created_at = ?, updated_at = ?
+            |WHERE profile_id = ? AND revision = ?""".stripMargin) { stmt =>
+          stmt.setString(1, profile.owner)
+          stmt.setString(2, profile.name)
+          stmt.setString(3, profile.subdomain)
+          stmt.setString(4, configJson)
+          stmt.setString(5, profile.notebookRuntimeIdleTimeout.orNull)
+          stmt.setString(6, profile.engineIdleTimeout.orNull)
+          stmt.setString(7, profile.pythonEnvironmentRevisionId.orNull)
+          stmt.setLong(8, profile.version)
+          stmt.setLong(9, profile.createdAt)
+          stmt.setLong(10, profile.updatedAt)
+          stmt.setString(11, profile.profileId)
+          stmt.setLong(12, profile.version - 1L)
+        } == 1
       }
     }
   }
 
-  override def getEngineProfile(profileId: String): Option[EngineProfile] =
+  private[store] def getEngineProfile(profileId: String): Option[EngineProfile] =
     JdbcUtils.executeQueryWithRowMapper(
       "SELECT * FROM notebook_engine_profile_v2 WHERE profile_id = ?") { stmt =>
       stmt.setString(1, profileId)
     }(engineProfileMapper).headOption
 
-  override def listEngineProfiles(owner: String): Seq[EngineProfile] =
+  private[store] def listEngineProfiles(owner: String): Seq[EngineProfile] =
     JdbcUtils.executeQueryWithRowMapper(
       "SELECT * FROM notebook_engine_profile_v2 WHERE owner = ? ORDER BY name") { stmt =>
       stmt.setString(1, owner)
     }(engineProfileMapper)
 
-  override def listEngineProfileRevisions(profileId: String): Seq[EngineProfileRevision] =
-    JdbcUtils.executeQueryWithRowMapper(
-      """SELECT profile_id, revision, subdomain, spark_config, notebook_runtime_idle_timeout,
-        | engine_idle_timeout, python_environment_revision_id, created_at
-        |FROM notebook_engine_profile_revision
-        |WHERE profile_id = ? ORDER BY revision DESC""".stripMargin) { stmt =>
-      stmt.setString(1, profileId)
-    } { rs =>
-      val config = mapper.readValue(
-        rs.getString("spark_config"),
-        classOf[java.util.Map[String, String]]).asScala.toMap
-      EngineProfileRevision(
-        rs.getString("profile_id"),
-        rs.getLong("revision"),
-        rs.getString("subdomain"),
-        config,
-        optString(rs, "notebook_runtime_idle_timeout"),
-        optString(rs, "engine_idle_timeout"),
-        rs.getLong("created_at"),
-        optString(rs, "python_environment_revision_id"))
+  override def createEngineProfileRunSnapshot(snapshot: EngineProfileRunSnapshot): Boolean = {
+    try {
+      JdbcUtils.executeUpdate(
+        """INSERT INTO notebook_engine_profile_run_snapshot
+          |    (run_id, profile_id, owner, revision, created_at, expires_at)
+          |VALUES (?, ?, ?, ?, ?, ?)""".stripMargin) { stmt =>
+        stmt.setString(1, snapshot.runId)
+        stmt.setString(2, snapshot.profileId)
+        stmt.setString(3, snapshot.owner)
+        stmt.setLong(4, snapshot.profileVersion)
+        stmt.setLong(5, snapshot.createdAt)
+        stmt.setLong(6, snapshot.expiresAt)
+      } == 1
+    } catch {
+      case error: SQLException =>
+        // A unique-key race is expected when dbt starts models with threads > 1 on different
+        // Kyuubi replicas. Do not mask a genuine JDBC failure if no winner row is visible.
+        if (getEngineProfileRunSnapshot(snapshot.runId).isDefined) false else throw error
     }
+  }
+
+  override def getEngineProfileRunSnapshot(runId: String): Option[EngineProfileRunSnapshot] =
+    JdbcUtils.executeQueryWithRowMapper(
+      "SELECT * FROM notebook_engine_profile_run_snapshot WHERE run_id = ?")(
+      _.setString(1, runId)) { rs =>
+      EngineProfileRunSnapshot(
+        rs.getString("run_id"),
+        rs.getString("profile_id"),
+        rs.getString("owner"),
+        rs.getLong("revision"),
+        rs.getLong("created_at"),
+        rs.getLong("expires_at"))
+    }.headOption
+
+  override def touchEngineProfileRunSnapshot(runId: String, expiresAt: Long): Boolean =
+    JdbcUtils.executeUpdate(
+      "UPDATE notebook_engine_profile_run_snapshot SET expires_at = ? WHERE run_id = ?") {
+      stmt =>
+        stmt.setLong(1, expiresAt)
+        stmt.setString(2, runId)
+    } == 1
+
+  override def deleteExpiredEngineProfileRunSnapshots(expiredBefore: Long): Int =
+    JdbcUtils.executeUpdate(
+      "DELETE FROM notebook_engine_profile_run_snapshot WHERE expires_at <= ?")(
+      _.setLong(1, expiredBefore))
 
   override def createPythonEnvironmentRevision(environment: PythonEnvironmentRevision): Unit =
     JdbcUtils.executeUpdate(
@@ -1699,6 +1728,12 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
         "ORDER BY revision DESC")(
       _.setString(1, profileId))(pythonEnvironmentRevisionMapper)
 
+  override def listBuildingPythonEnvironmentProfileIds(): Seq[String] =
+    JdbcUtils.executeQueryWithRowMapper(
+      "SELECT DISTINCT profile_id FROM notebook_python_environment_revision " +
+        "WHERE state = 'BUILDING'")()(
+      _.getString("profile_id"))
+
   override def updatePythonEnvironmentRevision(environment: PythonEnvironmentRevision): Boolean =
     JdbcUtils.executeUpdate(
       """UPDATE notebook_python_environment_revision SET relative_path = ?, state = ?,
@@ -1728,7 +1763,7 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       stmt.setString(3, request.requestedBy)
       stmt.setString(4, request.operation)
       stmt.setString(5, mapper.writeValueAsString(request.requestedPackages))
-      stmt.setLong(6, request.expectedProfileRevision)
+      stmt.setLong(6, request.expectedProfileVersion)
       stmt.setString(7, request.state)
       stmt.setString(8, request.hotInstallState)
       stmt.setString(9, request.resultingEnvironmentRevisionId.orNull)
@@ -1764,12 +1799,39 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
         stmt.setString(6, request.id)
     } == 1
 
-  override def deleteEngineProfile(profileId: String, owner: String): Boolean =
+  override def claimCollectingPythonEnvironmentChangeRequests(
+      profileId: String,
+      environmentRevisionId: String,
+      updatedAt: Long): Boolean =
     JdbcUtils.executeUpdate(
-      "DELETE FROM notebook_engine_profile_v2 WHERE profile_id = ? AND owner = ?") { stmt =>
-      stmt.setString(1, profileId)
-      stmt.setString(2, owner)
-    } == 1
+      """UPDATE notebook_python_environment_change_request
+        | SET state = 'PENDING', resulting_environment_revision_id = ?, updated_at = ?
+        | WHERE profile_id = ? AND state = 'COLLECTING'""".stripMargin) { stmt =>
+      stmt.setString(1, environmentRevisionId)
+      stmt.setLong(2, updatedAt)
+      stmt.setString(3, profileId)
+    } > 0
+
+  private[store] def deleteEngineProfile(
+      profileId: String,
+      owner: String,
+      expectedVersion: Long): Boolean =
+    inTransaction { conn =>
+      val deleted = update(
+        conn,
+        "DELETE FROM notebook_engine_profile_v2 " +
+          "WHERE profile_id = ? AND owner = ? AND revision = ?") {
+        stmt =>
+          stmt.setString(1, profileId)
+          stmt.setString(2, owner)
+          stmt.setLong(3, expectedVersion)
+      } == 1
+      if (deleted) {
+        update(conn, "DELETE FROM notebook_engine_profile_run_snapshot WHERE profile_id = ?")(
+          _.setString(1, profileId))
+      }
+      deleted
+    }
 
   private def setNullableLong(stmt: PreparedStatement, index: Int, value: Option[Long]): Unit =
     value match {
@@ -1803,34 +1865,6 @@ object JDBCNotebookStore {
       "notebook",
       "language",
       "ALTER TABLE notebook ADD COLUMN language VARCHAR(16) DEFAULT 'SQL'"),
-    (
-      "notebook_engine_profile_v2",
-      "notebook_runtime_idle_timeout",
-      "ALTER TABLE notebook_engine_profile_v2 " +
-        "ADD COLUMN notebook_runtime_idle_timeout VARCHAR(32)"),
-    (
-      "notebook_engine_profile_v2",
-      "engine_idle_timeout",
-      "ALTER TABLE notebook_engine_profile_v2 ADD COLUMN engine_idle_timeout VARCHAR(32)"),
-    (
-      "notebook_engine_profile_v2",
-      "python_environment_revision_id",
-      "ALTER TABLE notebook_engine_profile_v2 " +
-        "ADD COLUMN python_environment_revision_id VARCHAR(64)"),
-    (
-      "notebook_engine_profile_revision",
-      "notebook_runtime_idle_timeout",
-      "ALTER TABLE notebook_engine_profile_revision " +
-        "ADD COLUMN notebook_runtime_idle_timeout VARCHAR(32)"),
-    (
-      "notebook_engine_profile_revision",
-      "engine_idle_timeout",
-      "ALTER TABLE notebook_engine_profile_revision ADD COLUMN engine_idle_timeout VARCHAR(32)"),
-    (
-      "notebook_engine_profile_revision",
-      "python_environment_revision_id",
-      "ALTER TABLE notebook_engine_profile_revision " +
-        "ADD COLUMN python_environment_revision_id VARCHAR(64)"),
     (
       "notebook_runtime",
       "runtime_idle_timeout_millis",

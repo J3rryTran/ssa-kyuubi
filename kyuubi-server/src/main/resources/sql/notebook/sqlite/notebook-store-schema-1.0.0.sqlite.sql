@@ -117,47 +117,17 @@ CREATE TABLE IF NOT EXISTS notebook_schedule(
     version INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS notebook_engine_profile(
-    subdomain TEXT PRIMARY KEY NOT NULL,
-    owner TEXT NOT NULL,
-    spark_config TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS notebook_engine_profile_owner_index ON notebook_engine_profile(owner);
-
--- The original table above remains as a read-only legacy import source. New rows use an
--- immutable ID, owner-scoped display name and a revision-specific Kyuubi subdomain.
-CREATE TABLE IF NOT EXISTS notebook_engine_profile_v2(
-    profile_id TEXT PRIMARY KEY NOT NULL,
-    owner TEXT NOT NULL,
-    name TEXT NOT NULL,
-    subdomain TEXT NOT NULL UNIQUE,
-    spark_config TEXT NOT NULL,
-    notebook_runtime_idle_timeout TEXT,
-    engine_idle_timeout TEXT,
-    python_environment_revision_id TEXT,
-    revision INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE(owner, name)
-);
-
-CREATE TABLE IF NOT EXISTS notebook_engine_profile_revision(
+CREATE TABLE IF NOT EXISTS notebook_engine_profile_run_snapshot(
+    run_id TEXT PRIMARY KEY NOT NULL,
     profile_id TEXT NOT NULL,
+    owner TEXT NOT NULL,
     revision INTEGER NOT NULL,
-    subdomain TEXT NOT NULL UNIQUE,
-    spark_config TEXT NOT NULL,
-    notebook_runtime_idle_timeout TEXT,
-    engine_idle_timeout TEXT,
-    python_environment_revision_id TEXT,
     created_at INTEGER NOT NULL,
-    PRIMARY KEY(profile_id, revision)
+    expires_at INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS notebook_engine_profile_v2_owner_index
-ON notebook_engine_profile_v2(owner);
+CREATE INDEX IF NOT EXISTS notebook_engine_profile_run_snapshot_expiry_index
+ON notebook_engine_profile_run_snapshot(expires_at);
 
 CREATE TABLE IF NOT EXISTS notebook_python_environment_revision(
     id TEXT PRIMARY KEY NOT NULL,

@@ -239,6 +239,7 @@
                 <el-button
                   size="small"
                   icon="Edit"
+                  :disabled="!canUpdateProfile(row.profileId)"
                   @click="handleEditProfile(row)">
                   Edit
                 </el-button>
@@ -247,6 +248,7 @@
                   type="danger"
                   icon="Delete"
                   :loading="deletingProfile === row.profileId"
+                  :disabled="!canDeleteProfile(row.profileId)"
                   @click="handleDeleteProfile(row)">
                   Delete
                 </el-button>
@@ -382,7 +384,6 @@
       } catch {
         return {
           profileId: profile.profileId,
-          revision: profile.revision || 1,
           state: 'UNKNOWN' as const,
           engineCount: 0
         }
@@ -411,6 +412,13 @@
 
   const isEngineTransitioning = (profileId: string) =>
     ['STARTING', 'STOPPING'].includes(engineState(profileId))
+
+  // The backend also checks every former revision. This UI guard prevents the common case where
+  // the current revision is visibly starting or running; a former running revision is rejected
+  // by the API with its exact revision number.
+  const canDeleteProfile = (profileId: string): boolean => engineState(profileId) === 'STOPPED'
+
+  const canUpdateProfile = (profileId: string): boolean => engineState(profileId) === 'STOPPED'
 
   const handleStartEngine = async (profile: EngineProfile) => {
     startingProfile.value = profile.profileId
@@ -454,6 +462,10 @@
   }
 
   const handleEditProfile = (profile: EngineProfile) => {
+    if (!canUpdateProfile(profile.profileId)) {
+      ElMessage.warning('Stop the Engine Profile before changing its configuration')
+      return
+    }
     selectedProfile.value = JSON.parse(JSON.stringify(profile))
     profileDialogVisible.value = true
   }
@@ -464,9 +476,13 @@
   }
 
   const handleDeleteProfile = async (profile: EngineProfile) => {
+    if (!canDeleteProfile(profile.profileId)) {
+      ElMessage.warning('Stop the running Engine Profile before deleting it')
+      return
+    }
     try {
       await ElMessageBox.confirm(
-        `Delete Engine Profile '${profile.name || profile.subdomain}'? Existing engines are not terminated; they remain available until their idle timeout.`,
+        `Delete Engine Profile '${profile.name || profile.subdomain}'? Its engine must be stopped first. Persistent Python environment PVCs are retained for safe, separate cleanup.`,
         'Delete Engine Profile',
         {
           confirmButtonText: 'Delete Profile',

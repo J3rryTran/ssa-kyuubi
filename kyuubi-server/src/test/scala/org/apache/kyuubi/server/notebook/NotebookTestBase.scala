@@ -24,9 +24,12 @@ import scala.collection.JavaConverters._
 
 import org.apache.kyuubi.KyuubiFunSuite
 import org.apache.kyuubi.config.KyuubiConf
+import org.apache.kyuubi.ha.HighAvailabilityConf.{HA_ADDRESSES, HA_NAMESPACE}
 import org.apache.kyuubi.server.metadata.jdbc.JDBCMetadataStoreConf._
+import org.apache.kyuubi.server.notebook.NotebookConf.ENGINE_PROFILE_STORE_FS_ROOT
 import org.apache.kyuubi.server.notebook.api._
 import org.apache.kyuubi.server.notebook.service._
+import org.apache.kyuubi.zookeeper.{EmbeddedZookeeper, ZookeeperConf}
 
 /**
  * Wires the notebook services over a throwaway SQLite database, which exercises the real SQL
@@ -36,6 +39,7 @@ trait NotebookTestBase extends KyuubiFunSuite {
 
   protected var manager: NotebookManager = _
   protected var conf: KyuubiConf = _
+  private var zkServer: EmbeddedZookeeper = _
 
   protected val alice = NotebookPrincipal("alice", admin = false)
   protected val bob = NotebookPrincipal("bob", admin = false)
@@ -43,12 +47,20 @@ trait NotebookTestBase extends KyuubiFunSuite {
 
   override def beforeAll(): Unit = {
     super.beforeAll()
+    zkServer = new EmbeddedZookeeper()
+    val zkConf = new KyuubiConf(false).set(ZookeeperConf.ZK_CLIENT_PORT, 0)
+    zkServer.initialize(zkConf)
+    zkServer.start()
     val databaseFile = Files.createTempDirectory("kyuubi-notebook-test")
       .resolve(s"notebook-${UUID.randomUUID()}.db")
+    val profileRoot = Files.createTempDirectory("kyuubi-engine-profile-test")
     conf = new KyuubiConf(false)
       .set(METADATA_STORE_JDBC_DATABASE_TYPE, "SQLITE")
       .set(METADATA_STORE_JDBC_URL, s"jdbc:sqlite:${databaseFile.toAbsolutePath}")
       .set(METADATA_STORE_JDBC_DATABASE_SCHEMA_INIT, false)
+      .set(HA_ADDRESSES, zkServer.getConnectString)
+      .set(HA_NAMESPACE, s"notebook-test-${UUID.randomUUID()}")
+      .set(ENGINE_PROFILE_STORE_FS_ROOT, profileRoot.toUri.toString)
     // The document-level suites never reach a runtime, so the backend accessor is a trap
     // rather than a stub: if one of them ever does, the test fails loudly.
     manager = new NotebookManager(
@@ -60,6 +72,7 @@ trait NotebookTestBase extends KyuubiFunSuite {
 
   override def afterAll(): Unit = {
     if (manager != null) manager.stop()
+    if (zkServer != null) zkServer.stop()
     super.afterAll()
   }
 

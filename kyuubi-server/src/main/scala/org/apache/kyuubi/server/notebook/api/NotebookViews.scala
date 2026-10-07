@@ -232,7 +232,6 @@ case class EngineProfileView(
     sparkConfig: Map[String, String],
     notebookRuntimeIdleTimeout: Option[String],
     engineIdleTimeout: Option[String],
-    revision: Long,
     createdAt: Long,
     updatedAt: Long,
     pythonEnvironmentRevisionId: Option[String] = None)
@@ -247,47 +246,17 @@ object EngineProfileView {
       p.sparkConfig,
       p.notebookRuntimeIdleTimeout,
       p.engineIdleTimeout,
-      p.revision,
       p.createdAt,
       p.updatedAt,
       p.pythonEnvironmentRevisionId)
 }
 
-/** Browser-safe observed status of the current Engine Profile revision. */
+/** Browser-safe observed status of an Engine Profile's one current configuration. */
 case class EngineProfileEngineStatusView(
     profileId: String,
-    revision: Long,
     state: String,
     engineCount: Int,
     errorSummary: Option[String] = None)
-
-/** Browser-safe lifecycle projection for one immutable Engine Profile revision. */
-case class EngineProfileRevisionView(
-    profileId: String,
-    revision: Long,
-    subdomain: String,
-    sparkConfig: Map[String, String],
-    notebookRuntimeIdleTimeout: Option[String],
-    engineIdleTimeout: Option[String],
-    state: String,
-    createdAt: Long,
-    pythonEnvironmentRevisionId: Option[String] = None)
-
-object EngineProfileRevisionView {
-  def apply(
-      revision: EngineProfileRevision,
-      currentRevision: Long): EngineProfileRevisionView =
-    EngineProfileRevisionView(
-      revision.profileId,
-      revision.revision,
-      revision.subdomain,
-      revision.sparkConfig,
-      revision.notebookRuntimeIdleTimeout,
-      revision.engineIdleTimeout,
-      if (revision.revision == currentRevision) "ACTIVE" else "DRAINING",
-      revision.createdAt,
-      revision.pythonEnvironmentRevisionId)
-}
 
 /** Browser-safe lifecycle projection for a persistent Python environment revision. */
 case class PythonEnvironmentRevisionView(
@@ -312,10 +281,3 @@ object PythonEnvironmentRevisionView {
       environment.createdAt,
       environment.readyAt)
 }
-
-/** Result of an explicit best-effort termination request for a draining engine revision. */
-case class EngineProfileRevisionTerminationView(
-    profileId: String,
-    revision: Long,
-    subdomain: String,
-    terminatedEngineNodes: Int)

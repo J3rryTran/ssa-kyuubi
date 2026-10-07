@@ -43,6 +43,13 @@ final class KyuubiTBinaryFrontendService(
 
   override protected def hadoopConf: Configuration = KyuubiServer.getHadoopConf()
 
+  override protected def resolveSessionConfiguration(
+      _realUser: String,
+      sessionUser: String,
+      configuration: Map[String, String]): Map[String, String] =
+    serverable.asInstanceOf[KyuubiServer]
+      .resolveEngineProfileSessionConfiguration(sessionUser, configuration)
+
   override lazy val discoveryService: Option[Service] = {
     if (ServiceDiscovery.supportServiceDiscovery(conf)) {
       Some(new KyuubiServiceDiscovery(this))

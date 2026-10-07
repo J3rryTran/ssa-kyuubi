@@ -30,7 +30,7 @@ import io.fabric8.kubernetes.client.{Config, ConfigBuilder, KubernetesClient, Ku
 import org.apache.kyuubi.KyuubiException
 import org.apache.kyuubi.Logging
 import org.apache.kyuubi.config.KyuubiConf
-import org.apache.kyuubi.server.engineprofile.{EngineProfileSnapshot, PythonEnvironmentService}
+import org.apache.kyuubi.server.engineprofile.{EngineProfileSessionConfigResolver, PythonEnvironmentService}
 import org.apache.kyuubi.server.notebook.NotebookConf._
 
 /** Resolves an opaque project ID to a ConfigMap managed outside the browser. */
@@ -236,11 +236,10 @@ class KubernetesJobDbtRunner(
   }
 
   private def renderProfile(run: DbtJobRun): String = {
-    val parameters = (Map(
+    val parameters = Map(
       "hive.server2.proxy.user" -> run.effectiveKyuubiUser,
-      "kyuubi.engine.share.level.subdomain" -> run.profile.subdomain) ++
-      run.profile.sparkConfig ++ EngineProfileSnapshot.engineSessionConfig(run.profile) ++
-      pythonEnvironments.map(_.launchConfig(run.profile)).getOrElse(Map.empty))
+      EngineProfileSessionConfigResolver.ProfileIdKey -> run.profile.profileId,
+      EngineProfileSessionConfigResolver.RunIdKey -> run.id)
       .toSeq.sortBy(_._1).map { case (key, value) =>
         s"        ${yaml(key)}: ${yaml(value)}"
       }
@@ -249,7 +248,7 @@ class KubernetesJobDbtRunner(
        |  target: kyuubi
        |  outputs:
        |    kyuubi:
-       |      type: spark
+       |      type: kyuubi
        |      method: thrift
        |      host: ${yaml(required(DBT_RUNNER_KYUUBI_HOST))}
        |      port: ${conf.get(DBT_RUNNER_KYUUBI_PORT)}

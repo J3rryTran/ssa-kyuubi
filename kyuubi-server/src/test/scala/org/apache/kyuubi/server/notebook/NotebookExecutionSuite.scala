@@ -102,6 +102,41 @@ class NotebookExecutionSuite extends NotebookTestBase {
     assert(runtimeService.list(session).size === 1)
   }
 
+  test("a stale runtime is replaced before a later cell is submitted") {
+    val session = openSession(alice, "exec-stale-runtime")
+    val first = submit(alice, session, "select 1")
+    val oldRuntime = runtimeService.listFor(session).head
+    adapter.finish(first.id, ExecutionState.SUCCEEDED)
+    executionService.get(alice, first.id)
+    adapter.loseRuntime(oldRuntime.id)
+
+    val second = submit(alice, session, "select 2")
+
+    assert(second.state === ExecutionState.STARTING)
+    assert(manager.store.getRuntime(oldRuntime.id).get.state === RuntimeState.LOST)
+    assert(runtimeService.listFor(session).size === 1)
+    assert(runtimeService.listFor(session).head.id !== oldRuntime.id)
+  }
+
+  test("a rejected stale session is lost so the next submission can recover") {
+    val session = openSession(alice, "exec-rejected-stale-session")
+    adapter.executeFailure = Some(new NotebookException(
+      NotebookErrorCode.KYUUBI_SESSION_LOST,
+      "the Spark session is no longer usable",
+      retryable = true))
+
+    val failed = submit(alice, session, "select 1")
+    val oldRuntime = runtimeService.list(session).head
+
+    assert(failed.state === ExecutionState.FAILED)
+    assert(manager.store.getRuntime(oldRuntime.id).get.state === RuntimeState.LOST)
+
+    adapter.executeFailure = None
+    val recovered = submit(alice, session, "select 2")
+    assert(recovered.state === ExecutionState.STARTING)
+    assert(runtimeService.listFor(session).head.id !== oldRuntime.id)
+  }
+
   test("a second submission is queued until the first shared-session operation finishes") {
     val session = openSession(alice, "exec-queue")
     val before = adapter.executeCount.get()
@@ -354,9 +389,25 @@ class NotebookExecutionSuite extends NotebookTestBase {
     assert(manager.store.getSession(session.id).get.state === NotebookSessionState.LOST)
   }
 
+  test("restart reconciliation leaves a peer frontend session alone") {
+    val session = openSession(alice, "exec-reconcile-peer")
+    val execution = submit(alice, session, "select 1")
+    val peerOwned = session.copy(
+      kyuubiInstance = Some("peer-instance"),
+      version = session.version + 1)
+    assert(manager.store.updateSession(peerOwned, session.version))
+
+    executionService.reconcileAfterRestart()
+    sessionService.reconcileAfterRestart()
+
+    assert(manager.store.getSession(session.id).get.state === NotebookSessionState.IDLE)
+    assert(runtimeService.listFor(peerOwned).size === 1)
+    assert(manager.store.getExecution(execution.id).get.state === ExecutionState.STARTING)
+  }
+
   test("an idle runtime is reclaimed and its session stopped with it") {
     val session = openSession(alice, "exec-idle")
-    submit(alice, session, "select 1")
+    val execution = submit(alice, session, "select 1")
     assert(runtimeService.listFor(session).size === 1)
 
     // A zero timeout disables reaping entirely, which is what the config documents.
@@ -367,6 +418,34 @@ class NotebookExecutionSuite extends NotebookTestBase {
     sessionService.reapIdle(1L)
     assert(runtimeService.listFor(session).isEmpty)
     assert(manager.store.getSession(session.id).get.state === NotebookSessionState.STOPPED)
+    assert(manager.store.getExecution(execution.id).get.state === ExecutionState.LOST)
+    assert(adapter.interrupted.contains(execution.id))
+  }
+
+  test("an execution left active by an idle timeout cannot block a later cell") {
+    val session = openSession(alice, "exec-idle-stale-queue")
+    val stale = submit(alice, session, "select 1")
+    val oldRuntime = runtimeService.listFor(session).head
+    val stopped = oldRuntime.copy(
+      state = RuntimeState.STOPPED,
+      stoppedAt = Some(System.currentTimeMillis()),
+      version = oldRuntime.version + 1)
+    assert(manager.store.updateRuntime(stopped, oldRuntime.version))
+
+    val next = submit(alice, session, "select 2")
+
+    assert(manager.store.getExecution(stale.id).get.state === ExecutionState.LOST)
+    assert(next.state === ExecutionState.STARTING)
+  }
+
+  test("a stopped session rejects execution instead of silently reviving its old runtime") {
+    val session = openSession(alice, "exec-idle-terminal-session")
+    submit(alice, session, "select 1")
+    sessionService.reapIdle(1L)
+
+    interceptNotebook(NotebookErrorCode.KYUUBI_SESSION_LOST) {
+      submit(alice, session, "select 2")
+    }
   }
 
   test("an idle reaper never stops a runtime owned by another frontend") {
@@ -420,6 +499,8 @@ private class ScriptedAdapter extends TabularNotebookRuntimeAdapter {
   var cancelAcknowledges: Boolean = false
   var rows: Seq[Seq[String]] = Seq.empty
   var logLines: Seq[String] = Seq.empty
+  var executeFailure: Option[RuntimeException] = None
+  private var lostRuntimeIds: Set[String] = Set.empty
 
   override val runtimeType: String = "SQL"
 
@@ -439,12 +520,17 @@ private class ScriptedAdapter extends TabularNotebookRuntimeAdapter {
     AdapterRuntime(s"handle-${runtime.id}", Some("test-instance"))
 
   override def getRuntimeStatus(runtime: NotebookRuntime): AdapterRuntimeStatus =
-    AdapterRuntimeStatus(RuntimeState.IDLE, None)
+    if (lostRuntimeIds.contains(runtime.id)) {
+      AdapterRuntimeStatus(RuntimeState.LOST, Some("the Spark engine is gone"))
+    } else {
+      AdapterRuntimeStatus(RuntimeState.IDLE, None)
+    }
 
   override def execute(
       runtime: NotebookRuntime,
       execution: CellExecution,
       configuration: Map[String, String]): AdapterExecution = {
+    executeFailure.foreach(throw _)
     executeCount.incrementAndGet()
     statuses.put(
       execution.id,
@@ -519,4 +605,8 @@ private class ScriptedAdapter extends TabularNotebookRuntimeAdapter {
         Some("SQL_EXECUTION_FAILED"),
         Some(message),
         hasResultSet = false))
+
+  def loseRuntime(runtimeId: String): Unit = {
+    lostRuntimeIds += runtimeId
+  }
 }

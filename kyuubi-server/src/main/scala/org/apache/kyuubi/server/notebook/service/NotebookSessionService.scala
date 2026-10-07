@@ -124,6 +124,19 @@ class NotebookSessionService(
     session
   }
 
+  /** A terminal session has no Python namespace or Kyuubi session left to execute against. */
+  def requireForExecution(principal: NotebookPrincipal, sessionId: String): NotebookSession = {
+    val session = require(principal, sessionId)
+    if (NotebookSessionState.terminal.contains(session.state)) {
+      throw new NotebookException(
+        NotebookErrorCode.KYUUBI_SESSION_LOST,
+        "the notebook session has stopped; open a new session before running a cell",
+        retryable = true,
+        details = Map("action" -> "new-session"))
+    }
+    session
+  }
+
   /**
    * A session's runtimes live in the instance that created them, and a request for one is
    * normally sent there by the routing filter before it reaches this layer.
@@ -204,10 +217,26 @@ class NotebookSessionService(
     if (idleTimeoutMillis > 0) {
       store.listLiveSessions().filter(isLocal).foreach { session =>
         try {
-          val reclaimed = runtimes.reapIdle(session, idleTimeoutMillis)
+          // Execution state is durable but its adapter handle is not. Mark it terminal before
+          // closing a runtime; otherwise a row left RUNNING by a disconnected browser can block
+          // every later cell in the session's single-flight queue forever.
+          val reclaimable = runtimes.idleRuntimes(session, idleTimeoutMillis)
+          if (reclaimable.nonEmpty) {
+            invalidateExecutions(
+              NotebookPrincipal(session.owner, admin = false),
+              session,
+              "execution lost because the notebook runtime was stopped after idle timeout")
+          }
+          val reclaimed = reclaimable.map(runtimes.stop)
           val remaining = runtimes.listFor(session)
           if (remaining.isEmpty && (reclaimed.nonEmpty || session.lastActivityAt <
               System.currentTimeMillis() - idleTimeoutMillis)) {
+            // There may already have been no runtime row, for example after a prior failed
+            // close. Do not leave a durable RUNNING execution behind in that case either.
+            invalidateExecutions(
+              NotebookPrincipal(session.owner, admin = false),
+              session,
+              "execution lost because the notebook session expired after idle timeout")
             val now = System.currentTimeMillis()
             val stopped = session.copy(
               state = NotebookSessionState.STOPPED,
@@ -215,6 +244,7 @@ class NotebookSessionService(
               lastActivityAt = now,
               version = session.version + 1)
             store.updateSession(stopped, session.version)
+            registry().foreach(_.unregister(session.id))
           }
         } catch {
           case NonFatal(e) => warn(s"Failed to reap notebook session ${session.id}", e)
@@ -238,13 +268,18 @@ class NotebookSessionService(
     }
   }
 
+  /** Whether this frontend owns the in-process Kyuubi session for a durable session row. */
+  def isLocalFrontend(session: NotebookSession): Boolean = isLocal(session)
+
   /**
    * Marks sessions whose runtimes cannot have survived. Called at startup: a session created by
    * this instance before a restart has no live Kyuubi session behind it any more, and pretending
    * otherwise would make the first execution fail in a confusing way.
    */
   def reconcileAfterRestart(): Unit = {
-    store.listLiveSessions().foreach { session =>
+    // Only this frontend knows that its own in-process Kyuubi session handles disappeared.
+    // Invalidating shared-store sessions owned by a peer disconnects otherwise healthy users.
+    store.listLiveSessions().filter(isLocal).foreach { session =>
       try {
         val now = System.currentTimeMillis()
         runtimes.listFor(session).foreach(runtimes.markLost)
@@ -255,6 +290,7 @@ class NotebookSessionService(
           stoppedAt = Some(now),
           version = session.version + 1)
         store.updateSession(lost, session.version)
+        registry().foreach(_.unregister(session.id))
       } catch {
         case NonFatal(e) => warn(s"Failed to reconcile notebook session ${session.id}", e)
       }
@@ -314,8 +350,8 @@ class NotebookRuntimeService(
     val runtimeIdleTimeoutMillis = profileSnapshot.flatMap(
       EngineProfileSnapshot.notebookRuntimeIdleTimeoutMillis)
 
-    listFor(session).headOption match {
-      case Some(runtime) =>
+    listFor(session).headOption.map(refresh) match {
+      case Some(runtime) if !RuntimeState.terminal.contains(runtime.state) =>
         // Editing, adding, moving or deleting a cell touches notebook.updatedAt for document
         // optimistic locking. Those changes must not recreate a Python worker: its global
         // namespace is the state shared by notebook cells. A selected Engine Profile is changed
@@ -323,7 +359,7 @@ class NotebookRuntimeService(
         // runtime is created.
         warn(s"Reusing Spark runtime ${runtime.id} for session ${session.id}")
         runtime
-      case None =>
+      case _ =>
         warn(s"No existing runtime found. Creating new runtime for session ${session.id}")
         create(
           session,
@@ -481,6 +517,8 @@ class NotebookRuntimeService(
       pythonEnvironments.map(_.launchConfig(value)).getOrElse(Map.empty)).getOrElse(Map.empty)
     val sessionOverlay = snapshot.map(value =>
       Map(
+        "kyuubi.engine.type" -> "SPARK_SQL",
+        "kyuubi.engine.share.level" -> "USER",
         "kyuubi.engine.share.level.subdomain" -> value.subdomain,
         "kyuubi.engine.share.level.sub.domain" -> value.subdomain)).getOrElse(Map.empty)
     profileSparkConfig ++ engineTimeoutConfig ++ pythonEnvironmentConfig ++ sessionOverlay
@@ -521,7 +559,9 @@ class NotebookRuntimeService(
    * process and its scratch directory. Variables and anything installed from inside a cell go
    * with it; a managed environment is on disk and is untouched.
    */
-  def reapIdle(session: NotebookSession, defaultIdleTimeoutMillis: Long): Seq[NotebookRuntime] =
+  def idleRuntimes(
+      session: NotebookSession,
+      defaultIdleTimeoutMillis: Long): Seq[NotebookRuntime] =
     listFor(session)
       .filter(runtime => runtime.state != RuntimeState.BUSY)
       .flatMap { runtime =>
@@ -534,6 +574,9 @@ class NotebookRuntimeService(
           None
         }
       }
+
+  def reapIdle(session: NotebookSession, defaultIdleTimeoutMillis: Long): Seq[NotebookRuntime] =
+    idleRuntimes(session, defaultIdleTimeoutMillis).map(stop)
 
   def markLost(runtime: NotebookRuntime): NotebookRuntime = {
     if (RuntimeState.terminal.contains(runtime.state)) {

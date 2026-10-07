@@ -680,22 +680,17 @@ class FileSystemNotebookStore(conf: KyuubiConf) extends NotebookStore with Loggi
   override def updateRun(run: NotebookRun, expectedVersion: Long): Boolean =
     runtime.updateRun(run, expectedVersion)
 
-  // ---------------------------------------------------------------------------------------------
-  // Engine profiles are delegated to the embedded JDBC store so that all replicas see the same
-  // profiles regardless of which pod handles the request.
-  // ---------------------------------------------------------------------------------------------
+  override def createEngineProfileRunSnapshot(snapshot: EngineProfileRunSnapshot): Boolean =
+    runtime.createEngineProfileRunSnapshot(snapshot)
 
-  override def upsertEngineProfile(profile: EngineProfile): Unit =
-    runtime.upsertEngineProfile(profile)
+  override def getEngineProfileRunSnapshot(runId: String): Option[EngineProfileRunSnapshot] =
+    runtime.getEngineProfileRunSnapshot(runId)
 
-  override def getEngineProfile(subdomain: String): Option[EngineProfile] =
-    runtime.getEngineProfile(subdomain)
+  override def touchEngineProfileRunSnapshot(runId: String, expiresAt: Long): Boolean =
+    runtime.touchEngineProfileRunSnapshot(runId, expiresAt)
 
-  override def listEngineProfiles(owner: String): Seq[EngineProfile] =
-    runtime.listEngineProfiles(owner)
-
-  override def listEngineProfileRevisions(profileId: String): Seq[EngineProfileRevision] =
-    runtime.listEngineProfileRevisions(profileId)
+  override def deleteExpiredEngineProfileRunSnapshots(expiredBefore: Long): Int =
+    runtime.deleteExpiredEngineProfileRunSnapshots(expiredBefore)
 
   override def createPythonEnvironmentRevision(environment: PythonEnvironmentRevision): Unit =
     runtime.createPythonEnvironmentRevision(environment)
@@ -705,6 +700,9 @@ class FileSystemNotebookStore(conf: KyuubiConf) extends NotebookStore with Loggi
 
   override def listPythonEnvironmentRevisions(profileId: String): Seq[PythonEnvironmentRevision] =
     runtime.listPythonEnvironmentRevisions(profileId)
+
+  override def listBuildingPythonEnvironmentProfileIds(): Seq[String] =
+    runtime.listBuildingPythonEnvironmentProfileIds()
 
   override def updatePythonEnvironmentRevision(environment: PythonEnvironmentRevision): Boolean =
     runtime.updatePythonEnvironmentRevision(environment)
@@ -723,8 +721,15 @@ class FileSystemNotebookStore(conf: KyuubiConf) extends NotebookStore with Loggi
       request: PythonEnvironmentChangeRequest): Boolean =
     runtime.updatePythonEnvironmentChangeRequest(request)
 
-  override def deleteEngineProfile(subdomain: String, owner: String): Boolean =
-    runtime.deleteEngineProfile(subdomain, owner)
+  override def claimCollectingPythonEnvironmentChangeRequests(
+      profileId: String,
+      environmentRevisionId: String,
+      updatedAt: Long): Boolean =
+    runtime.claimCollectingPythonEnvironmentChangeRequests(
+      profileId,
+      environmentRevisionId,
+      updatedAt)
+
 }
 
 object FileSystemNotebookStore {

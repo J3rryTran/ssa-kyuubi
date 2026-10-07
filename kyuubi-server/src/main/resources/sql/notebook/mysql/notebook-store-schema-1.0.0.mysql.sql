@@ -119,43 +119,15 @@ CREATE TABLE IF NOT EXISTS notebook_schedule(
     UNIQUE KEY notebook_schedule_notebook_index(notebook_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
-CREATE TABLE IF NOT EXISTS notebook_engine_profile(
-    subdomain varchar(128) PRIMARY KEY NOT NULL,
-    owner varchar(255) NOT NULL,
-    spark_config mediumtext NOT NULL,
-    created_at bigint NOT NULL,
-    updated_at bigint NOT NULL,
-    KEY notebook_engine_profile_owner_index(owner)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS notebook_engine_profile_v2(
-    profile_id varchar(64) PRIMARY KEY NOT NULL,
-    owner varchar(255) NOT NULL,
-    name varchar(128) NOT NULL,
-    subdomain varchar(128) NOT NULL,
-    spark_config mediumtext NOT NULL,
-    notebook_runtime_idle_timeout varchar(32),
-    engine_idle_timeout varchar(32),
-    python_environment_revision_id varchar(64),
-    revision bigint NOT NULL,
-    created_at bigint NOT NULL,
-    updated_at bigint NOT NULL,
-    UNIQUE KEY notebook_engine_profile_v2_owner_name_index(owner, name),
-    UNIQUE KEY notebook_engine_profile_v2_subdomain_index(subdomain),
-    KEY notebook_engine_profile_v2_owner_index(owner)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS notebook_engine_profile_revision(
+CREATE TABLE IF NOT EXISTS notebook_engine_profile_run_snapshot(
+    run_id varchar(128) NOT NULL,
     profile_id varchar(64) NOT NULL,
+    owner varchar(255) NOT NULL,
     revision bigint NOT NULL,
-    subdomain varchar(128) NOT NULL,
-    spark_config mediumtext NOT NULL,
-    notebook_runtime_idle_timeout varchar(32),
-    engine_idle_timeout varchar(32),
-    python_environment_revision_id varchar(64),
     created_at bigint NOT NULL,
-    PRIMARY KEY(profile_id, revision),
-    UNIQUE KEY notebook_engine_profile_revision_subdomain_index(subdomain)
+    expires_at bigint NOT NULL,
+    PRIMARY KEY(run_id),
+    KEY notebook_engine_profile_run_snapshot_expiry_index(expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE IF NOT EXISTS notebook_python_environment_revision(

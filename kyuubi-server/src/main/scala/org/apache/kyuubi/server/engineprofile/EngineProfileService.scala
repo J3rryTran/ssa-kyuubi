@@ -17,12 +17,16 @@
 
 package org.apache.kyuubi.server.engineprofile
 
+import java.io.File
 import java.time.Duration
 import java.time.format.DateTimeParseException
 import java.util.UUID
 
 import scala.collection.JavaConverters._
+import scala.util.control.NonFatal
 
+import org.apache.kyuubi.{Logging, Utils}
+import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.server.notebook.api._
 import org.apache.kyuubi.server.notebook.store.NotebookStore
 
@@ -49,8 +53,7 @@ case class EngineProfileSnapshot(
     capturedAt: Long,
     notebookRuntimeIdleTimeout: Option[String] = None,
     engineIdleTimeout: Option[String] = None,
-    pythonEnvironmentRevisionId: Option[String] = None,
-    revision: Long = 1L)
+    pythonEnvironmentRevisionId: Option[String] = None)
 
 object EngineProfileSnapshot {
 
@@ -67,75 +70,79 @@ object EngineProfileSnapshot {
 /**
  * Shared ownership, validation and profile-resolution boundary for compute clients.
  *
- * Profile IDs are immutable; the user-visible name is scoped by owner. Each config update
- * creates a new revision-specific Kyuubi subdomain, so a Spark engine cannot silently receive
- * changed launch resources while it is still alive.
+ * Profile IDs are immutable; the user-visible name is scoped by owner. A profile has one mutable
+ * configuration and one stable Kyuubi subdomain. Runtime services reject updates while compute
+ * is active, so a Spark engine cannot silently receive changed launch resources while alive.
  */
-class EngineProfileService(store: NotebookStore) {
+class EngineProfileService(
+    conf: KyuubiConf,
+    profileStore: EngineProfileStore,
+    stateStore: NotebookStore) extends Logging {
+
+  @volatile private var beforeUpdate: (EngineProfilePrincipal, EngineProfile) => Unit =
+    (_, _) => ()
+
+  def initialize(): Unit = profileStore.initialize()
+
+  def healthCheck(): Unit = profileStore.healthCheck()
+
+  def close(): Unit = profileStore.close()
+
+  /**
+   * Registers the server-owned workload guard run before a user changes a profile's launch
+   * configuration. It is installed by [[NotebookManager]] after runtime and DBT services are
+   * available; keeping it here makes legacy callers obey the same policy as the REST API.
+   */
+  def onBeforeUpdate(callback: (EngineProfilePrincipal, EngineProfile) => Unit): Unit =
+    beforeUpdate = callback
+
+  /** The built-in profile has no overlay; these are explicit launch defaults, not live metrics. */
+  def defaultResourceConfig: Map[String, String] = {
+    val defaults = conf.getEnvs.get("SPARK_CONF_DIR").filter(_.trim.nonEmpty)
+      .orElse(conf.getEnvs.get("SPARK_HOME").filter(_.trim.nonEmpty)
+        .map(_ + File.separator + "conf"))
+      .map(dir => new File(dir, "spark-defaults.conf"))
+      .filter(_.isFile)
+      .map { file =>
+        try {
+          Utils.getPropertiesFromFile(Some(file))
+        } catch {
+          case NonFatal(e) =>
+            warn(s"Could not read Spark resource defaults from ${file.getAbsolutePath}", e)
+            Map.empty[String, String]
+        }
+      }.getOrElse(Map.empty[String, String])
+    EngineProfileService.defaultResourceConfig(defaults, conf.getAll)
+  }
 
   def list(principal: EngineProfilePrincipal): Seq[EngineProfile] =
     // Keep the existing owner-scoped listing contract.  Administrators can still inspect or
     // operate on a known profile ID; a cross-owner administrative listing needs a deliberate
     // store/API addition instead of accidentally exposing every user's resource configuration.
-    store.listEngineProfiles(principal.user)
+    profileStore.list(principal.user)
 
   /** Returns a profile only when the caller is its owner or an administrator. */
   def getOwned(profileId: String, principal: EngineProfilePrincipal): EngineProfile = {
-    val profile = requireProfile(profileId)
+    val profile = if (principal.admin) requireProfile(profileId)
+    else {
+      profileStore.getOwned(profileId, principal.user)
+        .orElse(profileStore.getById(profileId))
+        .getOrElse {
+          throw NotebookException.notFound(
+            NotebookErrorCode.NOTEBOOK_NOT_FOUND,
+            s"engine profile '$profileId' was not found")
+        }
+    }
     requireOwner(profile, principal)
     profile
   }
 
-  def listRevisions(
-      profileId: String,
-      principal: EngineProfilePrincipal): Seq[EngineProfileRevision] = {
-    getOwned(profileId, principal)
-    store.listEngineProfileRevisions(profileId)
-  }
-
-  /** Captures an immutable former or current revision for lifecycle observation. */
-  def snapshotForRevision(
-      profileId: String,
-      revision: Long,
-      principal: EngineProfilePrincipal): EngineProfileSnapshot = {
-    val profile = getOwned(profileId, principal)
-    val profileRevision = store.listEngineProfileRevisions(profileId)
-      .find(_.revision == revision)
-      .getOrElse(throw NotebookException.notFound(
-        NotebookErrorCode.NOTEBOOK_NOT_FOUND,
-        s"engine profile '$profileId' revision '$revision' was not found"))
-    EngineProfilePolicy.validate(profileRevision.sparkConfig)
-    EngineProfileSnapshot(
-      profileId = profile.profileId,
-      owner = profile.owner,
-      subdomain = profileRevision.subdomain,
-      sparkConfig = profileRevision.sparkConfig.toMap,
-      notebookRuntimeIdleTimeout = profileRevision.notebookRuntimeIdleTimeout,
-      engineIdleTimeout = profileRevision.engineIdleTimeout,
-      pythonEnvironmentRevisionId = profileRevision.pythonEnvironmentRevisionId,
-      revision = profileRevision.revision,
-      capturedAt = System.currentTimeMillis())
-  }
-
-  /**
-   * Returns a former revision that may be explicitly terminated.
-   *
-   * The current revision is deliberately rejected: profile save must never turn into a hidden
-   * kill operation, and the active revision remains the normal way to open new sessions.
-   */
-  def requireDrainingRevision(
-      profileId: String,
-      revision: Long,
-      principal: EngineProfilePrincipal): EngineProfileRevision = {
-    val profile = getOwned(profileId, principal)
-    if (revision >= profile.revision) {
-      throw NotebookException.invalid(
-        s"only a draining revision can be terminated; current revision is ${profile.revision}")
-    }
-    store.listEngineProfileRevisions(profileId).find(_.revision == revision).getOrElse {
-      throw NotebookException.notFound(
-        NotebookErrorCode.NOTEBOOK_NOT_FOUND,
-        s"engine profile '$profileId' revision '$revision' was not found")
+  /** Internal lookup for background lifecycle work that has a profile ID but no user identity. */
+  def find(profileId: String): Option[EngineProfile] = {
+    if (profileId == EngineProfileService.DefaultProfileId) {
+      None
+    } else {
+      profileStore.getById(profileId)
     }
   }
 
@@ -155,12 +162,10 @@ class EngineProfileService(store: NotebookStore) {
       sparkConfig = rawConfig,
       notebookRuntimeIdleTimeout = timeouts.notebookRuntimeIdleTimeout,
       engineIdleTimeout = timeouts.engineIdleTimeout,
-      revision = 1L,
       createdAt = now,
       updatedAt = now)
-    val withSubdomain = profile.copy(subdomain = subdomainFor(profile.profileId, profile.revision))
-    store.upsertEngineProfile(withSubdomain)
-    withSubdomain
+    val withSubdomain = profile.copy(subdomain = subdomainFor(profile.profileId))
+    persist(withSubdomain)
   }
 
   def update(
@@ -168,22 +173,22 @@ class EngineProfileService(store: NotebookStore) {
       principal: EngineProfilePrincipal,
       request: UpsertEngineProfileRequest): EngineProfile = {
     val existing = getOwned(profileId, principal)
+    beforeUpdate(principal, existing)
     val name = Option(request.getName).map(_.trim).filter(_.nonEmpty).getOrElse(existing.name)
     validateName(name)
     requireUnusedName(name, existing.owner, Some(profileId))
-    val rawConfig = validatedConfig(request)
+    val rawConfig = Option(request.getSparkConfig)
+      .map(_ => validatedConfig(request))
+      .getOrElse(existing.sparkConfig)
     val timeouts = EngineProfileTimeoutPolicy.update(existing, request)
-    val nextRevision = existing.revision + 1L
     val profile = existing.copy(
       name = name,
-      subdomain = subdomainFor(existing.profileId, nextRevision),
       sparkConfig = rawConfig,
       notebookRuntimeIdleTimeout = timeouts.notebookRuntimeIdleTimeout,
       engineIdleTimeout = timeouts.engineIdleTimeout,
-      revision = nextRevision,
+      version = existing.version + 1L,
       updatedAt = System.currentTimeMillis())
-    store.upsertEngineProfile(profile)
-    profile
+    persist(profile)
   }
 
   /**
@@ -196,7 +201,7 @@ class EngineProfileService(store: NotebookStore) {
       profileId: String,
       principal: EngineProfilePrincipal,
       request: UpsertEngineProfileRequest): EngineProfile = {
-    store.getEngineProfile(profileId) match {
+    profileStore.getById(profileId) match {
       case Some(_) => update(profileId, principal, request)
       case None =>
         if (Option(request.getName).forall(_.trim.isEmpty)) request.setName(profileId)
@@ -212,26 +217,30 @@ class EngineProfileService(store: NotebookStore) {
           sparkConfig = validatedConfig(request),
           notebookRuntimeIdleTimeout = timeouts.notebookRuntimeIdleTimeout,
           engineIdleTimeout = timeouts.engineIdleTimeout,
-          revision = 1L,
           createdAt = now,
           updatedAt = now)
-        store.upsertEngineProfile(legacy)
-        legacy
+        val stable = legacy.copy(subdomain = subdomainFor(profileId))
+        persist(stable)
     }
   }
 
   def delete(profileId: String, principal: EngineProfilePrincipal): Unit = {
     val profile = getOwned(profileId, principal)
-    val environments = store.listPythonEnvironmentRevisions(profile.profileId)
-    if (environments.exists(_.state != PythonEnvironmentState.RETIRED)) {
+    val pendingEnvironmentChange = stateStore.listPendingPythonEnvironmentChangeRequests()
+      .exists(_.profileId == profile.profileId)
+    if (pendingEnvironmentChange) {
       throw NotebookException.invalid(
-        "cannot delete an Engine Profile while it retains a persistent Python environment")
+        "cannot delete an Engine Profile while Python environment changes are pending")
     }
-    store.deleteEngineProfile(profile.profileId, profile.owner)
+    if (!profileStore.delete(profile.profileId, profile.owner, profile.version) &&
+      profileStore.getById(profile.profileId).isDefined) {
+      throw NotebookException.versionConflict(
+        "the Engine Profile changed while it was being deleted; deletion was canceled")
+    }
   }
 
   /**
-   * Publishes an already READY environment as a new immutable profile revision.
+   * Publishes an already READY environment on the one current profile configuration.
    *
    * The environment builder calls this only after atomically publishing its COMPLETE marker.
    * Resource values are copied instead of being re-read from a browser request, ensuring that a
@@ -244,14 +253,11 @@ class EngineProfileService(store: NotebookStore) {
     if (existing.pythonEnvironmentRevisionId.contains(environmentRevisionId)) {
       existing
     } else {
-      val nextRevision = existing.revision + 1L
       val published = existing.copy(
-        subdomain = subdomainFor(existing.profileId, nextRevision),
-        revision = nextRevision,
+        version = existing.version + 1L,
         updatedAt = System.currentTimeMillis(),
         pythonEnvironmentRevisionId = Some(environmentRevisionId))
-      store.upsertEngineProfile(published)
-      published
+      persist(published)
     }
   }
 
@@ -273,7 +279,6 @@ class EngineProfileService(store: NotebookStore) {
         sparkConfig = Map.empty,
         notebookRuntimeIdleTimeout = None,
         engineIdleTimeout = None,
-        revision = 0L,
         capturedAt = System.currentTimeMillis())
     } else {
       val profile = getOwned(profileId, principal)
@@ -289,17 +294,28 @@ class EngineProfileService(store: NotebookStore) {
         notebookRuntimeIdleTimeout = profile.notebookRuntimeIdleTimeout,
         engineIdleTimeout = profile.engineIdleTimeout,
         pythonEnvironmentRevisionId = profile.pythonEnvironmentRevisionId,
-        revision = profile.revision,
         capturedAt = System.currentTimeMillis())
     }
   }
 
   private def requireProfile(profileId: String): EngineProfile =
-    store.getEngineProfile(profileId).getOrElse {
+    profileStore.getById(profileId).getOrElse {
       throw NotebookException.notFound(
         NotebookErrorCode.NOTEBOOK_NOT_FOUND,
         s"engine profile '$profileId' was not found")
     }
+
+  private def persist(profile: EngineProfile): EngineProfile = {
+    val saved = if (profile.version == 1L) {
+      Some(profileStore.create(profile))
+    } else {
+      profileStore.update(profile, profile.version - 1L)
+    }
+    saved.getOrElse {
+      throw NotebookException.versionConflict(
+        "the Engine Profile changed while its configuration was being saved; reload and retry")
+    }
+  }
 
   private def requireOwner(profile: EngineProfile, principal: EngineProfilePrincipal): Unit = {
     if (!principal.admin && profile.owner != principal.user) {
@@ -341,7 +357,7 @@ class EngineProfileService(store: NotebookStore) {
       name: String,
       owner: String,
       exceptProfileId: Option[String]): Unit = {
-    val conflicting = store.listEngineProfiles(owner).find { profile =>
+    val conflicting = profileStore.list(owner).find { profile =>
       profile.name == name && !exceptProfileId.contains(profile.profileId)
     }
     if (conflicting.nonEmpty) {
@@ -349,14 +365,29 @@ class EngineProfileService(store: NotebookStore) {
     }
   }
 
-  private def subdomainFor(profileId: String, revision: Long): String = {
+  private def subdomainFor(profileId: String): String = {
     val compactId = profileId.replace("-", "").take(24)
-    s"ep-$compactId-r$revision"
+    s"ep-$compactId"
   }
 }
 
 object EngineProfileService {
   val DefaultProfileId = "default"
+
+  private val ResourceKeys = Set(
+    "spark.driver.memory",
+    "spark.driver.cores",
+    "spark.executor.memory",
+    "spark.executor.cores",
+    "spark.executor.instances")
+
+  /** spark-submit's explicit --conf values take precedence over spark-defaults.conf. */
+  private[kyuubi] def defaultResourceConfig(
+      sparkDefaults: Map[String, String],
+      serverSettings: Map[String, String]): Map[String, String] =
+    (sparkDefaults ++ serverSettings).filter { case (key, value) =>
+      ResourceKeys.contains(key) && value != null && value.trim.nonEmpty
+    }
 }
 
 /** Validates profile-owned duration overrides and renders native Kyuubi timeConf values. */

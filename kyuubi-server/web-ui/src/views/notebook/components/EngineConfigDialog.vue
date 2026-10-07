@@ -35,17 +35,32 @@
         <el-table-column prop="name" label="Engine Name" min-width="130" />
         <el-table-column label="Driver" width="100">
           <template #default="{ row }">
-            {{ row.driverMemory || '1g' }} / {{ row.driverCores || 1 }}c
+            <span v-if="!row.driverMemory && !row.driverCores">Cluster default</span>
+            <span v-else>
+              {{ row.driverMemory || '—' }} / {{ row.driverCores || '—' }}c
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="Executor" width="110">
           <template #default="{ row }">
-            {{ row.executorMemory || '2g' }} / {{ row.executorCores || 1 }}c
+            <span v-if="!row.executorMemory && !row.executorCores && !row.executorInstances">
+              Cluster default
+            </span>
+            <span v-else>
+              {{ row.executorMemory || '—' }} / {{ row.executorCores || '—' }}c
+              <span v-if="row.executorInstances"> × {{ row.executorInstances }}</span>
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="Actions" width="120" align="center">
           <template #default="{ row }">
-            <el-button size="small" type="primary" link icon="Edit" @click="loadProfileForEdit(row)">
+            <el-button
+              v-if="row.profileId !== 'default'"
+              size="small"
+              type="primary"
+              link
+              icon="Edit"
+              @click="loadProfileForEdit(row)">
               Edit
             </el-button>
             <el-button
@@ -211,6 +226,7 @@
   import {
     createEngineProfile,
     deleteEngineProfile,
+    getDefaultEngineProfileConfig,
     listEngineProfiles,
     updateEngineProfile
   } from '@/api/notebook'
@@ -284,6 +300,19 @@
 
   const parseProfileFromApi = (apiProfile: EngineProfile): EngineProfile => {
     const sparkConfig = apiProfile.sparkConfig || {}
+    if (apiProfile.profileId === 'default') {
+      return {
+        ...apiProfile,
+        name: apiProfile.name || apiProfile.subdomain,
+        driverMemory: sparkConfig['spark.driver.memory'],
+        driverCores: sparkConfig['spark.driver.cores'],
+        executorMemory: sparkConfig['spark.executor.memory'],
+        executorCores: sparkConfig['spark.executor.cores'],
+        executorInstances: sparkConfig['spark.executor.instances']
+          ? Number(sparkConfig['spark.executor.instances'])
+          : undefined
+      }
+    }
     const customConfigs: Record<string, string> = {}
     for (const [k, v] of Object.entries(sparkConfig)) {
       if (![
@@ -311,25 +340,29 @@
   const savedProfiles = ref<EngineProfile[]>([])
 
   const loadSavedProfiles = async () => {
-    try {
-      const res = await listEngineProfiles()
-      if (Array.isArray(res) && res.length > 0) {
-        savedProfiles.value = res.map(parseProfileFromApi)
-        return
-      }
-    } catch (e) {
-      console.error('Failed to load engine profiles from backend:', e)
-    }
-    savedProfiles.value = [{
+    let defaultProfile: EngineProfile = {
       name: 'default',
       profileId: 'default',
-      subdomain: 'default',
-      driverMemory: '1g',
-      driverCores: 1,
-      executorMemory: '2g',
-      executorCores: 1,
-      executorInstances: 1
-    }]
+      subdomain: 'default'
+    }
+    try {
+      const sparkConfig = await getDefaultEngineProfileConfig()
+      defaultProfile = parseProfileFromApi({ ...defaultProfile, sparkConfig })
+    } catch (e) {
+      console.error('Failed to load default engine resource configuration:', e)
+    }
+    try {
+      const res = await listEngineProfiles()
+      savedProfiles.value = [
+        defaultProfile,
+        ...(Array.isArray(res)
+          ? res.filter((p) => p.profileId !== 'default').map(parseProfileFromApi)
+          : [])
+      ]
+    } catch (e) {
+      console.error('Failed to load engine profiles from backend:', e)
+      savedProfiles.value = [defaultProfile]
+    }
   }
 
   watch(dialogVisible, (val) => {

@@ -105,21 +105,9 @@ export interface EngineProfile {
   executorCores?: number | string
   executorInstances?: number
   customConfigs?: Record<string, string>
-  revision?: number
   pythonEnvironmentRevisionId?: string | null
   createdAt?: number
   updatedAt?: number
-}
-
-export interface EngineProfileRevision {
-  profileId: string
-  revision: number
-  sparkConfig: Record<string, string>
-  notebookRuntimeIdleTimeout?: string | null
-  engineIdleTimeout?: string | null
-  state: 'ACTIVE' | 'DRAINING'
-  createdAt: number
-  pythonEnvironmentRevisionId?: string | null
 }
 
 export interface PythonEnvironmentRevision {
@@ -132,15 +120,8 @@ export interface PythonEnvironmentRevision {
   readyAt?: number | null
 }
 
-export interface EngineProfileRevisionTermination {
-  profileId: string
-  revision: number
-  terminatedEngineNodes: number
-}
-
 export interface EngineProfileEngineStatus {
   profileId: string
-  revision: number
   state: 'STARTING' | 'RUNNING' | 'STOPPING' | 'STOPPED' | 'FAILED' | 'UNKNOWN'
   engineCount: number
   errorSummary?: string | null

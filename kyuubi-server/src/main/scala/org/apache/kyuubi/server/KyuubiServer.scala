@@ -31,6 +31,7 @@ import org.apache.kyuubi.events.{EventBus, KyuubiServerInfoEvent, ServerEventHan
 import org.apache.kyuubi.ha.HighAvailabilityConf._
 import org.apache.kyuubi.ha.client.{AuthTypes, ServiceDiscovery}
 import org.apache.kyuubi.metrics.{MetricsConf, MetricsSystem}
+import org.apache.kyuubi.server.engineprofile.EngineProfileSessionConfigResolver
 import org.apache.kyuubi.server.metadata.jdbc.JDBCMetadataStoreConf
 import org.apache.kyuubi.service.{AbstractBackendService, AbstractFrontendService, Serverable, ServiceState}
 import org.apache.kyuubi.session.KyuubiSessionManager
@@ -203,6 +204,24 @@ class KyuubiServer(name: String) extends Serverable(name) {
       case other =>
         throw new UnsupportedOperationException(s"Frontend protocol $other is not supported yet.")
     }
+
+  private[server] def resolveEngineProfileSessionConfiguration(
+      sessionUser: String,
+      configuration: Map[String, String]): Map[String, String] = {
+    frontendServices.collectFirst {
+      case rest: KyuubiRestFrontendService => rest.notebookManager
+    }.flatten match {
+      case Some(manager) =>
+        new EngineProfileSessionConfigResolver(
+          manager.engineProfiles,
+          manager.pythonEnvironments,
+          manager.engineProfileRunSnapshots).resolve(sessionUser, configuration)
+      case None if configuration.contains(EngineProfileSessionConfigResolver.ProfileIdKey) =>
+        throw new KyuubiException(
+          "Engine Profile session selection requires the REST notebook service to be enabled")
+      case None => configuration
+    }
+  }
 
   override def initialize(conf: KyuubiConf): Unit = synchronized {
     val kinit = new KinitAuxiliaryService()

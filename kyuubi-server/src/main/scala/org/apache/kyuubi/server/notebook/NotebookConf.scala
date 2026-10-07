@@ -87,6 +87,45 @@ object NotebookConf {
       .booleanConf
       .createWithDefault(true)
 
+  val ENGINE_PROFILE_STORE_FS_ROOT: OptionalConfigEntry[String] =
+    buildConf("kyuubi.engine.profile.store.fs.root")
+      .doc("Shared filesystem root for current owner Engine Profile JSON documents. This can be " +
+        "an `s3a://` URI for SeaweedFS or another S3-compatible store. Runtime state, DBT run " +
+        "pins and Python environment build state remain in the JDBC metadata store.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createOptional
+
+  val ENGINE_PROFILE_STORE_CLASS: ConfigEntry[String] =
+    buildConf("kyuubi.engine.profile.store.class")
+      .doc("Authoritative Engine Profile configuration store. The S3 store keeps one owner JSON " +
+        "document under `kyuubi.engine.profile.store.fs.root` and uses ZooKeeper to coordinate " +
+        "writes across Kyuubi replicas.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .createWithDefault("org.apache.kyuubi.server.engineprofile.S3EngineProfileStore")
+
+  val ENGINE_PROFILE_STORE_ZK_LOCK_TIMEOUT: ConfigEntry[Long] =
+    buildConf("kyuubi.engine.profile.store.zk.lock.timeout")
+      .doc("Maximum time to acquire the per-owner ZooKeeper mutex before an Engine Profile " +
+        "write fails. The lock protects one owner JSON document from concurrent Kyuubi replicas.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .createWithDefault(java.util.concurrent.TimeUnit.SECONDS.toMillis(30))
+
+  val ENGINE_PROFILE_STORE_FS_PROBE_ENABLED: ConfigEntry[Boolean] =
+    buildConf("kyuubi.engine.profile.store.fs.probe.enabled")
+      .doc("Whether startup verifies read, create, list and delete access to the Engine Profile " +
+        "filesystem root. Enable this for S3A/SeaweedFS deployments so a missing Hadoop AWS " +
+        "connector, credential or bucket permission fails before a profile is accepted.")
+      .version("1.10.3")
+      .serverOnly
+      .booleanConf
+      .createWithDefault(true)
+
   val NOTEBOOK_SCHEMA_INIT: ConfigEntry[Boolean] =
     buildConf("kyuubi.notebook.store.schema.init")
       .doc("Whether to create the notebook tables at startup if they are missing.")
@@ -353,6 +392,14 @@ object NotebookConf {
       .serverOnly
       .longConf
       .createWithDefault(10L * 1024 * 1024)
+
+  val DBT_ENGINE_PROFILE_RUN_SNAPSHOT_TTL: ConfigEntry[Long] =
+    buildConf("kyuubi.dbt.engine-profile.run.snapshot.ttl")
+      .doc("Retention lease for the Engine Profile version leased to one DBT CLI run.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .createWithDefault(java.util.concurrent.TimeUnit.HOURS.toMillis(24))
 
   val DBT_RUNNER_LOG_PAGE_MAX_BYTES: ConfigEntry[Int] =
     buildConf("kyuubi.dbt.runner.log.page.max.bytes")

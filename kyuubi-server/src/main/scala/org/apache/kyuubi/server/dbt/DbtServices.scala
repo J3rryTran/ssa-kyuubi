@@ -211,9 +211,6 @@ class DbtWorkspaceService(
   def hasActiveRunsForProfile(profileId: String): Boolean =
     store.listActiveRunsForProfile(profileId).nonEmpty
 
-  def hasActiveRunsForProfileRevision(profileId: String, revision: Long): Boolean =
-    store.listActiveRunsForProfile(profileId).exists(_.profile.revision == revision)
-
   /** Creates and dispatches only when a runner implementation has been installed. */
   def submitJob(principal: NotebookPrincipal, id: String): DbtJobRun = {
     val job = authorizeJob(loadJob(id), principal)

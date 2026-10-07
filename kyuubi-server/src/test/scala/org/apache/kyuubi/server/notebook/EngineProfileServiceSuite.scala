@@ -21,9 +21,9 @@ import java.util
 
 import scala.collection.JavaConverters._
 
-import org.apache.kyuubi.server.engineprofile.EngineProfilePrincipal
-import org.apache.kyuubi.server.notebook.api.{NotebookErrorCode, UpsertEngineProfileRequest}
-import org.apache.kyuubi.server.notebook.service.NotebookPrincipal
+import org.apache.kyuubi.server.engineprofile._
+import org.apache.kyuubi.server.notebook.api._
+import org.apache.kyuubi.server.notebook.service.{NotebookJson, NotebookPrincipal}
 
 class EngineProfileServiceSuite extends NotebookTestBase {
 
@@ -45,6 +45,44 @@ class EngineProfileServiceSuite extends NotebookTestBase {
     result.setNotebookRuntimeIdleTimeout(notebookRuntimeIdleTimeout)
     result.setEngineIdleTimeout(engineIdleTimeout)
     result
+  }
+
+  test("default resources expose only explicitly configured launch values") {
+    val defaults = Map(
+      "spark.driver.memory" -> "1g",
+      "spark.executor.memory" -> "2g",
+      "spark.executor.instances" -> "1",
+      "spark.hadoop.fs.s3a.secret.key" -> "not-for-the-browser")
+    val serverSettings = Map(
+      "spark.driver.memory" -> "4g",
+      "spark.executor.cores" -> "2",
+      "spark.hadoop.fs.s3a.access.key" -> "also-secret")
+
+    assert(EngineProfileService.defaultResourceConfig(defaults, serverSettings) === Map(
+      "spark.driver.memory" -> "4g",
+      "spark.executor.memory" -> "2g",
+      "spark.executor.cores" -> "2",
+      "spark.executor.instances" -> "1"))
+  }
+
+  test("engine profile store persists one current configuration without a public generation") {
+    val created = manager.engineProfiles.create(
+      profilePrincipal(alice),
+      request("revisionless-store-profile", "spark.driver.memory" -> "2g"))
+    val winner = manager.engineProfiles.update(
+      created.profileId,
+      profilePrincipal(alice),
+      request("revisionless-store-profile", "spark.driver.memory" -> "4g"))
+
+    assert(winner.sparkConfig === Map("spark.driver.memory" -> "4g"))
+    val profileJson = NotebookJson.mapper.valueToTree[com.fasterxml.jackson.databind.JsonNode](
+      EngineProfileView(winner))
+    assert(!profileJson.has("revision"))
+    assert(!profileJson.has("version"))
+    val statusJson = NotebookJson.mapper.valueToTree[com.fasterxml.jackson.databind.JsonNode](
+      EngineProfileEngineStatusView(winner.profileId, "STOPPED", 0))
+    assert(!statusJson.has("revision"))
+    assert(!statusJson.has("version"))
   }
 
   test("different owners can create profiles with the same display name") {
@@ -83,7 +121,7 @@ class EngineProfileServiceSuite extends NotebookTestBase {
     assert(snapshot.sparkConfig === profile.sparkConfig)
   }
 
-  test("profile update creates a new revision and a new engine subdomain") {
+  test("profile update keeps a stable engine subdomain") {
     val created = manager.engineProfiles.create(
       profilePrincipal(alice),
       request("heavy", "spark.driver.memory" -> "2g"))
@@ -94,33 +132,106 @@ class EngineProfileServiceSuite extends NotebookTestBase {
 
     assert(updated.profileId === created.profileId)
     assert(updated.name === created.name)
-    assert(updated.revision === 2L)
-    assert(updated.subdomain !== created.subdomain)
+    assert(updated.version === 2L)
+    assert(updated.subdomain === created.subdomain)
     assert(updated.sparkConfig("spark.driver.memory") === "4g")
-    assert(manager.engineProfiles.listRevisions(created.profileId, profilePrincipal(alice))
-      .map(_.revision) === Seq(2L, 1L))
   }
 
-  test("only a former revision is eligible for explicit termination") {
+  test("profile update is rejected while a workload guard reports active compute") {
     val created = manager.engineProfiles.create(
       profilePrincipal(alice),
-      request("draining", "spark.driver.memory" -> "1g"))
+      request("must-stop-before-update", "spark.driver.memory" -> "2g"))
+    manager.engineProfiles.onBeforeUpdate { (_, profile) =>
+      if (profile.profileId == created.profileId) {
+        throw NotebookException.invalid(
+          s"stop engine profile ${profile.profileId} before changing its configuration")
+      }
+    }
+
+    interceptNotebook(NotebookErrorCode.INVALID_REQUEST) {
+      manager.engineProfiles.update(
+        created.profileId,
+        profilePrincipal(alice),
+        request("must-stop-before-update", "spark.driver.memory" -> "4g"))
+    }
+    assert(manager.engineProfiles.getOwned(created.profileId, profilePrincipal(alice)) === created)
+  }
+
+  test("profile updates retain omitted Spark settings and idle timeouts") {
+    val initial = request(
+      "inherited-revision",
+      "spark.driver.memory" -> "2g",
+      "spark.executor.memory" -> "4g")
+    initial.setNotebookRuntimeIdleTimeout("PT10M")
+    initial.setEngineIdleTimeout("PT30M")
+    val created = manager.engineProfiles.create(profilePrincipal(alice), initial)
+
     val updated = manager.engineProfiles.update(
       created.profileId,
       profilePrincipal(alice),
-      request("draining", "spark.driver.memory" -> "2g"))
+      new UpsertEngineProfileRequest)
+    assert(updated.version === 2L)
+    assert(updated.sparkConfig === created.sparkConfig)
+    assert(updated.notebookRuntimeIdleTimeout === created.notebookRuntimeIdleTimeout)
+    assert(updated.engineIdleTimeout === created.engineIdleTimeout)
 
-    val draining = manager.engineProfiles.requireDrainingRevision(
+    val replacement = request("inherited-revision", "spark.driver.memory" -> "8g")
+    val replaced = manager.engineProfiles.update(
       created.profileId,
-      created.revision,
-      profilePrincipal(alice))
-    assert(draining.subdomain === created.subdomain)
-    interceptNotebook(NotebookErrorCode.INVALID_REQUEST) {
-      manager.engineProfiles.requireDrainingRevision(
-        created.profileId,
-        updated.revision,
-        profilePrincipal(alice))
-    }
+      profilePrincipal(alice),
+      replacement)
+    assert(replaced.sparkConfig === Map("spark.driver.memory" -> "8g"))
+    assert(replaced.notebookRuntimeIdleTimeout.contains("PT10M"))
+    assert(replaced.engineIdleTimeout.contains("PT30M"))
+  }
+
+  test("Python environment publication retains profile resources and idle timeouts") {
+    val initial = request("python-revision", "spark.executor.memory" -> "4g")
+    initial.setNotebookRuntimeIdleTimeout("PT15M")
+    initial.setEngineIdleTimeout("PT45M")
+    val created = manager.engineProfiles.create(profilePrincipal(alice), initial)
+
+    val published = manager.engineProfiles.publishPythonEnvironment(created.profileId, "env-1")
+    assert(published.version === 2L)
+    assert(published.subdomain === created.subdomain)
+    assert(published.sparkConfig === created.sparkConfig)
+    assert(published.notebookRuntimeIdleTimeout === created.notebookRuntimeIdleTimeout)
+    assert(published.engineIdleTimeout === created.engineIdleTimeout)
+    assert(published.pythonEnvironmentRevisionId.contains("env-1"))
+  }
+
+  test("only one replica can claim collecting Python environment requests") {
+    val createdProfile: EngineProfile = manager.engineProfiles.create(
+      profilePrincipal(alice),
+      request("atomic-python-environment", "spark.driver.memory" -> "1g"))
+    val now = System.currentTimeMillis()
+    val changeRequest = PythonEnvironmentChangeRequest(
+      id = "atomic-python-request",
+      profileId = createdProfile.profileId,
+      requestedBy = alice.user,
+      operation = PythonEnvironmentOperation.INSTALL,
+      requestedPackages = Seq("seaborn"),
+      expectedProfileVersion = createdProfile.version,
+      state = PythonEnvironmentState.COLLECTING,
+      hotInstallState = "SUCCEEDED",
+      resultingEnvironmentRevisionId = None,
+      errorSummary = None,
+      createdAt = now,
+      updatedAt = now)
+    manager.store.createPythonEnvironmentChangeRequest(changeRequest)
+
+    assert(manager.store.claimCollectingPythonEnvironmentChangeRequests(
+      createdProfile.profileId,
+      "environment-winner",
+      now + 1))
+    assert(!manager.store.claimCollectingPythonEnvironmentChangeRequests(
+      createdProfile.profileId,
+      "environment-loser",
+      now + 2))
+
+    val claimed = manager.store.getPythonEnvironmentChangeRequest(changeRequest.id).get
+    assert(claimed.state === PythonEnvironmentState.PENDING)
+    assert(claimed.resultingEnvironmentRevisionId.contains("environment-winner"))
   }
 
   test("built-in default profile uses server Spark defaults without a persisted row") {
@@ -142,7 +253,6 @@ class EngineProfileServiceSuite extends NotebookTestBase {
 
     assert(snapshot.notebookRuntimeIdleTimeout.contains("PT5M"))
     assert(snapshot.engineIdleTimeout.contains("PT30M"))
-    assert(snapshot.revision === 1L)
     assert(org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
       .engineSessionConfig(snapshot)("kyuubi.session.engine.idle.timeout") === "1800000")
 
@@ -152,7 +262,7 @@ class EngineProfileServiceSuite extends NotebookTestBase {
       requestWithTimeouts("timed", "inherit", "PT1H"))
     assert(updated.notebookRuntimeIdleTimeout.isEmpty)
     assert(updated.engineIdleTimeout.contains("PT1H"))
-    assert(updated.revision === 2L)
+    assert(updated.version === 2L)
   }
 
   test("profile rejects invalid idle timeout overrides") {
@@ -191,6 +301,60 @@ class EngineProfileServiceSuite extends NotebookTestBase {
     interceptNotebook(NotebookErrorCode.NOTEBOOK_NOT_FOUND) {
       manager.engineProfiles.getOwned(profile.profileId, profilePrincipal(alice))
     }
+  }
+
+  test("profile with a READY Python environment can be deleted without deleting its PVC") {
+    val profile = manager.engineProfiles.create(
+      profilePrincipal(alice),
+      request("persistent-delete", "spark.driver.memory" -> "2g"))
+    val now = System.currentTimeMillis()
+    val environment = PythonEnvironmentRevision(
+      id = "environment-delete-test",
+      profileId = profile.profileId,
+      revision = 1L,
+      pvcName = "pyenv-delete-test",
+      relativePath = "environments/env-1",
+      state = PythonEnvironmentState.READY,
+      requirementsLock = None,
+      metadata = None,
+      contentChecksum = None,
+      baseImage = "test-image",
+      createdAt = now,
+      readyAt = Some(now),
+      retiredAt = None)
+    manager.store.createPythonEnvironmentRevision(environment)
+    manager.engineProfiles.publishPythonEnvironment(profile.profileId, environment.id)
+
+    manager.engineProfiles.delete(profile.profileId, profilePrincipal(alice))
+    interceptNotebook(NotebookErrorCode.NOTEBOOK_NOT_FOUND) {
+      manager.engineProfiles.getOwned(profile.profileId, profilePrincipal(alice))
+    }
+    assert(manager.store.getPythonEnvironmentRevision(environment.id).contains(environment))
+  }
+
+  test("profile cannot be deleted during a pending Python environment change") {
+    val profile = manager.engineProfiles.create(
+      profilePrincipal(alice),
+      request("pending-delete", "spark.driver.memory" -> "2g"))
+    val now = System.currentTimeMillis()
+    manager.store.createPythonEnvironmentChangeRequest(PythonEnvironmentChangeRequest(
+      id = "pending-delete-test",
+      profileId = profile.profileId,
+      requestedBy = alice.user,
+      operation = "INSTALL",
+      requestedPackages = Seq("seaborn"),
+      expectedProfileVersion = profile.version,
+      state = PythonEnvironmentState.COLLECTING,
+      hotInstallState = "SUCCEEDED",
+      resultingEnvironmentRevisionId = None,
+      errorSummary = None,
+      createdAt = now,
+      updatedAt = now))
+
+    interceptNotebook(NotebookErrorCode.INVALID_REQUEST) {
+      manager.engineProfiles.delete(profile.profileId, profilePrincipal(alice))
+    }
+    assert(manager.engineProfiles.getOwned(profile.profileId, profilePrincipal(alice)) === profile)
   }
 
   test("profile rejects dangerous keys and inconsistent dynamic allocation bounds") {

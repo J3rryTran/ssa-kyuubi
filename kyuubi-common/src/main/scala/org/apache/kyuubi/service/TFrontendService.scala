@@ -158,6 +158,16 @@ abstract class TFrontendService(name: String)
     authFactory.getIpAddress.orNull
   }
 
+  /**
+   * Allows a server frontend to replace client-supplied session settings after authentication and
+   * proxy-user resolution. The common Thrift layer deliberately keeps the default unchanged;
+   * server-specific policy belongs in the concrete frontend.
+   */
+  protected def resolveSessionConfiguration(
+      realUser: String,
+      sessionUser: String,
+      configuration: Map[String, String]): Map[String, String] = configuration
+
   private def getMinVersion(versions: TProtocolVersion*): TProtocolVersion = {
     versions.minBy(_.getValue)
   }
@@ -168,12 +178,13 @@ abstract class TFrontendService(name: String)
     res.setServerProtocolVersion(protocol)
     val (realUser, sessionUser) = getRealUserAndSessionUser(req)
     val ipAddress = getIpAddress
-    val configuration =
+    val clientConfiguration =
       Map(KYUUBI_CLIENT_IP_KEY -> ipAddress, KYUUBI_SERVER_IP_KEY -> serverAddr.getHostAddress) ++
         Option(req.getConfiguration).map(_.asScala.toMap).getOrElse(Map.empty[String, String]) ++
         Map(
           KYUUBI_SESSION_CONNECTION_URL_KEY -> connectionUrl,
           KYUUBI_SESSION_REAL_USER_KEY -> realUser)
+    val configuration = resolveSessionConfiguration(realUser, sessionUser, clientConfiguration)
     val sessionHandle = be.openSession(
       protocol,
       sessionUser,

@@ -33,8 +33,6 @@ import type {
   RuntimeSpec,
   EngineProfile,
   EngineProfileEngineStatus,
-  EngineProfileRevision,
-  EngineProfileRevisionTermination,
   PythonEnvironmentRevision
 } from './types'
 
@@ -355,6 +353,9 @@ export const getExecutionOutputs = (
 export const listEngineProfiles = () =>
   call<EngineProfile[]>({ url: 'api/v1/engine-profiles', method: 'get' })
 
+export const getDefaultEngineProfileConfig = () =>
+  call<Record<string, string>>({ url: 'api/v1/engine-profiles/default/config', method: 'get' })
+
 export const getEngineProfile = (profileId: string) =>
   call<EngineProfile>({ url: `api/v1/engine-profiles/${profileId}`, method: 'get' })
 
@@ -395,15 +396,6 @@ export const getEngineProfileEngineStatus = (profileId: string) =>
     method: 'get'
   })
 
-export const getEngineProfileRevisionEngineStatus = (
-  profileId: string,
-  revision: number
-) =>
-  call<EngineProfileEngineStatus>({
-    url: `api/v1/engine-profiles/${profileId}/revisions/${revision}/engine`,
-    method: 'get'
-  })
-
 export const startEngineProfile = (profileId: string) =>
   call<EngineProfileEngineStatus>({
     url: `api/v1/engine-profiles/${profileId}:start`,
@@ -416,21 +408,8 @@ export const stopEngineProfile = (profileId: string) =>
     method: 'post'
   })
 
-export const listEngineProfileRevisions = (profileId: string) =>
-  call<EngineProfileRevision[]>({
-    url: `api/v1/engine-profiles/${profileId}/revisions`,
-    method: 'get'
-  })
-
 export const listPythonEnvironments = (profileId: string) =>
   call<PythonEnvironmentRevision[]>({
     url: `api/v1/engine-profiles/${profileId}/python-environments`,
     method: 'get'
-  })
-
-export const terminateEngineProfileRevision = (profileId: string, revision: number) =>
-  call<EngineProfileRevisionTermination>({
-    url: `api/v1/engine-profiles/${profileId}/revisions/${revision}:terminate`,
-    method: 'post',
-    data: { confirm: true }
   })

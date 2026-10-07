@@ -67,6 +67,10 @@ spec:
               value: {{ .Values.kyuubiConfDir }}
             - name: SPARK_CONF_DIR
               value: {{ .Values.sparkConfDir }}
+            {{- if .Values.hadoopConf.coreSite }}
+            - name: HADOOP_CONF_DIR
+              value: {{ .Values.hadoopConfDir }}
+            {{- end }}
             {{- with .Values.env }}
               {{- tpl (toYaml .) $ | nindent 12 }}
             {{- end }}
@@ -112,6 +116,10 @@ spec:
               mountPath: {{ .Values.kyuubiConfDir }}
             - name: conf-spark
               mountPath: {{ .Values.sparkConfDir }}
+            {{- if .Values.hadoopConf.coreSite }}
+            - name: conf-hadoop
+              mountPath: {{ .Values.hadoopConfDir }}
+            {{- end }}
             {{- with .Values.volumeMounts }}
               {{- tpl (toYaml .) $ | nindent 12 }}
             {{- end }}
@@ -125,6 +133,11 @@ spec:
         - name: conf-spark
           configMap:
             name: {{ .Release.Name }}-spark
+        {{- if .Values.hadoopConf.coreSite }}
+        - name: conf-hadoop
+          configMap:
+            name: {{ .Release.Name }}-hadoop
+        {{- end }}
         {{- with .Values.volumes }}
           {{- tpl (toYaml .) $ | nindent 8 }}
         {{- end }}
