@@ -36,9 +36,7 @@ import org.apache.kyuubi.metrics.MetricsConstants.OPERATION_BATCH_PENDING_MAX_EL
 import org.apache.kyuubi.operation.OperationState
 import org.apache.kyuubi.server.api.v1.ApiRootResource
 import org.apache.kyuubi.server.http.authentication.{AuthenticationFilter, KyuubiHttpAuthenticationFactory}
-import org.apache.kyuubi.server.notebook.NotebookConf.NOTEBOOK_ENABLED
-import org.apache.kyuubi.server.notebook.NotebookManager
-import org.apache.kyuubi.server.notebook.routing.NotebookRoutingFilter
+
 import org.apache.kyuubi.server.ui.{JettyServer, JettyUtils}
 import org.apache.kyuubi.service.{AbstractFrontendService, Serverable, Service, ServiceUtils}
 import org.apache.kyuubi.service.authentication.{AuthTypes, AuthUtils}
@@ -70,12 +68,6 @@ class KyuubiRestFrontendService(override val serverable: Serverable)
       None
     }
 
-  private[kyuubi] lazy val notebookManager: Option[NotebookManager] =
-    if (conf.get(NOTEBOOK_ENABLED)) {
-      Some(new NotebookManager(() => be, () => connectionUrl))
-    } else {
-      None
-    }
 
   lazy val host: String = conf.get(FRONTEND_REST_BIND_HOST)
     .getOrElse {
@@ -113,7 +105,6 @@ class KyuubiRestFrontendService(override val serverable: Serverable)
       conf.get(FRONTEND_REST_JETTY_STOP_TIMEOUT),
       conf.get(FRONTEND_JETTY_SEND_VERSION_ENABLED))
     batchService.foreach(addService)
-    notebookManager.foreach(addService)
     super.initialize(conf)
   }
 
@@ -129,17 +120,6 @@ class KyuubiRestFrontendService(override val serverable: Serverable)
     val contextHandler = ApiRootResource.getServletHandler(this)
     val holder = new FilterHolder(new AuthenticationFilter(conf))
     contextHandler.addFilter(holder, "/v1/*", EnumSet.allOf(classOf[DispatcherType]))
-    // After authentication on purpose: forwarding carries the caller's identity onward, and that
-    // identity only exists once this instance has established it.
-    notebookManager.foreach { manager =>
-      val routing = new FilterHolder(new NotebookRoutingFilter(
-        conf,
-        () => connectionUrl,
-        manager.sessionIdOf,
-        manager.isSessionLocal,
-        () => manager.sessionRegistry))
-      contextHandler.addFilter(routing, "/v1/*", EnumSet.allOf(classOf[DispatcherType]))
-    }
     val authenticationFactory = new KyuubiHttpAuthenticationFactory(conf)
     server.addHandler(authenticationFactory.httpHandlerWrapperFactory.wrapHandler(
       contextHandler,

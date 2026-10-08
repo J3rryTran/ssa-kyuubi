@@ -31,8 +31,6 @@ import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.config.KyuubiConf.{AUTHENTICATION_METHOD, FRONTEND_PROXY_HTTP_CLIENT_IP_HEADER}
 import org.apache.kyuubi.server.http.authentication.oidc.{BearerSessionRequest, OidcAuthFailure, OidcBffService, OidcBffUtils}
 import org.apache.kyuubi.server.http.util.HttpAuthUtils.AUTHORIZATION_HEADER
-import org.apache.kyuubi.server.notebook.NotebookConf.NOTEBOOK_PROXY_INTERNAL_SECRET
-import org.apache.kyuubi.server.notebook.routing.{NotebookProxyHeaders, NotebookProxyIdentity}
 import org.apache.kyuubi.service.authentication.{AuthTypes, InternalSecurityAccessor}
 import org.apache.kyuubi.service.authentication.AuthenticationProviderFactory
 import org.apache.kyuubi.service.authentication.AuthTypes.{CUSTOM, KERBEROS, NOSASL, OIDC}
@@ -206,30 +204,6 @@ class AuthenticationFilter(conf: KyuubiConf) extends Filter with Logging {
     HTTP_CLIENT_IP_ADDRESS.set(incomingRequest.getRemoteAddr)
     HTTP_PROXY_HEADER_CLIENT_IP_ADDRESS.set(
       incomingRequest.getHeader(conf.get(FRONTEND_PROXY_HTTP_CLIENT_IP_HEADER)))
-
-    // A notebook request forwarded by a peer instance carries an identity that instance already
-    // authenticated. The far end cannot re-check a Web UI cookie it never issued, so the claim is
-    // honoured here - but only against the shared secret, so a client that merely copies the
-    // header names gains nothing and falls through to normal authentication below.
-    NotebookProxyIdentity.acceptedUser(
-      Option(incomingRequest.getHeader(NotebookProxyHeaders.PROXIED)),
-      Option(incomingRequest.getHeader(NotebookProxyHeaders.REAL_USER)),
-      Option(incomingRequest.getHeader(NotebookProxyHeaders.INTERNAL_TOKEN)),
-      conf.get(NOTEBOOK_PROXY_INTERNAL_SECRET)) match {
-      case Some(vouchedUser) =>
-        try {
-          HTTP_AUTH_TYPE.set("INTERNAL_NOTEBOOK_PROXY")
-          HTTP_CLIENT_USER_NAME.set(vouchedUser)
-          doFilter(filterChain, incomingRequest, httpResponse)
-        } finally {
-          HTTP_CLIENT_USER_NAME.remove()
-          HTTP_AUTH_TYPE.remove()
-          HTTP_CLIENT_IP_ADDRESS.remove()
-          HTTP_PROXY_HEADER_CLIENT_IP_ADDRESS.remove()
-        }
-        return
-      case None => // Not a vouched request; authenticate it in the usual way.
-    }
 
     // A Web UI session cookie stands in for a Bearer token from here on. Rejections are audited
     // here rather than in the `finally` below, which this path never reaches.

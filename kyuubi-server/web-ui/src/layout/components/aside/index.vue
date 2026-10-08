@@ -21,21 +21,6 @@
     <img v-if="!isCollapse" class="main-logo" src="@/assets/images/vtnexus-logo.svg" alt="VTNexus" />
     <img v-else class="collapsed-logo" src="@/assets/images/vtnexus-icon.svg" alt="VTNexus" />
   </header>
-  <div v-if="!isCollapse" class="new-btn-container">
-    <el-dropdown trigger="click" style="width: 100%" @command="handleNewCommand">
-      <el-button class="new-action-btn" round>
-        <el-icon><Plus /></el-icon>
-        <span style="margin-left: 6px; font-weight: 600">New</span>
-      </el-button>
-      <template #dropdown>
-        <el-dropdown-menu>
-          <el-dropdown-item command="notebook" icon="Notebook">New Notebook</el-dropdown-item>
-          <el-dropdown-item command="sql" icon="Cpu">New SQL Query</el-dropdown-item>
-          <el-dropdown-item command="folder" icon="FolderAdd">New Folder</el-dropdown-item>
-        </el-dropdown-menu>
-      </template>
-    </el-dropdown>
-  </div>
   <c-menu :is-collapse="isCollapse" :active-path="activePath" :menus="menus" />
 </template>
 
@@ -43,7 +28,7 @@
   import { ref, reactive, watch } from 'vue'
   import { useStore } from '@/pinia/layout'
   import { storeToRefs } from 'pinia'
-  import { useRoute, useRouter } from 'vue-router'
+  import { useRoute } from 'vue-router'
   import { MENUS } from './types'
   import cMenu from '@/components/menu/index.vue'
 
@@ -51,7 +36,6 @@
   const store = useStore()
   const { isCollapse } = storeToRefs(store)
   const route = useRoute()
-  const router = useRouter()
   const activePath = ref(route.path)
   const version = import.meta.env.VITE_APP_VERSION
 
@@ -61,14 +45,6 @@
       activePath.value = val
     }
   )
-
-  const handleNewCommand = (command: string) => {
-    if (command === 'sql') {
-      router.push('/editor')
-    } else {
-      router.push({ path: '/notebook', query: { action: command, t: Date.now() } })
-    }
-  }
 </script>
 
 <style lang="scss" scoped>
@@ -92,24 +68,6 @@
       width: 28px;
       height: 28px;
       margin: 0 auto;
-    }
-  }
-  .new-btn-container {
-    padding: 6px 14px 12px;
-    .new-action-btn {
-      width: 100%;
-      height: 36px;
-      font-size: 13px;
-      background: #ff3621;
-      border-color: #ff3621;
-      color: #ffffff;
-      box-shadow: 0 2px 6px rgba(255, 54, 33, 0.25);
-      transition: all 0.2s ease;
-      &:hover {
-        background: #e02f1d;
-        border-color: #e02f1d;
-        box-shadow: 0 4px 10px rgba(255, 54, 33, 0.35);
-      }
     }
   }
   .el-menu {

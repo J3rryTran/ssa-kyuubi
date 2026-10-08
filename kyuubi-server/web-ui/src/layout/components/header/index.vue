@@ -84,9 +84,6 @@
 
   const currentPageTitle = computed(() => {
     const path = route.path
-    if (path.includes('/workspace')) return 'Workspace'
-    if (path.includes('/notebook')) return 'Notebook'
-    if (path.includes('/editor')) return 'SQL Editor'
     if (path.includes('/management/engine')) return 'Compute / Engines'
     if (path.includes('/management/session')) return 'Sessions'
     if (path.includes('/management/server')) return 'Cluster Instances'
