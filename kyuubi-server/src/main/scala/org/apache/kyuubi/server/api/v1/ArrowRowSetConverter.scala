@@ -41,8 +41,7 @@ import org.apache.kyuubi.shaded.hive.service.rpc.thrift.{TColumnValue, TRowSet, 
  *
  * With `kyuubi.operation.result.format=arrow` a `TRowSet` is not rows at all: it carries a single
  * BINARY column whose values are serialized Arrow IPC record batches. Handing that straight to
- * Jackson - which is what the REST layer does for thrift results - sends the client binary noise,
- * so notebook cells come back empty.
+ * Jackson - which is what the REST layer does for thrift results - sends the client binary noise.
  *
  * No decoder is written here. The one in the JDBC driver
  * ([[org.apache.kyuubi.jdbc.hive.KyuubiArrowQueryResultSet]] and the `arrow` package next to it)

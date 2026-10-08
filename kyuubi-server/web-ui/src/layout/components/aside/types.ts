@@ -17,21 +17,6 @@
 
 export const MENUS = [
   {
-    label: 'Workspace',
-    icon: 'FolderOpened',
-    router: '/workspace'
-  },
-  {
-    label: 'Notebook',
-    icon: 'Notebook',
-    router: '/notebook'
-  },
-  {
-    label: 'SQL Editor',
-    icon: 'Cpu',
-    router: '/editor'
-  },
-  {
     label: 'Management',
     icon: 'Setting',
     router: '/management/engine',

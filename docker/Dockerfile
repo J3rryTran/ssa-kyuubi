@@ -63,10 +63,6 @@ RUN curl -fL -o ${KYUUBI_HOME}/jars/mysql-connector-j-8.3.0.jar \
       ${KYUUBI_HOME}/externals/engines/jdbc/mysql-connector-j-8.3.0.jar
 
 
-# Fail the image build if the packaged Web UI ever loses the notebook result-pane styles.
-RUN grep -Rqs --include='*.css' '\.cell-stream-output' ${KYUUBI_HOME}/web-ui/dist/assets && \
-    grep -Rqs --include='*.css' '\.cell-result-log' ${KYUUBI_HOME}/web-ui/dist/assets
-
 WORKDIR ${KYUUBI_HOME}
 RUN chown -R kyuubi:root ${KYUUBI_HOME} && \
     chmod ug+rw -R ${KYUUBI_HOME} && \
