@@ -6,13 +6,12 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 A fork of [apache/kyuubi](https://github.com/apache/kyuubi) at version **1.10.3**, carrying local customizations on top of upstream. Everything upstream still applies; the fork-specific work is:
 
-- `kyuubi-server/.../server/notebook/**` + `web-ui/src/views/notebook/**` — a SQL + PySpark notebook subsystem with its own REST API, persistence and Vue UI. This is the largest customization and the focus of the `notebook` branch.
 - `extensions/server/kyuubi-oidc-auth` — new module: server-side OIDC/JWT bearer-token authentication.
 - `kyuubi-server/.../http/authentication/oidc/**` — BFF OIDC for the Web UI (server-side code exchange, `KYUUBI_SESSION` cookie).
 - `kyuubi-hive-jdbc` `.../hive/auth/oidc/**` — client-side OIDC login (auth-code + PKCE, device flow, token cache).
 - `extensions/spark/kyuubi-spark-authz` — Ranger authz reworked to support a **StarRocks** Ranger service in addition to the Hive/Spark one.
 
-Design notes (mostly Vietnamese) that drove this work: `plans/ideal.md` for the StarRocks authz motivation, `notebook_plan.md` + `notebook_tasks.md` for the notebook, `fix_oidc.md` for the BFF. Read the relevant one before changing that area — they record constraints the code alone doesn't explain.
+Design notes (mostly Vietnamese) that drove this work: `plans/ideal.md` for the StarRocks authz motivation, `fix_oidc.md` for the BFF. Read the relevant one before changing that area — they record constraints the code alone doesn't explain.
 
 ## Build / test / lint
 
@@ -54,30 +53,13 @@ The root `pom.xml` is heavily profile-driven — a module list can change depend
 
 Layered by role, not by feature:
 
-- `kyuubi-server` — the Thrift/REST frontend, session and engine lifecycle management. Authentication providers and the notebook subsystem plug in here.
+- `kyuubi-server` — the Thrift/REST frontend, session and engine lifecycle management. Authentication providers plug in here.
 - `kyuubi-common` / `kyuubi-ha` / `kyuubi-events` / `kyuubi-metrics` — config (`KyuubiConf`), service traits, ZK-based discovery, event bus, metrics.
 - `externals/kyuubi-*-engine` — the actual query engines (Spark, Flink, Hive, Trino, JDBC, chat) launched as separate processes; they talk back to the server over Thrift.
 - `extensions/spark/*` — Spark-side plugins injected into the engine JVM (authz, lineage, connectors, SQL extensions). These run inside Spark, not inside Kyuubi.
 - `kyuubi-hive-jdbc` (+ `-shaded`) — the client driver.
 
-### Notebook subsystem (fork-specific)
-
-Lives entirely in `kyuubi-server/src/main/scala/org/apache/kyuubi/server/notebook`, split into four layers that should not be short-circuited:
-
-- **`NotebookManager`** — composition root and `AbstractService` lifecycle owner, held by `KyuubiRestFrontendService`. It constructs every store, service and adapter in `initialize`, runs the post-restart reconciliation and the idle-runtime reaper in `start`. REST resources reach services *only* through it.
-- **`service/`** — owns persistence, authorization and state transitions (documents, content, revisions, sessions, executions, schedules, permissions).
-- **`runtime/`** — `NotebookRuntimeAdapter` is the language-runtime boundary: an adapter owns only the conversation with its backend. `KyuubiSqlRuntimeAdapter` (which also implements `TabularNotebookRuntimeAdapter` for schema/results) and `PySparkRuntimeAdapter` are registered into `RuntimeAdapterRegistry`, which resolves a spec id or language to an adapter. **Adding a language means adding an adapter and registering it in `NotebookManager` — not touching the REST layer, which never knows which runtime it is talking to.**
-- **`store/`** — `NotebookStore` / `JDBCNotebookStore`. It deliberately reuses `kyuubi.metadata.store.jdbc.*` so a deployment has one database; DDL lives in `src/main/resources/sql/notebook/{mysql,postgresql,sqlite}/` with a file per concern (store / runtime) and must be kept in sync across all three dialects.
-
-REST resources are `NotebookFoldersResource`, `NotebooksResource`, `NotebookCollectionResources`, `NotebookRuntimeResources` under `api/v1`, registered as sub-resource locators in `ApiRootResource`. They mix in `NotebookApiSupport`, which derives the caller from the authenticated security context only — `principal` can never come from a body or query parameter, which is what keeps `owner` unforgeable. `NotebookException` is rendered by `NotebookExceptionMapper` into the documented error envelope; throw a `NotebookException` with a `NotebookErrorCode` rather than a bare JAX-RS response.
-
-Config entries are registered normally in `NotebookConf` (`kyuubi.notebook.*`) — unlike the OIDC code below.
-
-**Python environments.** `PythonEnvironmentBuilder` creates per-user venvs with `--system-site-packages`, so packages baked into the image (`docker/requirements.txt`, installed into the system interpreter) are visible without a download and each user revision only stores the difference. A user *cannot* uninstall an image-provided package — the server refuses rather than pretending. Requests carry requirement names only, never pip options; the index URL, allow/denylist and constraints file are server-side config. `docker/python-packages/` builds a separate packages image that a deployment can overlay onto `/usr/local`.
-
-**Arrow results.** With `kyuubi.operation.result.format=arrow` a `TRowSet` carries serialized Arrow IPC batches in a single BINARY column, not rows. `ArrowRowSetConverter` decodes it by driving the JDBC driver's existing decoder rather than reimplementing one; without it notebook cells come back empty or full of binary noise.
-
-Tests: `NotebookTestBase` wires the real services over a throwaway SQLite database, so suites exercise the actual SQL rather than a stub store. Run them with `-DwildcardSuites=org.apache.kyuubi.server.notebook.<Suite>`.
+**Arrow results.** With `kyuubi.operation.result.format=arrow` a `TRowSet` carries serialized Arrow IPC batches in a single BINARY column, not rows. `ArrowRowSetConverter` (`api/v1`) decodes it by driving the JDBC driver's existing decoder rather than reimplementing one; without it a REST client gets binary noise instead of rows.
 
 ### OIDC authentication (fork-specific)
 

@@ -1741,7 +1741,6 @@
                             <excludes>
                                 <exclude>docs/*/lib/python*/**/*.md</exclude>
                                 <exclude>docs/plans/**/*.md</exclude>
-                                <exclude>docs/notebook/**/*.md</exclude>
                                 <exclude>docs/security/**/*.md</exclude>
                             </excludes>
                             <flexmark>
