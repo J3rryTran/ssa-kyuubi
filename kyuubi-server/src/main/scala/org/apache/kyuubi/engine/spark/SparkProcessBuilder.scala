@@ -141,7 +141,8 @@ class SparkProcessBuilder(
       allConf = allConf ++ zkAuthKeytabFileConf(allConf)
     }
     // pass spark engine log path to spark conf
-    (allConf ++ engineLogPathConf ++ extraYarnConf(allConf) ++ appendPodNameConf(allConf)).foreach {
+    (allConf ++ engineLogPathConf ++ extraYarnConf(allConf) ++ appendPodNameConf(allConf) ++
+      appendK8sLeastPrivilegeConf(allConf)).foreach {
       case (k, v) => buffer ++= confKeyValue(convertConfigKey(k), v)
     }
 
@@ -266,6 +267,49 @@ class SparkProcessBuilder(
     map.result().toMap
   }
 
+  /**
+   * Keep the Kubernetes API calls that spark-submit and the Spark driver make inside the
+   * least-privilege Role granted to the Kyuubi service account:
+   *   - run in the namespace the Kyuubi pod itself lives in, which is the only namespace a
+   *     namespaced Role can grant;
+   *   - let the driver pod reuse the Kyuubi service account instead of silently falling back
+   *     to `default`, which carries no permission at all;
+   *   - stay off the API verbs the Role does not grant - `patch` on pods (used when executors
+   *     are kept after termination) and the whole `persistentvolumeclaims` resource.
+   * Every value is only a default: an explicit user setting always wins.
+   */
+  def appendK8sLeastPrivilegeConf(conf: Map[String, String]): Map[String, String] = {
+    val map = mutable.Map.newBuilder[String, String]
+    // an explicit setting always wins, whether it comes from the session or spark-defaults.conf
+    def unset(key: String): Boolean = !conf.contains(key) && !defaultsConf.contains(key)
+    if (clusterManager().exists(_.toLowerCase(Locale.ROOT).startsWith("k8s"))) {
+      if (unset(KUBERNETES_NAMESPACE_KEY)) {
+        KubernetesUtils.inClusterNamespace.foreach { ns =>
+          map += (KUBERNETES_NAMESPACE_KEY -> ns)
+        }
+      }
+      if (deployMode().exists(_.toLowerCase(Locale.ROOT) == "cluster") &&
+        unset(KUBERNETES_DRIVER_SERVICE_ACCOUNT_NAME)) {
+        KubernetesUtils.inClusterServiceAccountName.foreach { sa =>
+          map += (KUBERNETES_DRIVER_SERVICE_ACCOUNT_NAME -> sa)
+        }
+      }
+      // `false` makes the driver label terminated executor pods instead of deleting them,
+      // which is a PATCH on pods.
+      if (unset(KUBERNETES_EXECUTOR_DELETE_ON_TERMINATION)) {
+        map += (KUBERNETES_EXECUTOR_DELETE_ON_TERMINATION -> "true")
+      }
+      // Both of these make the driver list/create/delete PersistentVolumeClaims.
+      if (unset(KUBERNETES_DRIVER_OWN_PVC)) {
+        map += (KUBERNETES_DRIVER_OWN_PVC -> "false")
+      }
+      if (unset(KUBERNETES_DRIVER_REUSE_PVC)) {
+        map += (KUBERNETES_DRIVER_REUSE_PVC -> "false")
+      }
+    }
+    map.result().toMap
+  }
+
   def extraYarnConf(conf: Map[String, String]): Map[String, String] = {
     val map = mutable.Map.newBuilder[String, String]
     if (clusterManager().exists(_.toLowerCase(Locale.ROOT).startsWith("yarn"))) {
@@ -328,6 +372,12 @@ object SparkProcessBuilder {
   final val KUBERNETES_NAMESPACE_KEY = "spark.kubernetes.namespace"
   final val KUBERNETES_DRIVER_POD_NAME = "spark.kubernetes.driver.pod.name"
   final val KUBERNETES_EXECUTOR_POD_NAME_PREFIX = "spark.kubernetes.executor.podNamePrefix"
+  final val KUBERNETES_DRIVER_SERVICE_ACCOUNT_NAME =
+    "spark.kubernetes.authenticate.driver.serviceAccountName"
+  final val KUBERNETES_EXECUTOR_DELETE_ON_TERMINATION =
+    "spark.kubernetes.executor.deleteOnTermination"
+  final val KUBERNETES_DRIVER_OWN_PVC = "spark.kubernetes.driver.ownPersistentVolumeClaim"
+  final val KUBERNETES_DRIVER_REUSE_PVC = "spark.kubernetes.driver.reusePersistentVolumeClaim"
   final val YARN_MAX_APP_ATTEMPTS_KEY = "spark.yarn.maxAppAttempts"
   final val INTERNAL_RESOURCE = "spark-internal"
 

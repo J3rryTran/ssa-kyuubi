@@ -18,7 +18,9 @@
 package org.apache.kyuubi.util
 
 import java.io.File
-import java.util.Locale
+import java.util.{Base64, Locale}
+
+import scala.util.control.NonFatal
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.common.base.Charsets
@@ -38,9 +40,64 @@ object KubernetesUtils extends Logging {
   final val EXECUTOR_POD_NAME_PREFIX_MAX_LENGTH = 237
   final val DRIVER_POD_NAME_MAX_LENGTH = 253
 
+  // The downward API that kubelet projects into every pod that mounts a service account.
+  final val SERVICE_ACCOUNT_NAMESPACE_PATH =
+    "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+  /**
+   * The namespace the current JVM is running in, read from the projected service account
+   * volume. Returns None when Kyuubi is not running inside a Kubernetes pod.
+   */
+  lazy val inClusterNamespace: Option[String] = {
+    try {
+      Some(new File(SERVICE_ACCOUNT_NAMESPACE_PATH))
+        .filter(_.exists)
+        .map(f => Files.asCharSource(f, Charsets.UTF_8).read().trim)
+        .filter(_.nonEmpty)
+    } catch {
+      case NonFatal(e) =>
+        warn("Failed to detect the in-cluster Kubernetes namespace.", e)
+        None
+    }
+  }
+
+  /**
+   * The service account name the current JVM is running as, decoded from the `sub` claim
+   * (`system:serviceaccount:<namespace>:<name>`) of the projected service account token.
+   * The token is only parsed, never validated - we are reading our own identity, not
+   * authenticating anyone.
+   */
+  lazy val inClusterServiceAccountName: Option[String] = {
+    try {
+      Some(new File(Config.KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH))
+        .filter(_.exists)
+        .map(f => Files.asCharSource(f, Charsets.UTF_8).read().trim)
+        .map(_.split('.'))
+        .filter(_.length >= 2)
+        .map(parts => new String(Base64.getUrlDecoder.decode(parts(1)), Charsets.UTF_8))
+        .map(payload => new ObjectMapper().readTree(payload).path("sub").asText(""))
+        .collect {
+          case sub if sub.startsWith("system:serviceaccount:") =>
+            sub.split(':').last
+        }
+        .filter(_.nonEmpty)
+    } catch {
+      case NonFatal(e) =>
+        warn("Failed to detect the in-cluster Kubernetes service account name.", e)
+        None
+    }
+  }
+
   def buildKubernetesClient(conf: KyuubiConf): Option[KubernetesClient] = {
     val master = conf.get(KUBERNETES_MASTER)
-    val namespace = conf.get(KUBERNETES_NAMESPACE)
+    // When the namespace is left at its default, prefer the namespace this pod actually runs
+    // in. A namespaced Role only grants access to its own namespace, so watching "default"
+    // from a pod deployed elsewhere fails with 403 and no engine is ever discovered.
+    val namespace = conf.getOption(KUBERNETES_NAMESPACE.key) match {
+      case Some(explicitNamespace) => explicitNamespace
+      case None =>
+        inClusterNamespace.getOrElse(conf.get(KUBERNETES_NAMESPACE))
+    }
     val serviceAccountToken =
       Some(new File(Config.KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH)).filter(_.exists)
     val serviceAccountCaCrt =
