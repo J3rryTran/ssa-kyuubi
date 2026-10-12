@@ -187,12 +187,6 @@ SPARK_VERSION=$("$MVN" help:evaluate -Dexpression=spark.version $@ 2>/dev/null\
     | tail -n 1)
 
 # shellcheck disable=SC2068
-HADOOP_VERSION=$("$MVN" help:evaluate -Dexpression=hadoop.version $@ 2>/dev/null\
-    | grep -v "INFO"\
-    | grep -v "WARNING"\
-    | tail -n 1)
-
-# shellcheck disable=SC2068
 HIVE_VERSION=$("$MVN" help:evaluate -Dexpression=hive.version $@ 2>/dev/null\
     | grep -v "INFO"\
     | grep -v "WARNING"\
@@ -293,7 +287,7 @@ echo "Java $JAVA_VERSION" >> "$DISTDIR/RELEASE"
 echo "Scala $SCALA_VERSION" >> "$DISTDIR/RELEASE"
 echo "Flink $FLINK_VERSION" >> "$DISTDIR/RELEASE"
 echo "Spark $SPARK_VERSION" >> "$DISTDIR/RELEASE"
-echo "Kyuubi Hadoop $HADOOP_VERSION" >> "$DISTDIR/RELEASE"
+echo "Hadoop $HADOOP_VERSION" >> "$DISTDIR/RELEASE"
 echo "Hive $HIVE_VERSION" >> "$DISTDIR/RELEASE"
 # shellcheck disable=SC2145
 echo "Build flags: $@" >> "$DISTDIR/RELEASE"
@@ -320,7 +314,7 @@ cp "$KYUUBI_HOME/externals/kyuubi-flink-sql-engine/target/kyuubi-flink-sql-engin
 
 # Copy spark engines
 # shellcheck disable=SC2045
-for scala_version in 2.12 2.13; do
+for scala_version in 2.12; do
   cp "$KYUUBI_HOME/externals/kyuubi-spark-sql-engine/target/kyuubi-spark-sql-engine_${scala_version}-${VERSION}.jar" "$DISTDIR/externals/engines/spark/"
 done
 
@@ -395,11 +389,16 @@ if [[ "$HIVE_PROVIDED" != "true" ]]; then
   cp -r "$HIVE_BUILTIN" "$DISTDIR/externals/"
 fi
 
-# Copy license files
-if [[ -f $"$KYUUBI_HOME/LICENSE-binary" ]]; then
+if [[ -f "$KYUUBI_HOME/LICENSE-binary" ]]; then
   cp "$KYUUBI_HOME/LICENSE-binary" "$DISTDIR/LICENSE"
   cp -r "$KYUUBI_HOME/licenses-binary" "$DISTDIR/licenses"
   cp "$KYUUBI_HOME/NOTICE-binary" "$DISTDIR/NOTICE"
+else
+  cp "$KYUUBI_HOME/LICENSE" "$DISTDIR/LICENSE"
+  cp "$KYUUBI_HOME/NOTICE" "$DISTDIR/NOTICE"
+  if [[ -d "$KYUUBI_HOME/licenses" ]]; then
+    cp -r "$KYUUBI_HOME/licenses" "$DISTDIR/licenses"
+  fi
 fi
 
 cp -r "$KYUUBI_HOME/bin" "$DISTDIR"

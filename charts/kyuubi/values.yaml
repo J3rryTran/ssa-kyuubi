@@ -74,7 +74,16 @@ rbac:
   rules:
     - apiGroups: [""]
       resources: ["pods"]
-      verbs: ["create", "list", "delete"]
+      verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+    - apiGroups: [""]
+      resources: ["services"]
+      verbs: ["get", "list", "watch", "create", "patch", "delete"]
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      verbs: ["get", "create", "patch", "delete"]
+    - apiGroups: [""]
+      resources: ["secrets"]
+      verbs: ["get", "create", "patch", "delete"]
 
 server:
   # Thrift Binary protocol (HiveServer2 compatible)
