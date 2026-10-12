@@ -203,8 +203,6 @@ private[v1] class ApiRootResource extends ApiRequestContext {
   @Path("admin")
   def admin: Class[AdminResource] = classOf[AdminResource]
 
-
-
   @GET
   @Path("exception")
   @Produces(Array(MediaType.TEXT_PLAIN))
