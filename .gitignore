@@ -28,10 +28,10 @@ build/release/*.txt
 build/scala*
 build/test
 target/
-dist/
+/dist/
 apache-kyuubi-*-bin*
 *.gz
-logs/
+/logs/
 pid/
 local/
 out/
@@ -42,7 +42,12 @@ derby.log
 rest-audit.log
 **/.flattened-pom.xml
 **/dependency-reduced-pom.xml
-metrics/
+# Anchored to the repo root on purpose: "dist", "logs" and "metrics" name runtime output
+# directories at KYUUBI_HOME, but they are also real source packages
+# (org.apache.kyuubi.jdbc.hive.logs, org.apache.kyuubi.metrics,
+# kyuubi-server/src/main/resources/dist). Unanchored, those rules silently drop every file
+# under them.
+/metrics/
 /kyuubi-ha/embedded_zookeeper/
 embedded_zookeeper/
 /externals/kyuubi-spark-sql-engine/operation_logs/
