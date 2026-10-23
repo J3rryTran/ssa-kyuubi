@@ -32,7 +32,7 @@ import org.apache.kyuubi.KYUUBI_VERSION
 import org.apache.kyuubi.client.api.v1.dto._
 import org.apache.kyuubi.config.KyuubiConf._
 import org.apache.kyuubi.server.KyuubiRestFrontendService
-import org.apache.kyuubi.server.api.{ApiRequestContext, EngineUIProxyServlet, FrontendServiceContext, OpenAPIConfig}
+import org.apache.kyuubi.server.api.{ApiRequestContext, FrontendServiceContext, OpenAPIConfig}
 import org.apache.kyuubi.server.api.v1.ApiRootResource.{JWT_ISSUER, OIDC_UI_CLIENT_ID, OIDC_UI_SCOPE}
 import org.apache.kyuubi.server.http.authentication.oidc.{OidcBffConf, OidcBffService, OidcBffUtils, OidcSession}
 import org.apache.kyuubi.server.http.authentication.oidc.OidcBffConf.FLOW_PUBLIC
@@ -66,9 +66,17 @@ private[v1] class ApiRootResource extends ApiRequestContext {
     val conf = fe.getConf
     val authTypes = conf.get(AUTHENTICATION_METHOD)
     val oidcEnabled = authTypes.exists(_.equalsIgnoreCase(AuthTypes.OIDC.toString))
+    val thriftHost = conf.get(FRONTEND_ADVERTISED_HOST)
+      .orElse(conf.get(FRONTEND_THRIFT_BINARY_BIND_HOST))
+      .getOrElse(fe.host)
+    val thriftPort = conf.get(FRONTEND_THRIFT_BINARY_BIND_PORT)
+    val thrift = Map[String, Any](
+      "host" -> thriftHost,
+      "port" -> thriftPort)
     val base = Map[String, Any](
       "authType" -> authTypes.headOption.getOrElse("NONE"),
-      "oidcEnabled" -> oidcEnabled)
+      "oidcEnabled" -> oidcEnabled,
+      "thrift" -> thrift)
     if (!oidcEnabled) {
       base
     } else {
@@ -154,7 +162,7 @@ private[v1] class ApiRootResource extends ApiRequestContext {
         problem(Response.Status.FORBIDDEN, "Cross-origin logout rejected")
       } else {
         val session = service.sessionIdFrom(httpRequest).flatMap(service.invalidate)
-        val postLogoutRedirect = s"${OidcBffUtils.requestOrigin(httpRequest)}/ui"
+        val postLogoutRedirect = service.postLogoutRedirect(httpRequest)
         val entity = Map[String, Any](
           "endSessionUrl" -> service.endSessionUrl(session, postLogoutRedirect).orNull)
         noStore(
@@ -228,33 +236,5 @@ private[server] object ApiRootResource {
     FrontendServiceContext.set(handler, fe)
     handler.addServlet(holder, "/*")
     handler
-  }
-
-  def getEngineUIProxyHandler(fe: KyuubiRestFrontendService): ServletContextHandler = {
-    val proxyServlet = new EngineUIProxyServlet()
-    val holder = new ServletHolder(proxyServlet)
-    val conf = fe.getConf
-    holder.setInitParameter(
-      "idleTimeout",
-      conf.get(FRONTEND_REST_PROXY_JETTY_CLIENT_IDLE_TIMEOUT).toString)
-    holder.setInitParameter(
-      "maxConnections",
-      conf.get(FRONTEND_REST_PROXY_JETTY_CLIENT_MAX_CONNECTIONS).toString)
-    holder.setInitParameter(
-      "maxThreads",
-      conf.get(FRONTEND_REST_PROXY_JETTY_CLIENT_MAX_THREADS).toString)
-    holder.setInitParameter(
-      "requestBufferSize",
-      conf.get(FRONTEND_REST_PROXY_JETTY_CLIENT_REQUEST_BUFFER_SIZE).toString)
-    holder.setInitParameter(
-      "responseBufferSize",
-      conf.get(FRONTEND_REST_PROXY_JETTY_CLIENT_RESPONSE_BUFFER_SIZE).toString)
-    holder.setInitParameter(
-      "timeout",
-      conf.get(FRONTEND_REST_PROXY_JETTY_CLIENT_TIMEOUT).toString)
-    val proxyHandler = new ServletContextHandler(ServletContextHandler.NO_SESSIONS)
-    proxyHandler.setContextPath("/engine-ui")
-    proxyHandler.addServlet(holder, "/*")
-    proxyHandler
   }
 }

@@ -34,12 +34,35 @@ import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.proc.{ConfigurableJWTProcessor, DefaultJWTProcessor}
 
 import org.apache.kyuubi.Logging
-import org.apache.kyuubi.auth.oidc.JwtTokenAuthenticationProvider._
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.service.authentication.{TokenAuthenticationProvider, TokenCredential}
 
+/**
+ * A server-side [[TokenAuthenticationProvider]] that validates OAuth2 / OIDC access-token JWTs
+ * (e.g. issued by Keycloak) against the provider's published JWKS.
+ *
+ * It is provider-independent and wired via `kyuubi.authentication.custom.bearer.class`. Validation
+ * covers signature (allow-listed algorithms only, `alg=none` rejected), `iss`, `aud`, `exp`,
+ * `nbf`, `iat`, and (when configured) the JOSE `typ` header to reject OIDC ID tokens.
+ * On success, the configured username claim (default `preferred_username`) is the session user.
+ *
+ * Configuration keys (read raw from [[KyuubiConf]], so Kyuubi core is untouched):
+ *  - `kyuubi.authentication.jwt.issuer` (required) the OIDC issuer
+ *  - `kyuubi.authentication.jwt.audience` (required) accepted audience(s), comma-separated
+ *  - `kyuubi.authentication.jwt.jwks.url` (optional) JWKS URL; else discovered from the issuer
+ *  - `kyuubi.authentication.jwt.username.claim` (default `preferred_username`)
+ *  - `kyuubi.authentication.jwt.allowed.algorithms` (default `RS256`, comma-separated)
+ *  - `kyuubi.authentication.jwt.expected.typ` (optional) required JOSE `typ`; rejects ID tokens
+ *  - `kyuubi.authentication.jwt.clock.skew.seconds` (default `30`)
+ *  - `kyuubi.authentication.jwt.connect.timeout.ms` (default `5000`)
+ *  - `kyuubi.authentication.jwt.read.timeout.ms` (default `5000`)
+ *
+ * The audience is always taken from config (typically the client id), never the realm name.
+ */
 class JwtTokenAuthenticationProvider(conf: KyuubiConf)
   extends TokenAuthenticationProvider with Logging {
+
+  import JwtTokenAuthenticationProvider._
 
   private val issuer: String = required(conf, ISSUER)
   private val audiences: Set[String] = {
@@ -84,9 +107,11 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
         case e: ParseException =>
           throw new AuthenticationException("Malformed JWT: " + e.getMessage)
         case e: Exception =>
+          // BadJOSEException (bad signature / claims), JOSEException (crypto), etc.
           throw new AuthenticationException("JWT validation failed: " + e.getMessage)
       }
 
+    // Manual issued-at sanity: reject tokens issued in the future (beyond the allowed skew).
     val iat: Date = claims.getIssueTime
     if (iat != null && iat.getTime > System.currentTimeMillis() + clockSkewSeconds * 1000L) {
       throw new AuthenticationException("JWT 'iat' is in the future")

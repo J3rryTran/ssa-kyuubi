@@ -116,7 +116,7 @@ class OidcBffService(
         PendingLogin(
           codeVerifier = verifier,
           nonce = nonce,
-          redirectPath = OidcBffUtils.sanitizeRedirectPath(rawRedirect),
+          redirectPath = OidcBffUtils.sanitizeRedirectPath(rawRedirect, bffConf.postLoginRedirect),
           redirectUri = redirectUri,
           createdAt = System.currentTimeMillis()))
       val query = OidcBffUtils.formEncode(Seq(
@@ -284,6 +284,16 @@ class OidcBffService(
         session.flatMap(_.idToken).map("id_token_hint" -> _)
       val separator = if (endpoint.contains("?")) "&" else "?"
       s"$endpoint$separator${OidcBffUtils.formEncode(params)}"
+    }
+  }
+
+  def postLogoutRedirect(request: HttpServletRequest): String = {
+    val origin = OidcBffUtils.requestOrigin(request)
+    bffConf.postLogoutRedirect match {
+      case Some(url) if url.startsWith("http://") || url.startsWith("https://") => url
+      case Some(path) if path.startsWith("/") => s"$origin$path"
+      case Some(other) => other
+      case None => s"$origin${OidcBffConf.DEFAULT_POST_LOGOUT_REDIRECT}"
     }
   }
 

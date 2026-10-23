@@ -23,28 +23,36 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Base64;
 
+/** PKCE (RFC 7636) helpers plus random {@code state}/{@code nonce} generation. */
 public final class PkceUtil {
 
   private static final SecureRandom RANDOM = new SecureRandom();
   private static final Base64.Encoder URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
 
   private PkceUtil() {}
+
+  /**
+   * A high-entropy {@code code_verifier} (RFC 7636 §4.1): 32 random bytes, base64url, no padding.
+   */
   public static String generateCodeVerifier() {
     byte[] bytes = new byte[32];
     RANDOM.nextBytes(bytes);
     return URL_ENCODER.encodeToString(bytes);
   }
 
+  /** The S256 {@code code_challenge} = base64url(SHA-256(code_verifier)) (RFC 7636 §4.2). */
   public static String s256Challenge(String codeVerifier) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
       byte[] hash = digest.digest(codeVerifier.getBytes(StandardCharsets.US_ASCII));
       return URL_ENCODER.encodeToString(hash);
     } catch (NoSuchAlgorithmException e) {
+      // SHA-256 is guaranteed present on every JVM.
       throw new IllegalStateException("SHA-256 not available", e);
     }
   }
 
+  /** A random URL-safe opaque value, used for both {@code state} (CSRF) and {@code nonce}. */
   public static String generateRandomUrlSafe() {
     byte[] bytes = new byte[24];
     RANDOM.nextBytes(bytes);

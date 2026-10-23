@@ -22,7 +22,12 @@ import org.apache.kyuubi.KyuubiFunSuite
 class OidcSessionStoreSuite extends KyuubiFunSuite {
 
   private def pendingLogin(state: String) =
-    PendingLogin(s"verifier-$state", s"nonce-$state", "/ui/overview", "http://host/cb", 0L)
+    PendingLogin(
+      s"verifier-$state",
+      s"nonce-$state",
+      "/api/v1/authentication/config",
+      "http://host/cb",
+      0L)
 
   test("entries round-trip and can be removed") {
     val store = new InMemoryOidcSessionStore[PendingLogin](60000, "test")

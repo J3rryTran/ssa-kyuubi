@@ -17,6 +17,7 @@
 
 package org.apache.kyuubi.jdbc.hive.auth.oidc;
 
+/** Immutable holder for the tokens returned from an OAuth2 token endpoint. */
 public class OidcTokens {
 
   private final String accessToken;
@@ -32,6 +33,10 @@ public class OidcTokens {
     this.expiresAtEpochMs = expiresAtEpochMs;
   }
 
+  /**
+   * @param expiresInSeconds the {@code expires_in} value from the token response; may be {@code <=
+   *     0} if the provider omitted it, in which case the token is treated as already near expiry.
+   */
   public static OidcTokens of(
       String accessToken,
       String refreshToken,
@@ -58,6 +63,10 @@ public class OidcTokens {
     return refreshToken != null && !refreshToken.isEmpty();
   }
 
+  /**
+   * @return true when the access token is expired or within {@code skewMs} of expiry, and should be
+   *     refreshed before use.
+   */
   public boolean isExpiredOrNearExpiry(long nowEpochMs, long skewMs) {
     return nowEpochMs >= (expiresAtEpochMs - skewMs);
   }

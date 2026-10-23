@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.util.HashMap;
 import java.util.Map;
 
+/** Wraps the OAuth2 token endpoint: code exchange, refresh, and device-code polling. */
 public class TokenEndpointClient {
 
   private final OidcProviderMetadata metadata;
@@ -34,6 +35,7 @@ public class TokenEndpointClient {
     this.http = http;
   }
 
+  /** Exchange an authorization code (with PKCE verifier) for tokens. */
   public OidcTokens exchangeAuthorizationCode(
       String code, String codeVerifier, String redirectUri) {
     Map<String, String> form = baseForm();
@@ -46,6 +48,7 @@ public class TokenEndpointClient {
     return parseTokens(r.body);
   }
 
+  /** Redeem a refresh token for a fresh access token. */
   public OidcTokens refresh(String refreshToken) {
     Map<String, String> form = baseForm();
     form.put("grant_type", "refresh_token");
@@ -58,6 +61,7 @@ public class TokenEndpointClient {
     return parseTokens(r.body);
   }
 
+  /** Raw device-code token poll; returns the response so the caller can inspect {@code error}. */
   public HttpJsonClient.Response pollDeviceToken(String deviceCode) {
     Map<String, String> form = baseForm();
     form.put("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
@@ -68,6 +72,7 @@ public class TokenEndpointClient {
   private Map<String, String> baseForm() {
     Map<String, String> form = new HashMap<>();
     form.put("client_id", config.clientId());
+    // Public clients send client_id in the body; confidential clients use HTTP Basic (see post()).
     return form;
   }
 

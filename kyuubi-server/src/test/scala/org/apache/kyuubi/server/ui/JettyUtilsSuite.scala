@@ -22,8 +22,8 @@ import org.apache.kyuubi.{KyuubiException, KyuubiFunSuite}
 class JettyUtilsSuite extends KyuubiFunSuite {
 
   test("create static resource handler") {
-    val contextPath = "/dist"
-    val handler = JettyUtils.createStaticHandler("dist", contextPath)
+    val contextPath = "/static"
+    val handler = JettyUtils.createStaticHandler("sql", contextPath)
     assert(handler.getContextPath === contextPath)
     val e = intercept[KyuubiException](JettyUtils
       .createStaticHandler("nonexists", contextPath))

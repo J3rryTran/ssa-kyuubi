@@ -469,6 +469,11 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
       requestInterceptor = null;
     } else if (isPlainSaslAuthMode()) {
       if (isOidcAuthMode()) {
+        /*
+         * OIDC: acquire an OAuth2 access token interactively (Authorization Code + PKCE, or Device
+         * flow), then transmit it via the existing Bearer interceptor. The authenticator is supplied
+         * per request so the token is transparently refreshed on long-running connections.
+         */
         OidcAuthenticator authenticator = getOrCreateOidcAuthenticator();
         try {
           authenticator.acquireInitialToken();
@@ -1037,7 +1042,11 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
         || sessConfMap.containsKey(JdbcConnectionParams.AUTH_TYPE_JWT_KEY);
   }
 
- 
+  /**
+   * OIDC mode acquires a JWT access token interactively rather than expecting a pre-supplied one.
+   * Triggered by {@code auth=oidc}, by {@code oidc=true} layered on {@code auth=jwt}, or by the
+   * mere presence of an {@code oidcIssuer}/{@code oidcDiscoveryUri} parameter.
+   */
   private boolean isOidcAuthMode() {
     return OidcParams.AUTH_TYPE_OIDC.equalsIgnoreCase(sessConfMap.get(AUTH_TYPE))
         || "true".equalsIgnoreCase(sessConfMap.get(OidcParams.OIDC_ENABLED))

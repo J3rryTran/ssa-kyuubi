@@ -77,11 +77,18 @@ class OidcBffServiceSuite extends KyuubiFunSuite {
   private def service(
       client: TokenEndpointClient,
       kyuubiConf: KyuubiConf = conf()): (OidcBffService, OidcSessionStore[OidcSession]) = {
-    // An empty discovery map guarantees nothing reaches out to the network.
+    val (svc, sessions, _) = serviceWithPending(client, kyuubiConf)
+    (svc, sessions)
+  }
+
+  private def serviceWithPending(
+      client: TokenEndpointClient,
+      kyuubiConf: KyuubiConf = conf())
+      : (OidcBffService, OidcSessionStore[OidcSession], OidcSessionStore[PendingLogin]) = {
     val bffConf = new OidcBffConf(kyuubiConf, _ => Map.empty)
     val sessions = new InMemoryOidcSessionStore[OidcSession](60000, "test-sessions", 600000)
     val pending = new InMemoryOidcSessionStore[PendingLogin](60000, "test-pending", 600000)
-    (new OidcBffService(kyuubiConf, bffConf, client, sessions, pending), sessions)
+    (new OidcBffService(kyuubiConf, bffConf, client, sessions, pending), sessions, pending)
   }
 
   private def request(): HttpServletRequest = {
@@ -147,7 +154,7 @@ class OidcBffServiceSuite extends KyuubiFunSuite {
   test("the authorization redirect carries pkce and a one-time state") {
     val (svc, _) = service(new FakeTokenEndpointClient(Seq(
       Left(new OidcTokenException("invalid_grant", "nope")))))
-    val url = rightOf(svc.buildAuthorizationRedirect(request(), "/ui/session"))
+    val url = rightOf(svc.buildAuthorizationRedirect(request(), "/api/v1/sessions"))
 
     assert(url.startsWith("https://provider.example.com/auth?"))
     assert(url.contains("response_type=code"))
@@ -276,11 +283,14 @@ class OidcBffServiceSuite extends KyuubiFunSuite {
     val (svc, sessions) = service(new FakeTokenEndpointClient(Seq.empty))
     sessions.put("sid", session(expiresInMs = 300000))
 
-    val url = svc.endSessionUrl(svc.sessionFor("sid"), "http://kyuubi.example.com:32379/ui").get
+    val redirect = "http://kyuubi.example.com:32379/api/v1/authentication/config"
+    val url = svc.endSessionUrl(svc.sessionFor("sid"), redirect).get
     assert(url.startsWith("https://provider.example.com/logout?"))
     assert(url.contains("id_token_hint=it1"))
     assert(url.contains("client_id=kyuubi"))
-    assert(url.contains("post_logout_redirect_uri=http%3A%2F%2Fkyuubi.example.com%3A32379%2Fui"))
+    val expectedRedirect =
+      "http%3A%2F%2Fkyuubi.example.com%3A32379%2Fapi%2Fv1%2Fauthentication%2Fconfig"
+    assert(url.contains(s"post_logout_redirect_uri=$expectedRedirect"))
 
     // Signing out drops the session, so the cookie that survives it is worthless.
     assert(svc.invalidate("sid").isDefined)
@@ -291,6 +301,40 @@ class OidcBffServiceSuite extends KyuubiFunSuite {
     val (svc, _) = service(
       new FakeTokenEndpointClient(Seq.empty),
       conf().unset(OIDC_END_SESSION_ENDPOINT))
-    assert(svc.endSessionUrl(None, "http://kyuubi.example.com:32379/ui").isEmpty)
+    assert(svc.endSessionUrl(
+      None,
+      "http://kyuubi.example.com:32379/api/v1/authentication/config").isEmpty)
+  }
+
+  test("post login redirect defaults to /api/v1/authentication/config or honors configuration") {
+    val (defaultSvc, _, defaultPending) =
+      serviceWithPending(new FakeTokenEndpointClient(Seq.empty))
+    val defaultUrl = rightOf(defaultSvc.buildAuthorizationRedirect(request(), null))
+    val defaultState = stateOf(defaultUrl)
+    assert(defaultPending.get(defaultState).map(_.redirectPath)
+      .contains("/api/v1/authentication/config"))
+
+    val customConf = conf().set(OIDC_POST_LOGIN_REDIRECT, "/custom/landing")
+    val (customSvc, _, customPending) =
+      serviceWithPending(new FakeTokenEndpointClient(Seq.empty), customConf)
+    val customUrl = rightOf(customSvc.buildAuthorizationRedirect(request(), null))
+    val customState = stateOf(customUrl)
+    assert(customPending.get(customState).map(_.redirectPath)
+      .contains("/custom/landing"))
+  }
+
+  test("post logout redirect defaults or honors configuration") {
+    val (defaultSvc, _) = service(new FakeTokenEndpointClient(Seq.empty))
+    assert(defaultSvc.postLogoutRedirect(request()) ===
+      "http://kyuubi.example.com:32379/api/v1/authentication/config")
+
+    val customConf = conf().set(OIDC_POST_LOGOUT_REDIRECT, "/custom/logout")
+    val (customSvc, _) = service(new FakeTokenEndpointClient(Seq.empty), customConf)
+    assert(customSvc.postLogoutRedirect(request()) ===
+      "http://kyuubi.example.com:32379/custom/logout")
+
+    val fullUrlConf = conf().set(OIDC_POST_LOGOUT_REDIRECT, "https://idp.example.com/goodbye")
+    val (fullUrlSvc, _) = service(new FakeTokenEndpointClient(Seq.empty), fullUrlConf)
+    assert(fullUrlSvc.postLogoutRedirect(request()) === "https://idp.example.com/goodbye")
   }
 }

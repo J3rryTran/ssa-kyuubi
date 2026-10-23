@@ -26,7 +26,7 @@ import javax.ws.rs.core.Response.Status
 
 import com.google.common.annotations.VisibleForTesting
 import org.apache.hadoop.conf.Configuration
-import org.eclipse.jetty.servlet.{ErrorPageErrorHandler, FilterHolder}
+import org.eclipse.jetty.servlet.FilterHolder
 
 import org.apache.kyuubi.{KyuubiException, Utils}
 import org.apache.kyuubi.config.KyuubiConf
@@ -36,7 +36,7 @@ import org.apache.kyuubi.metrics.MetricsConstants.OPERATION_BATCH_PENDING_MAX_EL
 import org.apache.kyuubi.operation.OperationState
 import org.apache.kyuubi.server.api.v1.ApiRootResource
 import org.apache.kyuubi.server.http.authentication.{AuthenticationFilter, KyuubiHttpAuthenticationFactory}
-import org.apache.kyuubi.server.ui.{JettyServer, JettyUtils}
+import org.apache.kyuubi.server.ui.JettyServer
 import org.apache.kyuubi.service.{AbstractFrontendService, Serverable, Service, ServiceUtils}
 import org.apache.kyuubi.service.authentication.{AuthTypes, AuthUtils}
 import org.apache.kyuubi.session.{KyuubiBatchSession, KyuubiSessionManager, SessionHandle}
@@ -122,25 +122,6 @@ class KyuubiRestFrontendService(override val serverable: Serverable)
     server.addHandler(authenticationFactory.httpHandlerWrapperFactory.wrapHandler(
       contextHandler,
       Some(MetricsConstants.JETTY_API_V1)))
-
-    val proxyHandler = ApiRootResource.getEngineUIProxyHandler(this)
-    server.addHandler(authenticationFactory.httpHandlerWrapperFactory.wrapHandler(proxyHandler))
-    if (conf.get(FRONTEND_REST_UI_ENABLED)) {
-      installWebUI()
-    }
-  }
-
-  private def installWebUI(): Unit = {
-    // redirect root path to Web UI home page
-    server.addRedirectHandler("/", "/ui")
-
-    val servletHandler = JettyUtils.createStaticHandler("dist", "/ui")
-    // HTML5 Web History Mode requires redirect any url path under Web UI Servlet to the main page.
-    // See more details at https://router.vuejs.org/guide/essentials/history-mode.html#html5-mode
-    val errorHandler = new ErrorPageErrorHandler
-    errorHandler.addErrorPage(404, "/")
-    servletHandler.setErrorHandler(errorHandler)
-    server.addHandler(servletHandler)
   }
 
   private def startBatchChecker(): Unit = {

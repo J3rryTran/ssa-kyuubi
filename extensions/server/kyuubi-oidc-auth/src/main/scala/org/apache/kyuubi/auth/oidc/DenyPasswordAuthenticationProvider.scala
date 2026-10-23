@@ -22,6 +22,12 @@ import javax.security.sasl.AuthenticationException
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.service.authentication.PasswdAuthenticationProvider
 
+/**
+ * A password provider that rejects every username/password login. Useful in an OIDC-only deployment
+ * that keeps THRIFT_BINARY / HTTP Basic paths enabled: under `kyuubi.authentication=CUSTOM` those
+ * paths still require a `PasswdAuthenticationProvider`, so wiring this to
+ * `kyuubi.authentication.custom.class` forces clients onto the OIDC bearer flow.
+ */
 class DenyPasswordAuthenticationProvider(conf: KyuubiConf) extends PasswdAuthenticationProvider {
 
   def this() = this(null)

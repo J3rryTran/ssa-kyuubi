@@ -24,6 +24,16 @@ import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Client-side orchestrator that acquires and maintains an OAuth2 access token for a JDBC
+ * connection.
+ *
+ * <p>It is provider-independent: given an issuer (or explicit discovery URL) and a client id, it
+ * runs the configured flow (Authorization Code + PKCE, Device, or auto), caches the tokens
+ * process-wide, and refreshes silently. {@link #get()} returns a currently-valid access token and
+ * is used as the token supplier for the HTTP Bearer interceptor, so long-running connections keep
+ * working across access-token expiry.
+ */
 public class OidcAuthenticator implements Supplier<String> {
 
   private static final Logger LOG = LoggerFactory.getLogger(OidcAuthenticator.class);
@@ -45,10 +55,12 @@ public class OidcAuthenticator implements Supplier<String> {
     this.http = new HttpJsonClient(CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, config.insecureTls());
   }
 
+  /** Eagerly acquire a token so connection open fails fast on auth errors. */
   public String acquireInitialToken() {
     return currentAccessToken();
   }
 
+  /** Supplier contract: returns a currently-valid access token (used per HTTP request). */
   @Override
   public String get() {
     return currentAccessToken();
@@ -94,6 +106,7 @@ public class OidcAuthenticator implements Supplier<String> {
     }
   }
 
+  /** Best-effort OIDC RP-initiated logout; clears the cached tokens regardless. */
   public synchronized void logout() {
     try {
       if (config.logoutEnabled() && tokens != null && tokens.idToken() != null) {
@@ -147,6 +160,7 @@ public class OidcAuthenticator implements Supplier<String> {
       conn.getResponseCode();
       conn.disconnect();
     } catch (Exception ignored) {
+      // best-effort
     }
   }
 }

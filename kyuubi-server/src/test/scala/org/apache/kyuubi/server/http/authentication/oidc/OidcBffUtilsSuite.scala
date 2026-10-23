@@ -48,20 +48,28 @@ class OidcBffUtilsSuite extends KyuubiFunSuite {
   }
 
   test("redirect path only accepts a local path") {
-    assert(OidcBffUtils.sanitizeRedirectPath("/ui/overview") === "/ui/overview")
-    assert(OidcBffUtils.sanitizeRedirectPath("/ui/session?id=1") === "/ui/session?id=1")
+    assert(OidcBffUtils.sanitizeRedirectPath("/api/v1/sessions") === "/api/v1/sessions")
+    assert(OidcBffUtils.sanitizeRedirectPath("/api/v1/session?id=1") === "/api/v1/session?id=1")
 
     val fallback = OidcBffUtils.DEFAULT_REDIRECT_PATH
+    assert(fallback === "/api/v1/authentication/config")
     // protocol-relative URLs would leave the site while still starting with '/'
     assert(OidcBffUtils.sanitizeRedirectPath("//evil.com") === fallback)
     assert(OidcBffUtils.sanitizeRedirectPath("/\\evil.com") === fallback)
     assert(OidcBffUtils.sanitizeRedirectPath("http://evil.com") === fallback)
     assert(OidcBffUtils.sanitizeRedirectPath("/redirect?to=http://evil.com") === fallback)
-    assert(OidcBffUtils.sanitizeRedirectPath("ui/overview") === fallback)
+    assert(OidcBffUtils.sanitizeRedirectPath("relative/path") === fallback)
     assert(OidcBffUtils.sanitizeRedirectPath("") === fallback)
     assert(OidcBffUtils.sanitizeRedirectPath(null) === fallback)
     // header injection into the Location response header
-    assert(OidcBffUtils.sanitizeRedirectPath("/ui\r\nSet-Cookie: a=b") === fallback)
+    assert(OidcBffUtils.sanitizeRedirectPath("/path\r\nSet-Cookie: a=b") === fallback)
+  }
+
+  test("custom default redirect path is honored when redirect is absent or rejected") {
+    val custom = "https://portal.example.com/welcome"
+    assert(OidcBffUtils.sanitizeRedirectPath(null, custom) === custom)
+    assert(OidcBffUtils.sanitizeRedirectPath("//evil.com", custom) === custom)
+    assert(OidcBffUtils.sanitizeRedirectPath("/local/path", custom) === "/local/path")
   }
 
   test("session cookie carries the hardening flags") {
@@ -103,9 +111,9 @@ class OidcBffUtilsSuite extends KyuubiFunSuite {
 
     // No Origin at all: fall back to Referer, and refuse when neither is present.
     assert(OidcBffUtils.csrfAllowed(
-      request(method = "PUT", referer = Some("http://kyuubi.example.com:32379/ui/overview"))))
+      request(method = "PUT", referer = Some("http://kyuubi.example.com:32379/api/v1/sessions"))))
     assert(!OidcBffUtils.csrfAllowed(
-      request(method = "PUT", referer = Some("http://evil.com/ui/overview"))))
+      request(method = "PUT", referer = Some("http://evil.com/api/v1/sessions"))))
     assert(!OidcBffUtils.csrfAllowed(request(method = "POST")))
   }
 

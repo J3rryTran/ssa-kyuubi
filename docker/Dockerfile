@@ -54,13 +54,27 @@ COPY RELEASE ${KYUUBI_HOME}/
 COPY bin ${KYUUBI_HOME}/bin
 COPY jars ${KYUUBI_HOME}/jars
 COPY beeline-jars ${KYUUBI_HOME}/beeline-jars
-COPY web-ui ${KYUUBI_HOME}/web-ui
 COPY externals/engines/spark ${KYUUBI_HOME}/externals/engines/spark
 COPY externals/engines/jdbc ${KYUUBI_HOME}/externals/engines/jdbc
 RUN curl -fL -o ${KYUUBI_HOME}/jars/mysql-connector-j-8.3.0.jar \
       https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.3.0/mysql-connector-j-8.3.0.jar && \
     ln -s ../../../jars/mysql-connector-j-8.3.0.jar \
       ${KYUUBI_HOME}/externals/engines/jdbc/mysql-connector-j-8.3.0.jar
+
+ARG MAVEN_MIRROR=https://repo1.maven.org/maven2
+ARG INCLUDE_AWS=true
+ARG HADOOP_AWS_VERSION=3.3.6
+ARG AWS_SDK_BUNDLE_VERSION=1.12.367
+ARG HADOOP_AWS_SHA256=fba9eb73e6f0f5458355627fe095f5124705d4048551f4d6aa4084777b824c13
+ARG AWS_SDK_BUNDLE_SHA256=5e51f896c86c922c254c0184d91a1957929d12c3f1d6fe17aae65909230bc125
+RUN if [ "${INCLUDE_AWS}" = "true" ]; then \
+      curl -fSL -o ${KYUUBI_HOME}/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
+        ${MAVEN_MIRROR}/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar && \
+      echo "${HADOOP_AWS_SHA256}  ${KYUUBI_HOME}/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar" | sha256sum -c - && \
+      curl -fSL -o ${KYUUBI_HOME}/jars/aws-java-sdk-bundle-${AWS_SDK_BUNDLE_VERSION}.jar \
+        ${MAVEN_MIRROR}/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_BUNDLE_VERSION}/aws-java-sdk-bundle-${AWS_SDK_BUNDLE_VERSION}.jar && \
+      echo "${AWS_SDK_BUNDLE_SHA256}  ${KYUUBI_HOME}/jars/aws-java-sdk-bundle-${AWS_SDK_BUNDLE_VERSION}.jar" | sha256sum -c - ; \
+    fi
 
 
 WORKDIR ${KYUUBI_HOME}

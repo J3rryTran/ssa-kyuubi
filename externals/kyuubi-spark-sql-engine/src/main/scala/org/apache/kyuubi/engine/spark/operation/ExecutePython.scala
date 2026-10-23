@@ -337,6 +337,11 @@ object ExecutePython extends Logging {
     env.put("KYUUBI_SPARK_SESSION_UUID", sessionId)
     env.put("PYTHON_GATEWAY_CONNECTION_INFO", KyuubiPythonGatewayServer.CONNECTION_FILE_PATH)
     env.put(MAGIC_ENABLED, getSessionConf(ENGINE_SPARK_PYTHON_MAGIC_ENABLED, spark).toString)
+    // Notebook confs the worker acts on, handed over as environment variables because the worker
+    // is a plain process with no view of the Spark session. Every one of them is optional: an
+    // absent conf is simply not exported, and the worker treats that as "no limit" or "pip
+    // defaults". No value is invented here - the package mirror differs per environment and
+    // belongs to the deployment, not to this source tree.
     NOTEBOOK_WORKER_CONFS.foreach { case (confKey, envKey) =>
       notebookConf(spark, confKey).foreach(env.put(envKey, _))
     }

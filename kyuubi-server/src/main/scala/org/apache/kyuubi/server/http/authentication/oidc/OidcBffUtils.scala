@@ -31,7 +31,7 @@ import javax.servlet.http.HttpServletRequest
 object OidcBffUtils {
 
   /** Where the browser lands when no usable `redirect` was supplied. */
-  final val DEFAULT_REDIRECT_PATH = "/ui/overview"
+  final val DEFAULT_REDIRECT_PATH = "/api/v1/authentication/config"
 
   final private val METHODS_REQUIRING_ORIGIN = Set("POST", "PUT", "PATCH", "DELETE")
 
@@ -82,8 +82,10 @@ object OidcBffUtils {
    * a successful login. Anything suspicious silently falls back to [[DEFAULT_REDIRECT_PATH]]
    * rather than failing the login.
    */
-  def sanitizeRedirectPath(raw: String): String = {
-    if (raw == null) return DEFAULT_REDIRECT_PATH
+  def sanitizeRedirectPath(
+      raw: String,
+      defaultRedirectPath: String = DEFAULT_REDIRECT_PATH): String = {
+    if (raw == null) return defaultRedirectPath
     val candidate = raw.trim
     val rejected =
       candidate.isEmpty ||
@@ -94,7 +96,7 @@ object OidcBffUtils {
         candidate.contains("://") ||
         // header injection into the Location response header
         candidate.exists(c => c == '\r' || c == '\n' || c.isControl)
-    if (rejected) DEFAULT_REDIRECT_PATH else candidate
+    if (rejected) defaultRedirectPath else candidate
   }
 
   /**

@@ -42,7 +42,7 @@ private[kyuubi] object JettyUtils {
       case Some(res) =>
         holder.setInitParameter("resourceBase", res.toString)
       case None =>
-        throw new KyuubiException("Could not find resource path for Web UI: " + resourceBase)
+        throw new KyuubiException("Could not find resource path: " + resourceBase)
     }
     contextHandler.setContextPath(contextPath)
     contextHandler.addServlet(holder, "/")

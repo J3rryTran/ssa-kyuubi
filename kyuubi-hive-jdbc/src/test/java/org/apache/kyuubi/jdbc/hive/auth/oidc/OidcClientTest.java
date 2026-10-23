@@ -37,6 +37,7 @@ public class OidcClientTest {
   @Test
   public void pkceChallengeMatchesS256OfVerifier() throws Exception {
     String verifier = PkceUtil.generateCodeVerifier();
+    // Verifier is URL-safe base64 without padding.
     assertFalse(verifier.contains("+"));
     assertFalse(verifier.contains("/"));
     assertFalse(verifier.contains("="));
@@ -124,6 +125,7 @@ public class OidcClientTest {
     assertTrue(tokens.hasRefreshToken());
     long now = System.currentTimeMillis();
     assertFalse(tokens.isExpiredOrNearExpiry(now, 30_000L));
+    // Beyond the 300s lifetime it must be considered expired.
     assertTrue(tokens.isExpiredOrNearExpiry(now + 301_000L, 30_000L));
   }
 
@@ -153,6 +155,7 @@ public class OidcClientTest {
       assertNotNull(redirect);
       assertTrue(redirect.startsWith("http://127.0.0.1:"));
       assertTrue(redirect.endsWith("/callback"));
+      // No callback arrives -> awaitCode must time out with an OidcAuthException.
       assertThrows(
           OidcAuthException.class,
           () -> server.awaitCode(200, java.util.concurrent.TimeUnit.MILLISECONDS));

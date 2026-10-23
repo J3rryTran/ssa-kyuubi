@@ -19,7 +19,11 @@ package org.apache.kyuubi.jdbc.hive.auth.oidc;
 
 import java.util.concurrent.ConcurrentHashMap;
 
-
+/**
+ * Process-wide in-memory cache of acquired tokens, keyed by issuer+client+scope. Lets many JDBC
+ * connections opened in the same JVM (e.g. a DBeaver session) reuse one interactive sign-in and
+ * refresh silently, instead of prompting per connection. Tokens are held in memory only.
+ */
 public final class TokenStore {
 
   private static final ConcurrentHashMap<String, OidcTokens> CACHE = new ConcurrentHashMap<>();

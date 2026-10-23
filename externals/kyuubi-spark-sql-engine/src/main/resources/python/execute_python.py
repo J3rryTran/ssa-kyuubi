@@ -30,28 +30,17 @@ import traceback
 import base64
 from glob import glob
 
-if sys.version_info >= (3, 8):
-    from ast import Module
-else:
-    from ast import Module as OriginalModule
-    Module = lambda nodelist, type_ignores: OriginalModule(nodelist)
-
-import kyuubi_util
-
 try:
     import resource
 except ImportError:
+    # Windows has no resource module. The engine only runs on Unix, but importing this file
+    # must not explode elsewhere - the limits are simply not applied.
     resource = None
 
 if sys.version_info[0] < 3:
     sys.exit("Python < 3 is unsupported.")
 
 os.environ["PYSPARK_PYTHON"] = os.environ.get("PYSPARK_PYTHON", sys.executable)
-
-# add kyuubi-session-pip to sys.path if present
-session_pip_dir = os.path.join(os.getcwd(), "kyuubi-session-pip")
-if os.path.exists(session_pip_dir) and session_pip_dir not in sys.path:
-    sys.path.insert(0, session_pip_dir)
 
 # add pyspark to sys.path
 
@@ -73,8 +62,21 @@ if "pyspark" not in sys.modules:
             )
         sys.path[:0] = sys_path = [spark_python, py4j]
 else:
+    # already imported, no need to patch sys.path
     sys_path = None
 
+# import kyuubi_util after preparing sys.path
+import kyuubi_util
+
+# ast api is changed after python 3.8, see https://github.com/ipython/ipython/pull/11593
+if sys.version_info >= (3, 8):
+    from ast import Module
+else:
+    # mock the new API, ignore second argument
+    # see https://github.com/ipython/ipython/issues/11590
+    from ast import Module as OriginalModule
+
+    Module = lambda nodelist, type_ignores: OriginalModule(nodelist)
 
 TOP_FRAME_REGEX = re.compile(r'\s*File "<stdin>".*in <module>')
 
@@ -101,6 +103,8 @@ class NormalNode(object):
                 code = compile(mod, "<stdin>", "single")
                 exec(code, global_dict)
         except Exception:
+            # We don't need to log the exception because we're just executing user
+            # code and passing the error along.
             raise ExecutionError(sys.exc_info())
 
 
@@ -110,6 +114,7 @@ class UnknownMagic(Exception):
 
 class PipError(Exception):
     """Raised for anything %pip refuses or pip itself reports, so the cell names the real cause."""
+
     pass
 
 
@@ -118,6 +123,7 @@ CPU_TIME_LIMIT = os.environ.get("KYUUBI_NOTEBOOK_PY_CPU_TIME_LIMIT", "").strip()
 
 
 def _parse_memory(value):
+    """Accepts `4g`, `512m`, `1024k` or plain bytes, the way Spark sizes are usually written."""
     text = value.lower().rstrip("b")
     units = {"k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
     multiplier = units.get(text[-1:], 1)
@@ -538,56 +544,25 @@ def _pip_timeout():
 
 
 def magic_pip(rest=""):
-    """`%pip install <packages>` or `%pip list` - manage libraries for this session."""
+    """`%pip install <packages>` - install libraries for this session only.
+
+    Only `install` is accepted. Anything else gets a plain message rather than a pip error the
+    user would have to decode, because the other subcommands either do nothing useful against a
+    --target directory or would remove a library the image provides for everyone.
+    """
     args = rest.split()
     if not args:
         raise PipError(
-            "%pip requires a subcommand. Use: %pip install <packages> or %pip list")
-    subcommand = args[0]
-    if subcommand not in ("install", "list"):
+            "%pip requires a subcommand. Use: %pip install <packages>")
+    if args[0] != "install":
         raise PipError(
-            "Only '%%pip install' and '%%pip list' are supported, not '%%pip %s'. "
-            "Use: %%pip install <packages> or %%pip list" % subcommand)
-
-    target = _pip_target_dir()
-
-    if subcommand == "list":
-        command = [
-            sys.executable,
-            "-m",
-            "pip",
-            "list",
-            "--disable-pip-version-check",
-        ] + args[1:]
-
-        env = os.environ.copy()
-        if os.path.exists(target):
-            env["PYTHONPATH"] = target + os.pathsep + env.get("PYTHONPATH", "")
-
-        timeout = _pip_timeout()
-        try:
-            completed = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=timeout,
-                env=env,
-            )
-        except subprocess.TimeoutExpired:
-            raise PipError("pip list timed out after %d seconds." % timeout)
-        except FileNotFoundError:
-            raise PipError(
-                "pip is not available in this image: '%s -m pip' was not found." % sys.executable)
-
-        log = completed.stdout.decode("utf-8", "replace") if completed.stdout else ""
-        if completed.returncode != 0:
-            raise PipError("pip list failed with exit code %d:\n%s" % (completed.returncode, log))
-        return {"text/plain": log}
-
+            "Only '%%pip install' is supported, not '%%pip %s'. "
+            "Use: %%pip install <packages>" % args[0])
     packages = args[1:]
     if not packages:
         raise PipError("No packages given. Use: %pip install <packages>")
 
+    target = _pip_target_dir()
     command = [
         sys.executable,
         "-m",
@@ -597,6 +572,9 @@ def magic_pip(rest=""):
         "--target",
         target,
     ]
+    # The mirror is supplied per environment. When neither conf is set, pip uses its own
+    # defaults; an index over plain HTTP without a trusted host is pip's error to report, not
+    # something to paper over by guessing a host.
     index_url = os.environ.get("KYUUBI_NOTEBOOK_PIP_INDEX_URL", "").strip()
     if index_url:
         command += ["--index-url", index_url]
@@ -624,9 +602,13 @@ def magic_pip(rest=""):
 
     log = completed.stdout.decode("utf-8", "replace") if completed.stdout else ""
     if completed.returncode != 0:
+        # The whole pip log goes to the user; a truncated one hides the actual resolution error.
         raise PipError(
             "pip install failed with exit code %d:\n%s" % (completed.returncode, log))
 
+    # Newly installed packages are only importable once the target is searched and the import
+    # system is told to look again; without the invalidate a failed import earlier in the same
+    # session stays cached as a miss.
     if target not in sys.path:
         sys.path.insert(0, target)
     importlib.invalidate_caches()

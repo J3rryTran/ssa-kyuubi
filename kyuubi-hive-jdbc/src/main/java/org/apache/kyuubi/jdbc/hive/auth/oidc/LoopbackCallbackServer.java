@@ -29,6 +29,12 @@ import java.util.Map;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * A one-shot loopback HTTP listener that captures the OAuth2 Authorization Code redirect, following
+ * RFC 8252 (OAuth for Native Apps). It binds to {@code 127.0.0.1} on an ephemeral (or fixed) port,
+ * serves exactly one {@code /callback} request, and hands back the {@code code} after verifying the
+ * {@code state}.
+ */
 public class LoopbackCallbackServer implements AutoCloseable {
 
   private static final String CALLBACK_PATH = "/callback";
@@ -62,6 +68,8 @@ public class LoopbackCallbackServer implements AutoCloseable {
   }
 
   /**
+   * Block until the redirect arrives (or the timeout elapses) and return the authorization code.
+   *
    * @throws OidcAuthException on timeout, a mismatched {@code state}, or an OAuth error redirect
    */
   public String awaitCode(long timeout, TimeUnit unit) {
@@ -111,6 +119,7 @@ public class LoopbackCallbackServer implements AutoCloseable {
     try (OutputStream os = exchange.getResponseBody()) {
       os.write(bytes);
     }
+    // Hand the outcome to awaitCode(); ignore if nobody is waiting (duplicate hit).
     result.offer(outcome);
   }
 

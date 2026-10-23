@@ -17,6 +17,7 @@
 
 package org.apache.kyuubi.jdbc.hive.auth.oidc;
 
+/** Raised when the client-side OIDC token acquisition fails. */
 public class OidcAuthException extends RuntimeException {
 
   public OidcAuthException(String message) {

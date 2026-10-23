@@ -602,60 +602,6 @@ object KyuubiConf {
       .version("1.6.2")
       .fallbackConf(FRONTEND_MAX_WORKER_THREADS)
 
-  val FRONTEND_REST_PROXY_JETTY_CLIENT_IDLE_TIMEOUT: ConfigEntry[Long] =
-    buildConf("kyuubi.frontend.rest.proxy.jetty.client.idleTimeout")
-      .serverOnly
-      .doc("The idle timeout in milliseconds for Jetty server " +
-        "used by the RESTful frontend service.")
-      .version("1.10.0")
-      .timeConf
-      .createWithDefaultString("PT30S")
-
-  val FRONTEND_REST_PROXY_JETTY_CLIENT_MAX_CONNECTIONS: ConfigEntry[Int] =
-    buildConf("kyuubi.frontend.rest.proxy.jetty.client.maxConnections")
-      .serverOnly
-      .doc("The max number of connections per destination for Jetty server " +
-        "used by the RESTful frontend service.")
-      .version("1.10.0")
-      .intConf
-      .createWithDefault(32768)
-
-  val FRONTEND_REST_PROXY_JETTY_CLIENT_MAX_THREADS: ConfigEntry[Int] =
-    buildConf("kyuubi.frontend.rest.proxy.jetty.client.maxThreads")
-      .serverOnly
-      .doc("The max number of threads of HttpClient's Executor for Jetty server " +
-        "used by the RESTful frontend service.")
-      .version("1.10.0")
-      .intConf
-      .createWithDefault(256)
-
-  val FRONTEND_REST_PROXY_JETTY_CLIENT_REQUEST_BUFFER_SIZE: ConfigEntry[Int] =
-    buildConf("kyuubi.frontend.rest.proxy.jetty.client.requestBufferSize")
-      .serverOnly
-      .doc("Size of the buffer in bytes used to write requests for Jetty server " +
-        "used by the RESTful frontend service.")
-      .version("1.10.0")
-      .intConf
-      .createWithDefault(4096)
-
-  val FRONTEND_REST_PROXY_JETTY_CLIENT_RESPONSE_BUFFER_SIZE: ConfigEntry[Int] =
-    buildConf("kyuubi.frontend.rest.proxy.jetty.client.responseBufferSize")
-      .serverOnly
-      .doc("Size of the buffer in bytes used to read response for Jetty server " +
-        "used by the RESTful frontend service.")
-      .version("1.10.0")
-      .intConf
-      .createWithDefault(4096)
-
-  val FRONTEND_REST_PROXY_JETTY_CLIENT_TIMEOUT: ConfigEntry[Long] =
-    buildConf("kyuubi.frontend.rest.proxy.jetty.client.timeout")
-      .serverOnly
-      .doc("The total timeout in milliseconds for Jetty server " +
-        "used by the RESTful frontend service.")
-      .version("1.10.0")
-      .timeConf
-      .createWithDefaultString("PT60S")
-
   val FRONTEND_REST_JETTY_STOP_TIMEOUT: ConfigEntry[Long] =
     buildConf("kyuubi.frontend.rest.jetty.stopTimeout")
       .serverOnly
@@ -3548,6 +3494,10 @@ object KyuubiConf {
         ENGINE_CONNECTION_URL_USE_HOSTNAME.key,
         "1.5.0",
         s"Use ${FRONTEND_CONNECTION_URL_USE_HOSTNAME.key} instead"),
+      DeprecatedConfig(
+        FRONTEND_REST_UI_ENABLED.key,
+        "1.10.3",
+        "Web UI has been removed; this key has no effect"),
 
       // deprecated configs of [[org.apache.kyuubi.zookeeper.ZookeeperConf]]
       DeprecatedConfig(

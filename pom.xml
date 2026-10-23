@@ -227,11 +227,6 @@
         <trino.tpch.version>1.1</trino.tpch.version>
         <vertx.version>4.5.3</vertx.version>
 
-        <!-- webui -->
-        <webui.skip>true</webui.skip>
-        <node.version>v20.17.0</node.version>
-        <pnpm.version>v9.11.0</pnpm.version>
-
         <hive.jdbc.artifact>kyuubi-hive-jdbc</hive.jdbc.artifact>
 
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -242,8 +237,6 @@
         <maven.plugin.download.cache.path></maven.plugin.download.cache.path>
         <maven.plugin.enforcer.mojo.rules.version>1.11.0</maven.plugin.enforcer.mojo.rules.version>
         <maven.plugin.flatten.version>1.6.0</maven.plugin.flatten.version>
-        <maven.plugin.frontend.version>1.12.1</maven.plugin.frontend.version>
-        <maven.plugin.frontend.inheritsProxyConfigFromMaven>false</maven.plugin.frontend.inheritsProxyConfigFromMaven>
         <maven.plugin.scala.version>4.9.2</maven.plugin.scala.version>
         <maven.plugin.scalatest.version>2.2.0</maven.plugin.scalatest.version>
         <maven.plugin.scalatest.exclude.tags>org.scalatest.tags.Slow</maven.plugin.scalatest.exclude.tags>
@@ -1646,9 +1639,6 @@
                             <fileset>
                                 <directory>${project.basedir}/spark-warehouse</directory>
                             </fileset>
-                            <fileset>
-                                <directory>${project.basedir}/web-ui/dist</directory>
-                            </fileset>
                         </filesets>
                     </configuration>
                 </plugin>
@@ -1818,17 +1808,6 @@
                     </dependencies>
                 </plugin>
 
-                <plugin>
-                    <groupId>com.github.eirslett</groupId>
-                    <artifactId>frontend-maven-plugin</artifactId>
-                    <version>${maven.plugin.frontend.version}</version>
-                    <configuration>
-                        <nodeVersion>${node.version}</nodeVersion>
-                        <pnpmVersion>${pnpm.version}</pnpmVersion>
-                        <npmInheritsProxyConfigFromMaven>${maven.plugin.frontend.inheritsProxyConfigFromMaven}</npmInheritsProxyConfigFromMaven>
-                        <pnpmInheritsProxyConfigFromMaven>${maven.plugin.frontend.inheritsProxyConfigFromMaven}</pnpmInheritsProxyConfigFromMaven>
-                    </configuration>
-                </plugin>
             </plugins>
         </pluginManagement>
 
@@ -2192,13 +2171,6 @@
             <properties>
                 <maven.surefire.debug>${debugArgLine}</maven.surefire.debug>
                 <maven.plugin.scalatest.debug.enabled>true</maven.plugin.scalatest.debug.enabled>
-            </properties>
-        </profile>
-
-        <profile>
-            <id>web-ui</id>
-            <properties>
-                <webui.skip>false</webui.skip>
             </properties>
         </profile>
 

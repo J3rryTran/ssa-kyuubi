@@ -21,13 +21,23 @@ import java.util.Map;
 
 /**
  * Client-side OIDC configuration parsed from the JDBC session variables.
+ *
+ * <p>This is a client concern only: it drives how the driver <em>acquires</em> an OAuth2 access
+ * token (via the Authorization Code + PKCE flow or the Device Authorization flow). The acquired
+ * access token is then transmitted to Kyuubi as an {@code Authorization: Bearer} header, reusing
+ * the existing JWT/bearer transport path. The server validates the token independently.
  */
 public class OidcConfig {
 
   /** OIDC flow selection. */
   public enum Flow {
+    /**
+     * OAuth2 Authorization Code + PKCE with an automatically launched browser (desktop clients).
+     */
     AUTH_CODE,
+    /** OAuth2 Device Authorization Grant, RFC 8628 (headless / no-browser clients). */
     DEVICE,
+    /** Try {@link #AUTH_CODE} first, fall back to {@link #DEVICE} when no browser is available. */
     AUTO
   }
 
@@ -210,6 +220,7 @@ public class OidcConfig {
     return logout;
   }
 
+  /** Stable cache key for the token store, scoped to issuer + client + scope. */
   public String cacheKey() {
     return (issuer != null ? issuer : discoveryUri) + "|" + clientId + "|" + scope;
   }

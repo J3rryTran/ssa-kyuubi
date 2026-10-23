@@ -24,7 +24,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * OAuth2 Device Authorization Grant (RFC 8628) for headless / no-browser clients.
+ * OAuth2 Device Authorization Grant (RFC 8628) for headless / no-browser clients. The user is shown
+ * a URL and a short code to enter on any device; the driver polls the token endpoint until
+ * authorized.
  */
 public class DeviceFlow {
 
@@ -81,6 +83,7 @@ public class DeviceFlow {
       } else if (error == null) {
         throw new OidcAuthException("Device token poll failed: HTTP " + r.status);
       } else {
+        // access_denied, expired_token, etc.
         throw new OidcAuthException("Device authorization failed: " + error);
       }
     }

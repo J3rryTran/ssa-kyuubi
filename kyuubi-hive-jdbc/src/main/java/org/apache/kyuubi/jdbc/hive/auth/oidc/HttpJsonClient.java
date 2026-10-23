@@ -37,7 +37,18 @@ import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+/**
+ * Minimal JSON-over-HTTP helper built on the JDK {@link HttpURLConnection} (no extra dependency).
+ * Used for OIDC discovery and OAuth2 token/device endpoint calls.
+ *
+ * <p>TLS to the identity provider relies on the default JVM trust store, which is appropriate for
+ * providers fronted by a publicly trusted CA (the common Keycloak deployment).
+ */
 public class HttpJsonClient {
+
+  /**
+   * HTTP status + parsed JSON body (parsed even for 4xx, so OAuth error bodies are inspectable).
+   */
   public static final class Response {
     public final int status;
     public final JsonNode body;
@@ -57,6 +68,7 @@ public class HttpJsonClient {
   private final int readTimeoutMs;
   private final boolean insecureTls;
 
+  /** Lazily built trust-all socket factory shared by every insecure connection. */
   private static volatile SSLSocketFactory insecureSocketFactory;
 
   private static final HostnameVerifier ALLOW_ALL_HOSTS = (hostname, session) -> true;
@@ -70,7 +82,11 @@ public class HttpJsonClient {
     this.readTimeoutMs = readTimeoutMs;
     this.insecureTls = insecureTls;
   }
-  
+
+  /**
+   * When {@code insecureTls} is enabled and the connection is HTTPS, disable certificate and
+   * hostname verification. INSECURE — intended only for internal providers with self-signed certs.
+   */
   private void applyTls(HttpURLConnection conn) {
     if (insecureTls && conn instanceof HttpsURLConnection) {
       HttpsURLConnection https = (HttpsURLConnection) conn;

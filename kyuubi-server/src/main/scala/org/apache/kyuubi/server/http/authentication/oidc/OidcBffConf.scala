@@ -49,6 +49,10 @@ class OidcBffConf(
   val cookieName: String = trimmed(OIDC_COOKIE_NAME).getOrElse(DEFAULT_COOKIE_NAME)
   val cookieSecure: Boolean = trimmed(OIDC_COOKIE_SECURE).exists(_.toBoolean)
 
+  val postLoginRedirect: String =
+    trimmed(OIDC_POST_LOGIN_REDIRECT).getOrElse(DEFAULT_POST_LOGIN_REDIRECT)
+  val postLogoutRedirect: Option[String] = trimmed(OIDC_POST_LOGOUT_REDIRECT)
+
   val sessionTimeoutMs: Long =
     trimmed(OIDC_SESSION_TIMEOUT).map(parseDuration).getOrElse(DEFAULT_SESSION_TIMEOUT_MS)
 
@@ -135,10 +139,14 @@ object OidcBffConf {
   val OIDC_SESSION_TIMEOUT = "kyuubi.authentication.oidc.session.timeout"
   val OIDC_COOKIE_NAME = "kyuubi.authentication.oidc.cookie.name"
   val OIDC_COOKIE_SECURE = "kyuubi.authentication.oidc.cookie.secure"
+  val OIDC_POST_LOGIN_REDIRECT = "kyuubi.authentication.oidc.post.login.redirect"
+  val OIDC_POST_LOGOUT_REDIRECT = "kyuubi.authentication.oidc.post.logout.redirect"
 
   val DEFAULT_COOKIE_NAME = "KYUUBI_SESSION"
   val DEFAULT_SCOPE = "openid profile email"
   val DEFAULT_SESSION_TIMEOUT_MS: Long = TimeUnit.HOURS.toMillis(4)
+  val DEFAULT_POST_LOGIN_REDIRECT = "/api/v1/authentication/config"
+  val DEFAULT_POST_LOGOUT_REDIRECT = "/api/v1/authentication/config"
 
   /** How long a started-but-uncompleted login is remembered. */
   val PENDING_LOGIN_TTL_MS: Long = TimeUnit.MINUTES.toMillis(10)

@@ -33,6 +33,8 @@ NOTICE*
 docs/**
 build/apache-maven-*/**
 build/archive-cache/**
+# Output of build/dist: 245 MB of already-licensed jars and resources, re-scanned on every
+# build because it lives at the repo root rather than under target/.
 dist/**
 build/scala-*/**
 **/**/operation_logs/**/**
@@ -47,8 +49,6 @@ build/scala-*/**
 **/*.mysql.sql
 **/*.sqlite.sql
 **/node/**
-**/web-ui/dist/**
-**/web-ui/coverage/**
 **/pnpm-lock.yaml
 **/node_modules/**
 **/gen/*
@@ -56,9 +56,12 @@ build/scala-*/**
 **/BeeLine.properties
 **/sql-keywords.properties
 **/python/**
+# Binary distributions - already licensed
 hadoop/**
 spark/**
+# Docker build context
 docker/python-for-notebook/**
+# Build scripts
 bin/build-spark-image.sh
 docker/build-spark-image.sh
 extensions/server/kyuubi-oidc-auth/**

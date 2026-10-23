@@ -19,6 +19,11 @@ package org.apache.kyuubi.jdbc.hive.auth.oidc;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+/**
+ * The subset of the OIDC provider metadata (from {@code /.well-known/openid-configuration}) that
+ * the driver needs. Preferring discovery keeps the JDBC URL small — only the issuer and client id
+ * are required.
+ */
 public class OidcProviderMetadata {
 
   private final String authorizationEndpoint;
@@ -36,7 +41,8 @@ public class OidcProviderMetadata {
     this.deviceAuthorizationEndpoint = deviceAuthorizationEndpoint;
     this.endSessionEndpoint = endSessionEndpoint;
   }
-  
+
+  /** Fetch and parse the discovery document. */
   public static OidcProviderMetadata discover(String discoveryUrl, HttpJsonClient http) {
     JsonNode doc = http.getJson(discoveryUrl);
     String tokenEndpoint = text(doc, "token_endpoint");

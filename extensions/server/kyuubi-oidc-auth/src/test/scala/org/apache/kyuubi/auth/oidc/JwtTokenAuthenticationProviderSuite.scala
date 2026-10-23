@@ -179,9 +179,11 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
   test("configured expected typ rejects a mismatching (ID) token and accepts a matching one") {
     val provider = new JwtTokenAuthenticationProvider(
       baseConf(Map(JwtTokenAuthenticationProvider.EXPECTED_TYP -> "at+jwt")))
+    // ID-token-like: typ=JWT -> rejected
     intercept[AuthenticationException] {
       provider.authenticate(credential(signedToken(typ = "JWT")))
     }
+    // access token with typ=at+jwt -> accepted
     val principal = provider.authenticate(credential(signedToken(typ = "at+jwt")))
     assert(principal.getName === "alice")
   }
