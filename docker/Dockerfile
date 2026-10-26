@@ -63,10 +63,10 @@ RUN curl -fL -o ${KYUUBI_HOME}/jars/mysql-connector-j-8.3.0.jar \
 
 ARG MAVEN_MIRROR=https://repo1.maven.org/maven2
 ARG INCLUDE_AWS=true
-ARG HADOOP_AWS_VERSION=3.3.6
-ARG AWS_SDK_BUNDLE_VERSION=1.12.367
-ARG HADOOP_AWS_SHA256=fba9eb73e6f0f5458355627fe095f5124705d4048551f4d6aa4084777b824c13
-ARG AWS_SDK_BUNDLE_SHA256=5e51f896c86c922c254c0184d91a1957929d12c3f1d6fe17aae65909230bc125
+ARG HADOOP_AWS_VERSION=3.3.4
+ARG AWS_SDK_BUNDLE_VERSION=1.12.262
+ARG HADOOP_AWS_SHA256=53f9ae03c681a30a50aa17524bd9790ab596b28481858e54efd989a826ed3a4a
+ARG AWS_SDK_BUNDLE_SHA256=873fe7cf495126619997bec21c44de5d992544aea7e632fdc77adb1a0915bae5
 RUN if [ "${INCLUDE_AWS}" = "true" ]; then \
       curl -fSL -o ${KYUUBI_HOME}/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
         ${MAVEN_MIRROR}/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar && \
@@ -76,12 +76,19 @@ RUN if [ "${INCLUDE_AWS}" = "true" ]; then \
       echo "${AWS_SDK_BUNDLE_SHA256}  ${KYUUBI_HOME}/jars/aws-java-sdk-bundle-${AWS_SDK_BUNDLE_VERSION}.jar" | sha256sum -c - ; \
     fi
 
+# Filled by docker-image-tool.sh -H; empty directory otherwise.
+ENV HADOOP_HOME=/opt/hadoop
+COPY hadoop-native ${HADOOP_HOME}/lib/native
+ENV LD_LIBRARY_PATH=${HADOOP_HOME}/lib/native${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+
 
 WORKDIR ${KYUUBI_HOME}
 RUN chown -R kyuubi:root ${KYUUBI_HOME} && \
     chmod ug+rw -R ${KYUUBI_HOME} && \
     chmod a+rwx -R ${KYUUBI_WORK_DIR_ROOT} && \
-    chmod a+rx -R /opt/spark/bin /opt/spark/sbin || true
+    for d in ${SPARK_HOME}/bin ${SPARK_HOME}/sbin; do \
+      if [ -n "${SPARK_HOME}" ] && [ -d "$d" ]; then chmod a+rx -R "$d"; fi; \
+    done
 
 CMD [ "./bin/kyuubi", "run" ]
 

@@ -72,10 +72,17 @@ if [[ -n "$HADOOP_HOME" ]]; then
         echo "Error: Hadoop path not found: $HADOOP_HOME"
         exit 1
     fi
-    echo "Using local Hadoop native: $HADOOP_HOME"
+    # Accept either a Hadoop home (e.g. /path/hadoop/3.3.4) or the lib/native dir itself.
+    HADOOP_NATIVE_SRC="$HADOOP_HOME"
+    if [[ -d "$HADOOP_NATIVE_SRC/lib/native" ]]; then
+        HADOOP_NATIVE_SRC="$HADOOP_NATIVE_SRC/lib/native"
+    fi
+    echo "Using local Hadoop native: $HADOOP_NATIVE_SRC"
     mkdir -p "$BUILD_CONTEXT/hadoop/lib/native"
-    cp -r "$HADOOP_HOME"/* "$BUILD_CONTEXT/hadoop/lib/native/"
+    cp -r "$HADOOP_NATIVE_SRC"/* "$BUILD_CONTEXT/hadoop/lib/native/"
 fi
+# COPY hadoop/ in the Dockerfile needs the directory even without -d.
+mkdir -p "$BUILD_CONTEXT/hadoop"
 
 # Copy Kyuubi Spark Authz shaded jar if exists
 AUTHZ_JAR="$PROJECT_ROOT/extensions/spark/kyuubi-spark-authz-shaded/target/kyuubi-spark-authz-shaded_2.12-1.10.3.jar"
