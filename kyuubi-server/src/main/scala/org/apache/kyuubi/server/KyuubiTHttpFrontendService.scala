@@ -216,7 +216,13 @@ final class KyuubiTHttpFrontendService(
         server.foreach(_.setHandler(context))
       }
 
-      context.addServlet(new ServletHolder(servlet), httpPath)
+      val holder = new ServletHolder(servlet)
+      context.addServlet(holder, httpPath)
+      conf.get(FRONTEND_THRIFT_HTTP_PATH_ALIASES).foreach { alias =>
+        val aliasPath = getHttpPath(alias)
+        context.addServlet(holder, aliasPath)
+        info(s"Registered alias path $aliasPath for Thrift HTTP service")
+      }
       constrainHttpMethods(context)
 
       info(s"Started ${getClass.getSimpleName} in $schemeName mode on port $portNum " +

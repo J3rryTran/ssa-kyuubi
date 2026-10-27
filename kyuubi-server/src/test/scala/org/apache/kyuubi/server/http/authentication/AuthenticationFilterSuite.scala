@@ -17,9 +17,30 @@
 
 package org.apache.kyuubi.server.http.authentication
 
+import java.util.Base64
+import javax.servlet.http.{HttpServletRequest, HttpServletResponse}
+
+import org.mockito.Mockito.{lenient, verify}
+import org.scalatestplus.mockito.MockitoSugar.mock
+
 import org.apache.kyuubi.KyuubiFunSuite
 import org.apache.kyuubi.config.KyuubiConf
-import org.apache.kyuubi.service.authentication.AuthTypes
+import org.apache.kyuubi.server.http.util.HttpAuthUtils
+import org.apache.kyuubi.service.authentication.{AuthTypes, PasswdAuthenticationProvider}
+
+class TestPasswdAuthenticationProvider(conf: KyuubiConf) extends PasswdAuthenticationProvider {
+  override def authenticate(user: String, password: String): Unit = {}
+  override def authenticateAndResolve(user: String, password: String): String = {
+    TestPasswdAuthenticationProvider.lastUser = user
+    TestPasswdAuthenticationProvider.lastPassword = password
+    s"resolved_$user"
+  }
+}
+
+object TestPasswdAuthenticationProvider {
+  var lastUser: String = _
+  var lastPassword: String = _
+}
 
 class AuthenticationFilterSuite extends KyuubiFunSuite {
   test("add auth handler and destroy") {
@@ -34,5 +55,75 @@ class AuthenticationFilterSuite extends KyuubiFunSuite {
     assert(filter.authSchemeHandlers.size == 1)
     filter.destroy()
     assert(filter.authSchemeHandlers.isEmpty)
+  }
+
+  test("BasicAuthenticationHandler parses credentials and resolves effective user") {
+    val handler = new BasicAuthenticationHandler(AuthTypes.CUSTOM)
+    val conf = KyuubiConf()
+    conf.set(
+      KyuubiConf.AUTHENTICATION_CUSTOM_BASIC_CLASS.key,
+      classOf[TestPasswdAuthenticationProvider].getName)
+    handler.init(conf)
+
+    val req = mock[HttpServletRequest]
+    val resp = mock[HttpServletResponse]
+
+    // Credentials with colons in password: "token:my:jwt:payload"
+    val creds = Base64.getEncoder.encodeToString("token:my:jwt:payload".getBytes("UTF-8"))
+    lenient().when(req.getHeader(HttpAuthUtils.AUTHORIZATION_HEADER)).thenReturn(s"Basic $creds")
+
+    val authUser = handler.authenticate(req, resp)
+    assert(authUser === "resolved_token")
+    assert(TestPasswdAuthenticationProvider.lastUser === "token")
+    assert(TestPasswdAuthenticationProvider.lastPassword === "my:jwt:payload")
+    verify(resp).setStatus(HttpServletResponse.SC_OK)
+  }
+
+  test("BasicAuthenticationHandler empty user handling across auth types") {
+    val conf = KyuubiConf()
+    conf.set(
+      KyuubiConf.AUTHENTICATION_CUSTOM_BASIC_CLASS.key,
+      classOf[TestPasswdAuthenticationProvider].getName)
+
+    // LDAP rejects empty username immediately
+    val ldapHandler = new BasicAuthenticationHandler(AuthTypes.LDAP)
+    ldapHandler.init(conf)
+    val ldapReq = mock[HttpServletRequest]
+    val ldapResp = mock[HttpServletResponse]
+    val emptyUserCreds = Base64.getEncoder.encodeToString(":secret".getBytes("UTF-8"))
+    lenient().when(ldapReq.getHeader(HttpAuthUtils.AUTHORIZATION_HEADER))
+      .thenReturn(s"Basic $emptyUserCreds")
+
+    assert(ldapHandler.authenticate(ldapReq, ldapResp) == null)
+    verify(ldapResp).setStatus(HttpServletResponse.SC_UNAUTHORIZED)
+
+    // OIDC allows empty username to be resolved by provider
+    val oidcHandler = new BasicAuthenticationHandler(AuthTypes.OIDC)
+    oidcHandler.init(conf)
+    val oidcReq = mock[HttpServletRequest]
+    val oidcResp = mock[HttpServletResponse]
+    lenient().when(oidcReq.getHeader(HttpAuthUtils.AUTHORIZATION_HEADER))
+      .thenReturn(s"Basic $emptyUserCreds")
+
+    val authUser = oidcHandler.authenticate(oidcReq, oidcResp)
+    assert(authUser === "resolved_")
+    assert(TestPasswdAuthenticationProvider.lastUser === "")
+    assert(TestPasswdAuthenticationProvider.lastPassword === "secret")
+    verify(oidcResp).setStatus(HttpServletResponse.SC_OK)
+  }
+
+  test("BasicAuthenticationHandler rejects empty password") {
+    val handler = new BasicAuthenticationHandler(AuthTypes.OIDC)
+    val conf = KyuubiConf()
+    handler.init(conf)
+
+    val req = mock[HttpServletRequest]
+    val resp = mock[HttpServletResponse]
+    val emptyPassCreds = Base64.getEncoder.encodeToString("user:".getBytes("UTF-8"))
+    lenient().when(req.getHeader(HttpAuthUtils.AUTHORIZATION_HEADER))
+      .thenReturn(s"Basic $emptyPassCreds")
+
+    assert(handler.authenticate(req, resp) == null)
+    verify(resp).setStatus(HttpServletResponse.SC_UNAUTHORIZED)
   }
 }

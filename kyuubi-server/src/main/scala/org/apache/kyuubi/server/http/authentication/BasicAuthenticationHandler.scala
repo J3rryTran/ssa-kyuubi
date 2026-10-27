@@ -69,21 +69,23 @@ class BasicAuthenticationHandler(basicAuthType: AuthType)
     val authorization = getAuthorization(request)
     val inputToken = Option(authorization).map(a => Base64.getDecoder.decode(a.getBytes()))
       .getOrElse(Array.empty[Byte])
-    val creds = new String(inputToken, Charset.forName("UTF-8")).split(":")
+    val creds = new String(inputToken, Charset.forName("UTF-8")).split(":", 2)
 
     if (allowAnonymous) {
       authUser = creds.take(1).headOption.filterNot(_.isEmpty).getOrElse("anonymous")
     } else {
-      if (creds.size < 2 || creds(0).trim.isEmpty || creds(1).trim.isEmpty) {
+      val allowEmptyUser = basicAuthType == OIDC
+      if (creds.length < 2 || (!allowEmptyUser && creds(0).trim.isEmpty) || creds(1).trim.isEmpty) {
         response.setHeader(WWW_AUTHENTICATE_HEADER, authScheme.toString)
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED)
       } else {
-        val Seq(user, password) = creds.toSeq.take(2)
+        val user = creds(0)
+        val password = creds(1)
         val passwdAuthenticationProvider = AuthenticationProviderFactory
           .getHttpBasicAuthenticationProvider(AuthMethods.withName(basicAuthType.toString), conf)
-        passwdAuthenticationProvider.authenticate(user, password)
+        val effectiveUser = passwdAuthenticationProvider.authenticateAndResolve(user, password)
         response.setStatus(HttpServletResponse.SC_OK)
-        authUser = user
+        authUser = effectiveUser
       }
     }
     authUser

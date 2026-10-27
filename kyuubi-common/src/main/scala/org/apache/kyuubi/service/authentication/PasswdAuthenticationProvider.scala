@@ -34,4 +34,15 @@ trait PasswdAuthenticationProvider {
    */
   @throws[AuthenticationException]
   def authenticate(user: String, password: String): Unit
+
+  /**
+   * Authenticates the user and password and returns the resolved session username.
+   * By default, returns `user`. Providers that extract or map identities (e.g. JWT token
+   * subject in password) override this method to return the validated identity.
+   */
+  @throws[AuthenticationException]
+  def authenticateAndResolve(user: String, password: String): String = {
+    authenticate(user, password)
+    user
+  }
 }

@@ -42,7 +42,10 @@ class OidcBffConf(
 
   val clientId: Option[String] = trimmed(OIDC_UI_CLIENT_ID)
   val clientSecret: Option[String] = trimmed(OIDC_UI_CLIENT_SECRET)
-  val issuer: Option[String] = trimmed(JWT_ISSUER)
+  val issuer: Option[String] = trimmed(JWT_ISSUER).map { s =>
+    s.split(",").map(_.trim).map(iss => if (iss.endsWith("/")) iss.dropRight(1) else iss)
+      .find(_.nonEmpty).getOrElse(s)
+  }
   val scope: String = OidcBffUtils.withOpenIdScope(
     trimmed(OIDC_UI_SCOPE).getOrElse(DEFAULT_SCOPE))
 

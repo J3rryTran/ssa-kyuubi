@@ -65,8 +65,13 @@ object PlainSASLHelper {
       }
       val provider =
         AuthenticationProviderFactory.getAuthenticationProvider(authMethod, conf, isServer)
-      provider.authenticate(username, password)
-      if (ac != null) ac.setAuthorized(true)
+      val effectiveUser = provider.authenticateAndResolve(username, password)
+      if (ac != null) {
+        ac.setAuthorized(true)
+        if (effectiveUser != null && effectiveUser.nonEmpty) {
+          ac.setAuthorizedID(effectiveUser)
+        }
+      }
     }
   }
 

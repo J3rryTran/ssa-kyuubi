@@ -237,4 +237,17 @@ class KyuubiConfSuite extends KyuubiFunSuite {
     assert(kyuubiConf.getUserDefaults("kyuubi").getAll.size == 0)
     assert(kyuubiConf.getUserDefaults("user").getAll.size == 0)
   }
+
+  test("frontend thrift http path aliases configuration") {
+    val conf = KyuubiConf(false)
+    assert(conf.get(FRONTEND_THRIFT_HTTP_PATH_ALIASES) === Seq.empty)
+
+    conf.set(FRONTEND_THRIFT_HTTP_PATH_ALIASES, Seq("sql/protocolv1/o/0/kyuubi", "custom/path"))
+    assert(conf.get(FRONTEND_THRIFT_HTTP_PATH_ALIASES) === Seq(
+      "sql/protocolv1/o/0/kyuubi",
+      "custom/path"))
+
+    conf.set(FRONTEND_THRIFT_HTTP_PATH_ALIASES.key, "alias1,alias2")
+    assert(conf.get(FRONTEND_THRIFT_HTTP_PATH_ALIASES) === Seq("alias1", "alias2"))
+  }
 }

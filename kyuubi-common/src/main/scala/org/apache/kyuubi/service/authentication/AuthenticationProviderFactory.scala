@@ -35,7 +35,10 @@ object AuthenticationProviderFactory {
   final val OIDC_BEARER_PROVIDER_CLASS =
     "org.apache.kyuubi.auth.oidc.JwtTokenAuthenticationProvider"
   final val OIDC_PASSWD_PROVIDER_CLASS =
+    "org.apache.kyuubi.auth.oidc.JwtPasswordAuthenticationProvider"
+  final val OIDC_DENY_PASSWD_PROVIDER_CLASS =
     "org.apache.kyuubi.auth.oidc.DenyPasswordAuthenticationProvider"
+  final val JWT_PASSWORD_ENABLED = "kyuubi.authentication.jwt.password.enabled"
 
   @throws[AuthenticationException]
   def getAuthenticationProvider(
@@ -47,6 +50,10 @@ object AuthenticationProviderFactory {
     } else {
       getAuthenticationProviderForEngine(conf)
     }
+  }
+
+  private def isJwtPasswordAuthEnabled(conf: KyuubiConf): Boolean = {
+    conf.getOption(JWT_PASSWORD_ENABLED).map(_.trim.toBoolean).getOrElse(true)
   }
 
   private def getAuthenticationProviderForServer(
@@ -62,10 +69,13 @@ object AuthenticationProviderFactory {
         "kyuubi.authentication.custom.class must be set when auth method was CUSTOM.")
       ClassUtils.createInstance(className.get, classOf[PasswdAuthenticationProvider], conf)
     case AuthMethods.OIDC =>
-      // OIDC authenticates over HTTP Bearer; the passwd path defaults to deny-all
-      // so THRIFT_BINARY / basic clients are pushed onto the bearer flow.
+      val defaultProvider = if (isJwtPasswordAuthEnabled(conf)) {
+        OIDC_PASSWD_PROVIDER_CLASS
+      } else {
+        OIDC_DENY_PASSWD_PROVIDER_CLASS
+      }
       val className =
-        conf.get(KyuubiConf.AUTHENTICATION_CUSTOM_CLASS).getOrElse(OIDC_PASSWD_PROVIDER_CLASS)
+        conf.get(KyuubiConf.AUTHENTICATION_CUSTOM_CLASS).getOrElse(defaultProvider)
       ClassUtils.createInstance(className, classOf[PasswdAuthenticationProvider], conf)
     case _ => throw new AuthenticationException("Not a valid authentication method")
   }
@@ -91,8 +101,13 @@ object AuthenticationProviderFactory {
         "kyuubi.authentication.custom.basic.class must be set for http basic authentication.")
       ClassUtils.createInstance(className.get, classOf[PasswdAuthenticationProvider], conf)
     case AuthMethods.OIDC =>
+      val defaultProvider = if (isJwtPasswordAuthEnabled(conf)) {
+        OIDC_PASSWD_PROVIDER_CLASS
+      } else {
+        OIDC_DENY_PASSWD_PROVIDER_CLASS
+      }
       val className = conf.get(KyuubiConf.AUTHENTICATION_CUSTOM_BASIC_CLASS)
-        .getOrElse(OIDC_PASSWD_PROVIDER_CLASS)
+        .getOrElse(defaultProvider)
       ClassUtils.createInstance(className, classOf[PasswdAuthenticationProvider], conf)
     case _ => throw new AuthenticationException("Not a valid authentication method")
   }

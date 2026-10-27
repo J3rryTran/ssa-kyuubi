@@ -194,4 +194,78 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
     val principal = provider.authenticate(credential(signedToken()))
     assert(principal.getName === "alice-subject")
   }
+
+  test("multiple issuers: accepts tokens from IP, DNS, and in-cluster issuers") {
+    val ipIssuer = issuer
+    val dnsIssuer = "https://keycloak.prod.example.com/realms/lakehouse"
+    val inClusterIssuer = "http://keycloak-service.keycloak-prod.svc.cluster.local:8080/realms/lakehouse"
+    val multiIssuerConf = baseConf(Map(
+      JwtTokenAuthenticationProvider.ISSUER -> s"$ipIssuer, $dnsIssuer/, , $inClusterIssuer"
+    ))
+    val provider = new JwtTokenAuthenticationProvider(multiIssuerConf)
+    assert(provider.issuers === Set(ipIssuer, dnsIssuer, inClusterIssuer))
+
+    // Token with IP issuer passes
+    assert(provider.authenticate(credential(signedToken(iss = ipIssuer))).getName === "alice")
+    // Token with DNS issuer passes (both with and without trailing slash on token)
+    assert(provider.authenticate(credential(signedToken(iss = dnsIssuer))).getName === "alice")
+    assert(provider.authenticate(credential(signedToken(iss = dnsIssuer + "/"))).getName === "alice")
+    // Token with in-cluster issuer passes
+    assert(provider.authenticate(credential(signedToken(iss = inClusterIssuer))).getName === "alice")
+
+    // Unknown issuer fails
+    intercept[AuthenticationException] {
+      provider.authenticate(credential(signedToken(iss = "https://unknown.issuer.com/realms/lakehouse")))
+    }
+  }
+
+  test("JwtIssuers.parse handles whitespace, empty items, and trailing slashes") {
+    assert(JwtIssuers.parse(" a/ , ,b") === Set("a", "b"))
+    assert(JwtIssuers.parse("https://host:8080/path/ , https://other/ ") ===
+      Set("https://host:8080/path", "https://other"))
+    assert(JwtIssuers.parse("") === Set.empty)
+    assert(JwtIssuers.parse(" , , ") === Set.empty)
+    assert(JwtIssuers.parse(null) === Set.empty)
+  }
+
+  test("empty or blank issuer configuration fails fast on initialization") {
+    intercept[IllegalArgumentException] {
+      new JwtTokenAuthenticationProvider(baseConf(Map(JwtTokenAuthenticationProvider.ISSUER -> "")))
+    }
+    intercept[IllegalArgumentException] {
+      new JwtTokenAuthenticationProvider(baseConf(Map(JwtTokenAuthenticationProvider.ISSUER -> " , , ")))
+    }
+  }
+
+  test("token missing iss claim is rejected") {
+    val provider = new JwtTokenAuthenticationProvider(baseConf())
+    val now = System.currentTimeMillis()
+    val builder = new JWTClaimsSet.Builder()
+      .subject("alice-subject")
+      .audience(audience)
+      .expirationTime(new Date(now + 600000L))
+      .issueTime(new Date(now))
+      .claim("preferred_username", "alice")
+    val header = new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(keyId).build()
+    val jwt = new SignedJWT(header, builder.build())
+    jwt.sign(new RSASSASigner(rsaKey))
+    intercept[AuthenticationException] {
+      provider.authenticate(credential(jwt.serialize()))
+    }
+  }
+
+  test("valid issuer with bad aud or signature still fails") {
+    val dnsIssuer = "https://keycloak.dns/realms/lakehouse"
+    val provider = new JwtTokenAuthenticationProvider(
+      baseConf(Map(JwtTokenAuthenticationProvider.ISSUER -> s"$issuer, $dnsIssuer")))
+
+    // Right issuer but wrong aud
+    intercept[AuthenticationException] {
+      provider.authenticate(credential(signedToken(iss = dnsIssuer, aud = "wrong-aud")))
+    }
+    // Right issuer but wrong signature
+    intercept[AuthenticationException] {
+      provider.authenticate(credential(signedToken(iss = dnsIssuer, signer = otherKey)))
+    }
+  }
 }

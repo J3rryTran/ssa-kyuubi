@@ -31,7 +31,7 @@ import com.nimbusds.jose.jwk.source.{JWKSource, JWKSourceBuilder}
 import com.nimbusds.jose.proc.{JWSVerificationKeySelector, SecurityContext}
 import com.nimbusds.jose.util.DefaultResourceRetriever
 import com.nimbusds.jwt.JWTClaimsSet
-import com.nimbusds.jwt.proc.{ConfigurableJWTProcessor, DefaultJWTProcessor}
+import com.nimbusds.jwt.proc.{BadJWTException, ConfigurableJWTProcessor, DefaultJWTClaimsVerifier, DefaultJWTProcessor}
 
 import org.apache.kyuubi.Logging
 import org.apache.kyuubi.config.KyuubiConf
@@ -64,7 +64,17 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
 
   import JwtTokenAuthenticationProvider._
 
-  private val issuer: String = required(conf, ISSUER)
+  private val rawIssuer: String = required(conf, ISSUER)
+  val issuers: Set[String] = {
+    val parsed = JwtIssuers.parse(rawIssuer)
+    if (parsed.isEmpty) {
+      throw new IllegalArgumentException(s"$ISSUER must contain at least one valid issuer")
+    }
+    parsed
+  }
+  private val primaryIssuer: String =
+    rawIssuer.split(",").map(JwtIssuers.normalize).find(_.nonEmpty).get
+
   private val audiences: Set[String] = {
     val aud = required(conf, AUDIENCE)
     aud.split(",").map(_.trim).filter(_.nonEmpty).toSet
@@ -91,7 +101,7 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
 
   private val jwtProcessor: ConfigurableJWTProcessor[SecurityContext] = buildProcessor()
 
-  info(s"Initialized JWT authentication: issuer=$issuer, jwksUrl=$jwksUrl, " +
+  info(s"Initialized JWT authentication: issuers=${issuers.mkString(",")}, jwksUrl=$jwksUrl, " +
     s"audience=${audiences.mkString(",")}, usernameClaim=$usernameClaim, " +
     s"allowedAlgorithms=${allowedAlgorithms.map(_.getName).mkString(",")}")
 
@@ -126,7 +136,7 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
   }
 
   private def discoverJwksUri(): String = {
-    val base = if (issuer.endsWith("/")) issuer.dropRight(1) else issuer
+    val base = primaryIssuer
     val discoveryUrl = base + "/.well-known/openid-configuration"
     try {
       val content = resourceRetriever.retrieveResource(new URL(discoveryUrl)).getContent
@@ -158,9 +168,10 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
           new JOSEObjectType(typ)))
     }
 
-    val exactMatch = new JWTClaimsSet.Builder().issuer(issuer).build()
-    val required = Set("exp", "iat").asJava
-    val verifier = new com.nimbusds.jwt.proc.DefaultJWTClaimsVerifier[SecurityContext](
+    val exactMatch = new JWTClaimsSet.Builder().build()
+    val required = Set("exp", "iat", "iss").asJava
+    val verifier = new MultiIssuerJWTClaimsVerifier[SecurityContext](
+      issuers,
       audiences.asJava,
       exactMatch,
       required,
@@ -168,6 +179,55 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
     verifier.setMaxClockSkew(clockSkewSeconds)
     processor.setJWTClaimsSetVerifier(verifier)
     processor
+  }
+}
+
+class MultiIssuerJWTClaimsVerifier[C <: SecurityContext](
+    val acceptedIssuers: Set[String],
+    exactMatchAudience: java.util.Set[String],
+    exactMatchClaims: JWTClaimsSet,
+    requiredClaims: java.util.Set[String],
+    prohibitedClaims: java.util.Set[String])
+  extends DefaultJWTClaimsVerifier[C](
+    exactMatchAudience,
+    exactMatchClaims,
+    requiredClaims,
+    prohibitedClaims)
+  with Logging {
+
+  @throws[BadJWTException]
+  override def verify(claimsSet: JWTClaimsSet, context: C): Unit = {
+    super.verify(claimsSet, context)
+    val tokenIssuer = claimsSet.getIssuer
+    if (tokenIssuer == null || tokenIssuer.trim.isEmpty) {
+      throw new BadJWTException("Missing 'iss' claim in JWT")
+    }
+    val normalizedTokenIssuer = JwtIssuers.normalize(tokenIssuer)
+    if (!acceptedIssuers.contains(normalizedTokenIssuer)) {
+      warn(s"JWT issuer '$tokenIssuer' not in accepted issuers [${acceptedIssuers.mkString(", ")}]")
+      throw new BadJWTException(s"JWT issuer '$tokenIssuer' not in accepted issuers")
+    }
+  }
+}
+
+object JwtIssuers {
+
+  def normalize(iss: String): String = {
+    if (iss == null) ""
+    else {
+      val trimmed = iss.trim
+      if (trimmed.endsWith("/")) trimmed.dropRight(1) else trimmed
+    }
+  }
+
+  def parse(raw: String): Set[String] = {
+    if (raw == null) Set.empty
+    else {
+      raw.split(",")
+        .map(normalize)
+        .filter(_.nonEmpty)
+        .toSet
+    }
   }
 }
 

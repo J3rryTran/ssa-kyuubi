@@ -76,7 +76,14 @@ class AuthenticationFilter(conf: KyuubiConf) extends Filter with Logging {
       if (basicAuthType.equals(CUSTOM) || basicAuthType.equals(OIDC)) {
         val basicClass = conf.get(KyuubiConf.AUTHENTICATION_CUSTOM_BASIC_CLASS).orElse {
           if (basicAuthType.equals(OIDC)) {
-            Some(AuthenticationProviderFactory.OIDC_PASSWD_PROVIDER_CLASS)
+            val passwordEnabled = conf.getOption(AuthenticationProviderFactory.JWT_PASSWORD_ENABLED)
+              .map(_.trim.toBoolean).getOrElse(true)
+            val defaultClass = if (passwordEnabled) {
+              AuthenticationProviderFactory.OIDC_PASSWD_PROVIDER_CLASS
+            } else {
+              AuthenticationProviderFactory.OIDC_DENY_PASSWD_PROVIDER_CLASS
+            }
+            Some(defaultClass)
           } else None
         }
         basicClass.foreach { _ =>

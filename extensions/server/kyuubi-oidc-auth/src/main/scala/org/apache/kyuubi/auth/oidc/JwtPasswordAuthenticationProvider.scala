@@ -35,27 +35,73 @@ class JwtPasswordAuthenticationProvider(conf: KyuubiConf)
 
   def this() = this(null)
 
+  private val passwordEnabled: Boolean = {
+    if (conf == null) true
+    else conf.getOption(JwtPasswordAuthenticationProvider.PASSWORD_ENABLED)
+      .map(_.trim.toBoolean).getOrElse(true)
+  }
+
+  private val userAliases: Set[String] = {
+    if (conf == null) Set("token")
+    else {
+      val raw = conf.getOption(JwtPasswordAuthenticationProvider.PASSWORD_USER_ALIASES)
+        .getOrElse("token")
+      raw.split(",").map(_.trim).filter(_.nonEmpty).toSet
+    }
+  }
+
   override def authenticate(user: String, password: String): Unit = {
+    authenticateAndResolve(user, password)
+  }
+
+  override def authenticateAndResolve(user: String, password: String): String = {
     if (conf == null) {
       throw new IllegalStateException("KyuubiConf must not be null")
     }
 
-    if (password == null || password.trim.isEmpty || password.split("\\.").length != 3) {
+    if (!passwordEnabled) {
+      throw new AuthenticationException(
+        "Password authentication is disabled; use OIDC/JWT bearer authentication over HTTP transport")
+    }
+
+    if (password == null || password.trim.isEmpty) {
+      throw new AuthenticationException(
+        "Password authentication is disabled; pass an OIDC access token as the password")
+    }
+
+    val trimmedPassword = password.trim
+    val rawToken = if (trimmedPassword.regionMatches(true, 0, "Bearer ", 0, 7)) {
+      trimmedPassword.substring(7).trim
+    } else {
+      trimmedPassword
+    }
+
+    if (rawToken.split("\\.").length != 3) {
       throw new AuthenticationException(
         "Password authentication is disabled; pass an OIDC access token as the password")
     }
 
     val principal = JwtPasswordAuthenticationProvider.verifier(conf)
-      .authenticate(DefaultTokenCredential(password))
+      .authenticate(DefaultTokenCredential(rawToken))
+    val tokenUser = principal.getName
 
-    if (principal.getName != user) {
+    val clientUser = if (user == null) "" else user.trim
+    if (clientUser.isEmpty || userAliases.contains(clientUser) || clientUser == tokenUser) {
+      debug(s"Authenticated password token for user '$tokenUser' (client username: '$clientUser')")
+      tokenUser
+    } else {
+      warn(s"Client user '$clientUser' does not match token subject '$tokenUser'")
       throw new AuthenticationException(
-        s"Token subject '${principal.getName}' does not match SASL user '$user'")
+        s"Token subject '$tokenUser' does not match user '$clientUser'")
     }
   }
 }
 
 object JwtPasswordAuthenticationProvider {
+  val PREFIX = "kyuubi.authentication.jwt.password."
+  val PASSWORD_ENABLED = PREFIX + "enabled"
+  val PASSWORD_USER_ALIASES = PREFIX + "user.aliases"
+
   @volatile private var _verifier: JwtTokenAuthenticationProvider = _
 
   def verifier(conf: KyuubiConf): JwtTokenAuthenticationProvider = {

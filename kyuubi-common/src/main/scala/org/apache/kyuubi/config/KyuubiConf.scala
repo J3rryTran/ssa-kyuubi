@@ -684,6 +684,15 @@ object KyuubiConf {
       .stringConf
       .createWithDefault("cliservice")
 
+  val FRONTEND_THRIFT_HTTP_PATH_ALIASES: ConfigEntry[Seq[String]] =
+    buildConf("kyuubi.frontend.thrift.http.path.aliases")
+      .serverOnly
+      .doc("Comma-separated list of alias path components of URL endpoints when in HTTP mode.")
+      .version("1.10.3")
+      .stringConf
+      .toSequence()
+      .createWithDefault(Nil)
+
   val FRONTEND_THRIFT_HTTP_COMPRESSION_ENABLED: ConfigEntry[Boolean] =
     buildConf("kyuubi.frontend.thrift.http.compression.enabled")
       .serverOnly

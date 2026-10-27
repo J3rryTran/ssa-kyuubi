@@ -125,6 +125,46 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
   test("1. valid access token authenticates and matches user") {
     val provider = new JwtPasswordAuthenticationProvider(baseConf())
     provider.authenticate("alice", signedToken())
+    assert(provider.authenticateAndResolve("alice", signedToken()) === "alice")
+  }
+
+  test("1b. user placeholder aliases (token, empty, null) resolve to token user") {
+    val provider = new JwtPasswordAuthenticationProvider(baseConf())
+    val token = signedToken()
+    // User alias 'token'
+    assert(provider.authenticateAndResolve("token", token) === "alice")
+    // Empty user
+    assert(provider.authenticateAndResolve("", token) === "alice")
+    assert(provider.authenticateAndResolve("  ", token) === "alice")
+    // Null user
+    assert(provider.authenticateAndResolve(null, token) === "alice")
+  }
+
+  test("1c. custom user aliases are honored") {
+    val conf = baseConf(Map(
+      JwtPasswordAuthenticationProvider.PASSWORD_USER_ALIASES -> "token, custom-placeholder"
+    ))
+    val provider = new JwtPasswordAuthenticationProvider(conf)
+    assert(provider.authenticateAndResolve("custom-placeholder", signedToken()) === "alice")
+  }
+
+  test("1d. Bearer prefix in password field is stripped and accepted") {
+    val provider = new JwtPasswordAuthenticationProvider(baseConf())
+    val tokenWithPrefix = s"Bearer ${signedToken()}"
+    assert(provider.authenticateAndResolve("token", tokenWithPrefix) === "alice")
+    val lowerPrefix = s"bearer ${signedToken()}"
+    assert(provider.authenticateAndResolve("alice", lowerPrefix) === "alice")
+  }
+
+  test("1e. password.enabled=false rejects any password with Deny message") {
+    val conf = baseConf(Map(
+      JwtPasswordAuthenticationProvider.PASSWORD_ENABLED -> "false"
+    ))
+    val provider = new JwtPasswordAuthenticationProvider(conf)
+    val e = intercept[AuthenticationException] {
+      provider.authenticate("alice", signedToken())
+    }
+    assert(e.getMessage.contains("Password authentication is disabled; use OIDC/JWT bearer"))
   }
 
   test("2. valid access token with mismatching user is rejected") {
