@@ -61,7 +61,8 @@ class JwtPasswordAuthenticationProvider(conf: KyuubiConf)
 
     if (!passwordEnabled) {
       throw new AuthenticationException(
-        "Password authentication is disabled; use OIDC/JWT bearer authentication over HTTP transport")
+        "Password authentication is disabled; " +
+          "use OIDC/JWT bearer authentication over HTTP transport")
     }
 
     if (password == null || password.trim.isEmpty) {

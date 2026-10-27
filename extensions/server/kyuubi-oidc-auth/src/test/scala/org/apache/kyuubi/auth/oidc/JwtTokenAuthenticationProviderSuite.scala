@@ -198,24 +198,28 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
   test("multiple issuers: accepts tokens from IP, DNS, and in-cluster issuers") {
     val ipIssuer = issuer
     val dnsIssuer = "https://keycloak.prod.example.com/realms/lakehouse"
-    val inClusterIssuer = "http://keycloak-service.keycloak-prod.svc.cluster.local:8080/realms/lakehouse"
+    val inClusterIssuer =
+      "http://keycloak-service.keycloak-prod.svc.cluster.local:8080/realms/lakehouse"
     val multiIssuerConf = baseConf(Map(
       JwtTokenAuthenticationProvider.ISSUER -> s"$ipIssuer, $dnsIssuer/, , $inClusterIssuer"
     ))
     val provider = new JwtTokenAuthenticationProvider(multiIssuerConf)
     assert(provider.issuers === Set(ipIssuer, dnsIssuer, inClusterIssuer))
 
+    def subjectFor(iss: String): String =
+      provider.authenticate(credential(signedToken(iss = iss))).getName
+
     // Token with IP issuer passes
-    assert(provider.authenticate(credential(signedToken(iss = ipIssuer))).getName === "alice")
+    assert(subjectFor(ipIssuer) === "alice")
     // Token with DNS issuer passes (both with and without trailing slash on token)
-    assert(provider.authenticate(credential(signedToken(iss = dnsIssuer))).getName === "alice")
-    assert(provider.authenticate(credential(signedToken(iss = dnsIssuer + "/"))).getName === "alice")
+    assert(subjectFor(dnsIssuer) === "alice")
+    assert(subjectFor(dnsIssuer + "/") === "alice")
     // Token with in-cluster issuer passes
-    assert(provider.authenticate(credential(signedToken(iss = inClusterIssuer))).getName === "alice")
+    assert(subjectFor(inClusterIssuer) === "alice")
 
     // Unknown issuer fails
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(iss = "https://unknown.issuer.com/realms/lakehouse")))
+      subjectFor("https://unknown.issuer.com/realms/lakehouse")
     }
   }
 
@@ -233,7 +237,8 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
       new JwtTokenAuthenticationProvider(baseConf(Map(JwtTokenAuthenticationProvider.ISSUER -> "")))
     }
     intercept[IllegalArgumentException] {
-      new JwtTokenAuthenticationProvider(baseConf(Map(JwtTokenAuthenticationProvider.ISSUER -> " , , ")))
+      new JwtTokenAuthenticationProvider(
+        baseConf(Map(JwtTokenAuthenticationProvider.ISSUER -> " , , ")))
     }
   }
 

@@ -17,19 +17,8 @@
 
 
 ARG BASE_IMAGE=eclipse-temurin:8-jdk-focal
-ARG spark_provided="spark_builtin"
-
-FROM ${BASE_IMAGE} as builder_spark_provided
-ONBUILD ARG spark_home_in_docker
-ONBUILD ENV SPARK_HOME ${spark_home_in_docker}
-
-FROM ${BASE_IMAGE} as builder_spark_builtin
-
-ONBUILD ENV SPARK_HOME /opt/spark
-ONBUILD RUN mkdir -p ${SPARK_HOME}
-ONBUILD COPY spark-binary ${SPARK_HOME}
-
-FROM builder_${spark_provided}
+# JAVA_HOME and SPARK_HOME are deliberately not set here: the Helm chart provides them.
+FROM ${BASE_IMAGE}
 
 ARG kyuubi_uid=10009
 USER root
@@ -85,10 +74,7 @@ ENV LD_LIBRARY_PATH=${HADOOP_HOME}/lib/native${LD_LIBRARY_PATH:+:${LD_LIBRARY_PA
 WORKDIR ${KYUUBI_HOME}
 RUN chown -R kyuubi:root ${KYUUBI_HOME} && \
     chmod ug+rw -R ${KYUUBI_HOME} && \
-    chmod a+rwx -R ${KYUUBI_WORK_DIR_ROOT} && \
-    for d in ${SPARK_HOME}/bin ${SPARK_HOME}/sbin; do \
-      if [ -n "${SPARK_HOME}" ] && [ -d "$d" ]; then chmod a+rx -R "$d"; fi; \
-    done
+    chmod a+rwx -R ${KYUUBI_WORK_DIR_ROOT}
 
 CMD [ "./bin/kyuubi", "run" ]
 

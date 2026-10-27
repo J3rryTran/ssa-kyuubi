@@ -86,26 +86,6 @@ function build {
   local KYUUBI_ROOT="$KYUUBI_HOME"
   local BUILD_ARGS=(${BUILD_PARAMS})
 
-  if [[ ! -d "$KYUUBI_ROOT/spark-binary" ]]; then
-    mkdir "$KYUUBI_ROOT/spark-binary"
-  else
-    rm -rf "$KYUUBI_ROOT/spark-binary/*"
-  fi
-
-  if [[ -n "${SPARK_HOME_IN_DOCKER}" ]]; then
-    BUILD_ARGS+=(--build-arg spark_home_in_docker=$SPARK_HOME_IN_DOCKER)
-    BUILD_ARGS+=(--build-arg spark_provided="spark_provided")
-  else
-    if [[ ! -d "$SPARK_HOME" ]]; then
-      if [[ -d "$KYUUBI_ROOT/externals/spark-*" ]]; then
-        SPARK_HOME="$(find "$KYUUBI_ROOT/externals" -name 'spark-*' -type d)"
-      else
-        error "Cannot found dir SPARK_HOME $SPARK_HOME, you must configure SPARK_HOME correct."
-      fi
-    fi
-    cp -r "$SPARK_HOME"/* "$KYUUBI_ROOT"/spark-binary/
-  fi
-
   # Hadoop native
   rm -rf "$KYUUBI_ROOT/hadoop-native"
   mkdir -p "$KYUUBI_ROOT/hadoop-native"
@@ -179,10 +159,6 @@ Options:
                         See https://docs.docker.com/buildx/working-with-buildx/ for steps to setup buildx.
   -b                    Build arg to build or push the image. For multiple build args, this option needs to
                         be used separately for each build arg.
-  -s                    Put the specified Spark into the Kyuubi image to be used as the internal SPARK_HOME
-                        of the container.
-  -S                    Declare SPARK_HOME in Docker Image. When you configured -S, you need to provide an image
-                        with Spark as BASE_IMAGE.
   -H                    Copy Hadoop native libraries into the image at /opt/hadoop/lib/native and set
                         LD_LIBRARY_PATH accordingly. Accepts a Hadoop home (containing lib/native) or
                         the native directory itself.
@@ -203,12 +179,6 @@ Examples:
     # Note: buildx, which does cross building, needs to do the push during build
     # So there is no separate push step with -X
 
-  - Build with Spark placed "/path/spark"
-    $0 -s /path/spark build
-
-  - Build with Spark Image myrepo/spark:3.4.2
-    $0 -S /opt/spark -b BASE_IMAGE=myrepo/spark:3.4.2 build
-
 EOF
 }
 
@@ -224,9 +194,8 @@ NOCACHEARG=
 BUILD_PARAMS=
 KYUUBI_UID=
 CROSS_BUILD="false"
-SPARK_HOME_IN_DOCKER=
 HADOOP_NATIVE_DIR=
-while getopts f:r:t:i:Xnb:u:s:S:H: option
+while getopts f:r:t:i:Xnb:u:H: option
 do
  case "${option}"
  in
@@ -238,8 +207,6 @@ do
  b) BUILD_PARAMS=${BUILD_PARAMS}" --build-arg "${OPTARG};;
  X) CROSS_BUILD=1;;
  u) KYUUBI_UID=${OPTARG};;
- s) SPARK_HOME=${OPTARG};;
- S) SPARK_HOME_IN_DOCKER=${OPTARG};;
  H) HADOOP_NATIVE_DIR=$(resolve_file ${OPTARG});;
  esac
 done
