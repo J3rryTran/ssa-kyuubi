@@ -22,6 +22,7 @@ import javax.ws.rs.core.{MediaType, Response}
 
 import io.swagger.v3.oas.annotations.tags.Tag
 
+import org.apache.kyuubi.server.compute.ManagedComputeStatus
 import org.apache.kyuubi.server.notebook.api._
 import org.apache.kyuubi.server.notebook.store.ExecutionFilter
 
@@ -94,7 +95,11 @@ private[v1] class NotebookSessionsResource extends NotebookApiSupport {
       .map(_.trim).filter(_.nonEmpty)
       .getOrElse(throw NotebookException.invalid("runtimeSpecId must be provided"))
     NotebookRuntimeView(
-      notebooks.runtimes.create(session, specId, notebooks.runtimes.configurationOf(request)))
+      notebooks.runtimes.ensureFor(
+        principal,
+        session,
+        Some(specId),
+        notebooks.runtimes.configurationOf(request)))
   }
 
   @POST
@@ -239,4 +244,39 @@ private[v1] class ExecutionsResource extends NotebookApiSupport {
       executionId,
       Option(cursor).filter(_.nonEmpty),
       maxRows)
+}
+
+@Tag(name = "Notebook")
+@Produces(Array(MediaType.APPLICATION_JSON))
+@Consumes(Array(MediaType.APPLICATION_JSON))
+private[v1] class NotebookRunsResource extends NotebookApiSupport {
+
+  @GET
+  @Path("{runId: [^:/]+}")
+  def get(@PathParam("runId") runId: String): NotebookRunView =
+    NotebookRunView(notebooks.runs.get(principal, runId))
+
+  @GET
+  @Path("{runId: [^:/]+}/status")
+  def status(@PathParam("runId") runId: String): ManagedComputeStatus =
+    notebooks.runs.status(principal, runId)
+
+  @POST
+  @Path("{runId: [^:/]+}:retry-cleanup")
+  def retryCleanup(@PathParam("runId") runId: String): ManagedComputeStatus =
+    notebooks.runs.retryCleanup(principal, runId)
+
+  @GET
+  @Path("{runId: [^:/]+}/executions")
+  def executions(@PathParam("runId") runId: String): Seq[CellExecutionView] = {
+    notebooks.runs.get(principal, runId)
+    notebooks.executions.list(
+      principal,
+      ExecutionFilter(notebookRunId = Some(runId), limit = 1000)).map(CellExecutionView.apply)
+  }
+
+  @POST
+  @Path("{runId: [^:/]+}:cancel")
+  def cancel(@PathParam("runId") runId: String): NotebookRunView =
+    NotebookRunView(notebooks.runs.cancel(principal, runId))
 }

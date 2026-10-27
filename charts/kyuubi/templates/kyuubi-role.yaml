@@ -22,5 +22,9 @@ metadata:
   name: {{ .Release.Name }}
   labels:
     {{- include "kyuubi.labels" . | nindent 4 }}
-rules: {{- toYaml .Values.rbac.rules | nindent 2 }}
+rules:
+  {{- toYaml .Values.rbac.rules | nindent 2 }}
+  {{- if .Values.rbac.managedWorkloads.enabled }}
+  {{- toYaml .Values.rbac.managedWorkloads.rules | nindent 2 }}
+  {{- end }}
 {{- end }}

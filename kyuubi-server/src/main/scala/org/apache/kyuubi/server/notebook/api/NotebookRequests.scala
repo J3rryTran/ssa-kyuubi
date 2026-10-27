@@ -143,6 +143,13 @@ class SetScheduleRequest {
   @BeanProperty var failurePolicy: String = _
   @BeanProperty var overlapPolicy: String = _
   @BeanProperty var version: java.lang.Long = _
+
+  /** Explicit deployment action. Ordinary schedule edits retain the already pinned source. */
+  @BeanProperty var refreshSource: java.lang.Boolean = _
+}
+
+class PinNotebookScheduleSourceRequest {
+  @BeanProperty var version: java.lang.Long = _
 }
 
 /**
@@ -202,4 +209,11 @@ class UpdateDbtJobRequest {
 
 class DbtPreviewRequest {
   @BeanProperty var selector: String = _
+}
+
+class CompleteDbtManagedCliRunRequest {
+  @BeanProperty var state: String = _
+  @BeanProperty var exitCode: java.lang.Integer = _
+  @BeanProperty var errorSummary: String = _
+  @BeanProperty var dbtInvocationId: String = _
 }

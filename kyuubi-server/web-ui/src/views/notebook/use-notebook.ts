@@ -488,7 +488,18 @@ export function useNotebook() {
   const restartSession = async () => {
     if (!session.value) return
     try {
-      session.value = await api.restartSession(session.value.id)
+      // A pod replacement removes the ephemeral owner before the durable session row can be
+      // reconciled. Refresh through the notebook-scoped endpoint first: unlike a session path it
+      // is not routed to the dead owner and can turn that row into LOST. A terminal/missing row
+      // is recovered by opening a fresh interactive session, not by reviving an old JOB/runtime.
+      const current = (await api.listSessions(notebook.value!.id))
+        .find((candidate) => candidate.id === session.value?.id)
+      session.value = current && isUsableSession(current)
+        ? await api.restartSession(current.id)
+        : await api.createSession(
+            notebook.value!.id,
+            notebook.value?.runtimeProfile || null
+          )
       ElMessage.success('The session was restarted')
     } catch (error) {
       reportError(error, 'The session could not be restarted')

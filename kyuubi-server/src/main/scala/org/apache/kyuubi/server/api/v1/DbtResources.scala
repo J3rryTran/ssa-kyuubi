@@ -20,7 +20,8 @@ package org.apache.kyuubi.server.api.v1
 import javax.ws.rs._
 import javax.ws.rs.core.{MediaType, Response}
 
-import org.apache.kyuubi.server.dbt.{DbtJob, DbtJobRun, DbtRunnerLogPage, DbtRunnerNotConfiguredException, DbtWorkspace}
+import org.apache.kyuubi.server.compute.{ManagedComputeStatus, ManagedComputeSubmission}
+import org.apache.kyuubi.server.dbt.{DbtJob, DbtJobRun, DbtManagedCliLaunch, DbtRunArtifact, DbtRunnerLogPage, DbtRunnerNotConfiguredException, DbtWorkspace}
 import org.apache.kyuubi.server.notebook.api._
 
 /** DBT metadata API. It deliberately contains no endpoint that accepts raw Spark configuration. */
@@ -150,21 +151,60 @@ private[v1] class DbtJobsResource extends NotebookApiSupport {
 
   @POST
   @Path("{jobId}:run")
-  def run(@PathParam("jobId") jobId: String): DbtJobRun =
-    try notebooks.dbt.submitJob(principal, jobId)
+  def run(
+      @PathParam("jobId") jobId: String,
+      @HeaderParam("Idempotency-Key") idempotencyKey: String): ManagedComputeSubmission =
+    try submission(notebooks.dbt.submitJob(principal, jobId, Option(idempotencyKey)))
     catch {
       case _: DbtRunnerNotConfiguredException =>
         throw new NotebookException(
           NotebookErrorCode.DBT_RUNNER_NOT_CONFIGURED,
           "DBT runner is not configured on this server")
     }
+
+  @POST
+  @Path("{jobId}:schedule-run")
+  def scheduleRun(
+      @PathParam("jobId") jobId: String,
+      @HeaderParam("Idempotency-Key") idempotencyKey: String): ManagedComputeSubmission =
+    try submission(notebooks.dbt.submitScheduledJob(principal, jobId, Option(idempotencyKey)))
+    catch {
+      case _: DbtRunnerNotConfiguredException =>
+        throw new NotebookException(
+          NotebookErrorCode.DBT_RUNNER_NOT_CONFIGURED,
+          "DBT runner is not configured on this server")
+    }
+
+  @POST
+  @Path("{jobId}:prepare-managed-cli")
+  def prepareManagedCli(@PathParam("jobId") jobId: String): DbtManagedCliLaunch =
+    notebooks.dbt.prepareManagedCli(principal, jobId)
+
+  private def submission(run: DbtJobRun): ManagedComputeSubmission =
+    ManagedComputeSubmission(
+      run.id,
+      run.attemptId,
+      run.computeAllocationId.getOrElse {
+        throw new IllegalStateException(s"DBT run ${run.id} has no compute allocation")
+      })
 }
 
 @Produces(Array(MediaType.APPLICATION_JSON))
+@Consumes(Array(MediaType.APPLICATION_JSON))
 private[v1] class DbtJobRunsResource extends NotebookApiSupport {
   @GET
   @Path("{runId}")
   def get(@PathParam("runId") runId: String): DbtJobRun = notebooks.dbt.getRun(principal, runId)
+
+  @GET
+  @Path("{runId}/status")
+  def status(@PathParam("runId") runId: String): ManagedComputeStatus =
+    notebooks.dbt.status(principal, runId)
+
+  @POST
+  @Path("{runId}:retry-cleanup")
+  def retryCleanup(@PathParam("runId") runId: String): ManagedComputeStatus =
+    notebooks.dbt.retryCleanup(principal, runId)
 
   /** Logs become available when Phase D installs a DbtRunner implementation. */
   @GET
@@ -176,7 +216,14 @@ private[v1] class DbtJobRunsResource extends NotebookApiSupport {
     try notebooks.dbt.logs(principal, runId, offset, Option(limit).map(_.intValue))
     catch { case _: DbtRunnerNotConfiguredException => runnerNotConfigured() }
 
-  /** Cancellation is deliberately runner-owned; it must never terminate a shared Spark engine. */
+  @GET
+  @Path("{runId}/artifacts/{name: manifest\\.json|run_results\\.json}")
+  def artifact(
+      @PathParam("runId") runId: String,
+      @PathParam("name") name: String): DbtRunArtifact =
+    notebooks.dbt.artifact(principal, runId, name)
+
+  /** Cancellation targets the run allocation; it must never terminate a shared Spark engine. */
   @POST
   @Path("{runId}:cancel")
   def cancel(@PathParam("runId") runId: String): Response = {
@@ -184,6 +231,27 @@ private[v1] class DbtJobRunsResource extends NotebookApiSupport {
       notebooks.dbt.cancel(principal, runId)
       Response.accepted().build()
     } catch { case _: DbtRunnerNotConfiguredException => runnerNotConfigured() }
+  }
+
+  @POST
+  @Path("{runId}:heartbeat-managed-cli")
+  def heartbeatManagedCli(@PathParam("runId") runId: String): DbtJobRun =
+    notebooks.dbt.heartbeatManagedCli(principal, runId)
+
+  @POST
+  @Path("{runId}:complete-managed-cli")
+  def completeManagedCli(
+      @PathParam("runId") runId: String,
+      request: CompleteDbtManagedCliRunRequest): DbtJobRun = {
+    val exitCode = Option(request.getExitCode).map(_.intValue).getOrElse(
+      throw NotebookException.invalid("exitCode is required"))
+    notebooks.dbt.completeManagedCli(
+      principal,
+      runId,
+      request.getState,
+      exitCode,
+      Option(request.getErrorSummary),
+      Option(request.getDbtInvocationId))
   }
 
   private def runnerNotConfigured[T](): T =

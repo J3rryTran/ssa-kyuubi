@@ -152,11 +152,6 @@
               <div class="sub-text">Profile ID: {{ row.profileId }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="Revision" min-width="10%">
-            <template #default="{ row }">
-              <el-tag size="small" type="success">r{{ row.revision }}</el-tag>
-            </template>
-          </el-table-column>
           <el-table-column label="Engine status" min-width="14%">
             <template #default="{ row }">
               <el-tag :type="engineStateType(row.profileId)" size="small">
@@ -413,9 +408,8 @@
   const isEngineTransitioning = (profileId: string) =>
     ['STARTING', 'STOPPING'].includes(engineState(profileId))
 
-  // The backend also checks every former revision. This UI guard prevents the common case where
-  // the current revision is visibly starting or running; a former running revision is rejected
-  // by the API with its exact revision number.
+  // Profile launch configuration is mutable only while its engine is stopped. The server repeats
+  // this check before it accepts either an update or a delete request.
   const canDeleteProfile = (profileId: string): boolean => engineState(profileId) === 'STOPPED'
 
   const canUpdateProfile = (profileId: string): boolean => engineState(profileId) === 'STOPPED'

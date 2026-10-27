@@ -22,7 +22,7 @@ import java.util.UUID
 import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
-import io.fabric8.kubernetes.api.model.{ConfigMapBuilder, PersistentVolumeClaimBuilder, Quantity, VolumeResourceRequirementsBuilder}
+import io.fabric8.kubernetes.api.model.{ConfigMapBuilder, PersistentVolumeClaim, PersistentVolumeClaimBuilder, Quantity, VolumeResourceRequirementsBuilder}
 import io.fabric8.kubernetes.api.model.batch.v1.JobBuilder
 import io.fabric8.kubernetes.client.{Config, ConfigBuilder, KubernetesClient, KubernetesClientBuilder}
 
@@ -47,7 +47,8 @@ class PythonEnvironmentService(
     conf: KyuubiConf,
     store: NotebookStore,
     engineProfiles: EngineProfileService,
-    client: Option[KubernetesClient] = None) extends Logging {
+    client: Option[KubernetesClient] = None,
+    resources: Option[PythonEnvironmentResources] = None) extends Logging {
   private val enabled = conf.get(PYTHON_ENVIRONMENT_ENABLED)
   private val mountPath = conf.get(PYTHON_ENVIRONMENT_MOUNT_PATH).stripSuffix("/")
   private val expectedBaseImage = conf.get(PYTHON_ENVIRONMENT_BASE_IMAGE).trim
@@ -55,29 +56,75 @@ class PythonEnvironmentService(
   private val builderImage = conf.get(PYTHON_ENVIRONMENT_KUBERNETES_BUILDER_IMAGE).trim
   private val serviceAccount = conf.get(PYTHON_ENVIRONMENT_KUBERNETES_SERVICE_ACCOUNT)
   private val storageClass = conf.get(PYTHON_ENVIRONMENT_PVC_STORAGE_CLASS).trim
+  private val pvcAccessMode = conf.get(PYTHON_ENVIRONMENT_PVC_ACCESS_MODE)
   private val pvcSize = conf.get(PYTHON_ENVIRONMENT_PVC_SIZE)
   private lazy val kubernetes = client.getOrElse(PythonEnvironmentService.client())
+  private lazy val kubernetesResources = resources.getOrElse(
+    new KubernetesPythonEnvironmentResources(kubernetes, namespace))
+  @volatile private var hasOpenComputeAllocation: (String => Boolean) =
+    (_: String) => false
 
   def isEnabled: Boolean = enabled
 
-  def launchConfig(snapshot: EngineProfileSnapshot): Map[String, String] = {
-    if (!enabled) {
-      Map.empty
-    } else {
-      snapshot.pythonEnvironmentRevisionId.flatMap(store.getPythonEnvironmentRevision) match {
-        case Some(environment) if isUsable(snapshot, environment) => mountConfig(environment)
-        case _ => Map.empty
-      }
-    }
+  /** Installed after ComputeAllocationService is initialized to avoid a construction cycle. */
+  def onHasOpenComputeAllocation(callback: String => Boolean): Unit = {
+    hasOpenComputeAllocation = callback
   }
 
-  def environmentRevisionId(snapshot: EngineProfileSnapshot): Option[String] =
+  /**
+   * Deletes terminal builder resources and the profile-scoped Python environment PVC.
+   *
+   * A PVC is shared by every environment generation of one profile, so it is deleted once only
+   * after all associated Builder Jobs are known terminal. A failed Kubernetes deletion aborts
+   * profile deletion before its S3 document is removed, leaving durable metadata for a retry.
+   */
+  def deleteProfileEnvironment(profileId: String): Unit = synchronized {
+    if (hasOpenComputeAllocation(profileId)) {
+      throw NotebookException.invalid(
+        s"cannot delete Python environment storage while Engine Profile '$profileId' has " +
+          "open compute allocations")
+    }
+    val environments = store.listPythonEnvironmentRevisions(profileId)
+    val active = environments.filter(environment =>
+      environment.state == PythonEnvironmentState.PENDING ||
+        environment.state == PythonEnvironmentState.BUILDING)
+    if (active.nonEmpty) {
+      throw NotebookException.invalid(
+        s"cannot delete an Engine Profile while Python environment builds are active: " +
+          active.map(_.id).mkString(", "))
+    }
+
+    environments.foreach { environment =>
+      kubernetesResources.deleteBuilderJob(
+        PythonEnvironmentService.resourceName("kyuubi-python-build", environment.id))
+      kubernetesResources.deleteRequirementsConfigMap(
+        PythonEnvironmentService.resourceName("kyuubi-python-env", environment.id))
+    }
+    environments.map(_.pvcName).distinct.foreach { pvcName =>
+      kubernetesResources.deletePersistentVolumeClaim(pvcName)
+    }
+    store.deletePythonEnvironmentState(profileId)
+  }
+
+  private[server] def resolveLaunchEnvironment(
+      snapshot: EngineProfileSnapshot): Option[PythonEnvironmentLaunch] =
     if (!enabled) None
     else {
       snapshot.pythonEnvironmentRevisionId.flatMap(store.getPythonEnvironmentRevision)
         .filter(environment => isUsable(snapshot, environment))
-        .map(_.id)
+        .map { environment =>
+          PythonEnvironmentLaunch(
+            environment.id,
+            mountConfig(environment))
+        }
     }
+
+  def launchConfig(snapshot: EngineProfileSnapshot): Map[String, String] =
+    resolveLaunchEnvironment(snapshot).map(_.configuration).getOrElse(Map.empty)
+
+  def environmentRevisionId(snapshot: EngineProfileSnapshot): Option[String] =
+    if (!enabled) None
+    else resolveLaunchEnvironment(snapshot).map(_.id)
 
   /**
    * Records a package intent while the current engine is alive.
@@ -91,14 +138,24 @@ class PythonEnvironmentService(
       profileId: String,
       operation: String,
       packages: Seq[String],
-      hotInstallSucceeded: Boolean = false): PythonEnvironmentChangeRequest = synchronized {
+      hotInstallSucceeded: Boolean = false,
+      requestId: Option[String] = None): PythonEnvironmentChangeRequest = synchronized {
     requireEnabled()
     val profile = engineProfiles.getOwned(profileId, principal)
     val normalized = PythonEnvironmentService.normalizePackages(packages)
     val normalizedOperation = PythonEnvironmentOperation.normalize(operation)
+    val changeId = requestId.map(_.trim).filter(_.nonEmpty).getOrElse(UUID.randomUUID().toString)
+    if (changeId.length > 64) {
+      throw NotebookException.invalid(
+        "Python environment request ID must not exceed 64 characters")
+    }
+    store.getPythonEnvironmentChangeRequest(changeId).foreach { existing =>
+      requireSameChange(existing, profileId, principal.user, normalizedOperation, normalized)
+      return existing
+    }
     val now = System.currentTimeMillis()
     val request = PythonEnvironmentChangeRequest(
-      id = UUID.randomUUID().toString,
+      id = changeId,
       profileId = profileId,
       requestedBy = principal.user,
       operation = normalizedOperation,
@@ -110,8 +167,18 @@ class PythonEnvironmentService(
       errorSummary = None,
       createdAt = now,
       updatedAt = now)
-    store.createPythonEnvironmentChangeRequest(request)
-    request
+    try {
+      store.createPythonEnvironmentChangeRequest(request)
+      request
+    } catch {
+      case NonFatal(error) =>
+        store.getPythonEnvironmentChangeRequest(changeId) match {
+          case Some(existing) =>
+            requireSameChange(existing, profileId, principal.user, normalizedOperation, normalized)
+            existing
+          case None => throw error
+        }
+    }
   }
 
   /** Reconciles engine-stop sealing and durable Builder Jobs after a Kyuubi restart. */
@@ -186,16 +253,24 @@ class PythonEnvironmentService(
       val groupedRequests = pendingRequests(profileId).groupBy(_.resultingEnvironmentRevisionId)
       groupedRequests.foreach {
         case (Some(environmentId), grouped) =>
-          store.getPythonEnvironmentRevision(environmentId)
-            .orElse(ensureClaimedEnvironment(current, environmentId)).foreach { environment =>
-              val requirements = requirementsFor(profileId, grouped)
-              environment.state match {
-                case PythonEnvironmentState.PENDING => dispatch(environment, grouped, requirements)
-                case PythonEnvironmentState.BUILDING =>
-                  reconcileBuild(environment, grouped, requirements)
-                case _ =>
-              }
+          val existingEnvironment = store.getPythonEnvironmentRevision(environmentId)
+          val requirements = requirementsFor(profileId, grouped)
+          if (isNoOpBuild(profileId, existingEnvironment, requirements)) {
+            settleNoOpBuild(profileId, existingEnvironment, grouped)
+          } else {
+            existingEnvironment.orElse(ensureClaimedEnvironment(current, environmentId)).foreach {
+              environment =>
+                environment.state match {
+                  case PythonEnvironmentState.PENDING =>
+                    dispatch(environment, grouped, requirements)
+                  case PythonEnvironmentState.BUILDING =>
+                    reconcileBuild(environment, grouped, requirements)
+                  case PythonEnvironmentState.READY =>
+                    updateRequests(grouped, PythonEnvironmentState.READY)
+                  case _ =>
+                }
             }
+          }
         case _ =>
       }
       val claimedEnvironmentIds = groupedRequests.keySet.collect { case Some(id) => id }.toSet
@@ -278,6 +353,7 @@ class PythonEnvironmentService(
       val configMapName = PythonEnvironmentService.resourceName("kyuubi-python-env", environment.id)
       val labels = Map(
         "app.kubernetes.io/managed-by" -> "kyuubi-python-environment",
+        "kyuubi.apache.org/engine-profile-id" -> environment.profileId,
         "kyuubi.apache.org/python-environment-id" -> environment.id)
       val configMap = new ConfigMapBuilder()
         .withNewMetadata()
@@ -420,7 +496,8 @@ class PythonEnvironmentService(
 
   private def ensurePvc(environment: PythonEnvironmentRevision): Unit = {
     val claims = kubernetes.persistentVolumeClaims().inNamespace(namespace)
-    if (claims.withName(environment.pvcName).get() == null) {
+    val existing = claims.withName(environment.pvcName).get()
+    if (existing == null) {
       val builder = new PersistentVolumeClaimBuilder()
         .withNewMetadata()
         .withName(environment.pvcName)
@@ -430,7 +507,7 @@ class PythonEnvironmentService(
             PythonEnvironmentService.profileHash(environment.profileId)).asJava)
         .endMetadata()
         .withNewSpec()
-        .withAccessModes("ReadWriteOnce")
+        .withAccessModes(pvcAccessMode)
         .withResources(new VolumeResourceRequirementsBuilder()
           .addToRequests("storage", new Quantity(pvcSize))
           .build())
@@ -438,6 +515,8 @@ class PythonEnvironmentService(
       createIfAbsent(s"PVC ${environment.pvcName}") {
         claims.resource(builder.endSpec().build()).create()
       }
+    } else {
+      PythonEnvironmentService.validateExistingPvc(existing, pvcAccessMode, storageClass)
     }
   }
 
@@ -481,18 +560,79 @@ class PythonEnvironmentService(
     store.listPendingPythonEnvironmentChangeRequests().filter(_.profileId == profileId)
 
   /**
+   * A successful execution may be polled concurrently. Its deterministic request ID makes the
+   * package intent exactly-once even when two pollers observe the same terminal transition.
+   */
+  private def requireSameChange(
+      existing: PythonEnvironmentChangeRequest,
+      profileId: String,
+      requestedBy: String,
+      operation: String,
+      packages: Seq[String]): Unit = {
+    if (existing.profileId != profileId || existing.requestedBy != requestedBy ||
+      existing.operation != operation || existing.requestedPackages != packages) {
+      throw NotebookException.versionConflict(
+        s"Python environment request '${existing.id}' was already used for different packages")
+    }
+  }
+
+  /**
+   * A claimed batch that produces the current lockfile needs no PVC write or Builder Job.
+   * Only a PENDING placeholder may be retired here; once BUILDING starts, its Job owns the path.
+   */
+  private def isNoOpBuild(
+      profileId: String,
+      claimed: Option[PythonEnvironmentRevision],
+      requirements: Seq[String]): Boolean = {
+    val safeToSkip = claimed.forall(_.state == PythonEnvironmentState.PENDING)
+    val baseline = latestReadyEnvironment(profileId)
+    val compatibleBase = baseline.forall(environment =>
+      expectedBaseImage.isEmpty || environment.baseImage == expectedBaseImage)
+    safeToSkip && compatibleBase && requirements == requirementsOf(baseline)
+  }
+
+  private def settleNoOpBuild(
+      profileId: String,
+      claimed: Option[PythonEnvironmentRevision],
+      requests: Seq[PythonEnvironmentChangeRequest]): Unit = {
+    val now = System.currentTimeMillis()
+    val baseline = latestReadyEnvironment(profileId)
+    claimed.foreach { environment =>
+      store.updatePythonEnvironmentRevision(environment.copy(
+        state = PythonEnvironmentState.RETIRED,
+        retiredAt = Some(now)))
+    }
+    requests.foreach { request =>
+      store.updatePythonEnvironmentChangeRequest(request.copy(
+        state = PythonEnvironmentState.READY,
+        resultingEnvironmentRevisionId = baseline.map(_.id),
+        errorSummary = None,
+        updatedAt = now))
+    }
+    info(
+      s"Skipped Python environment build for profile $profileId because its requirements " +
+        "did not change")
+  }
+
+  private def latestReadyEnvironment(profileId: String): Option[PythonEnvironmentRevision] =
+    store.listPythonEnvironmentRevisions(profileId)
+      .filter(_.state == PythonEnvironmentState.READY)
+      .sortBy(_.revision)
+      .lastOption
+
+  private def requirementsOf(
+      environment: Option[PythonEnvironmentRevision]): Seq[String] =
+    environment.flatMap(_.requirementsLock)
+      .map(_.split("\\r?\\n").toSeq.filter(_.nonEmpty))
+      .getOrElse(Seq.empty)
+
+  /**
    * Applies ordered intents to the last published environment and returns a standalone lockfile.
    */
   private def requirementsFor(
       profileId: String,
       requests: Seq[PythonEnvironmentChangeRequest]): Seq[String] = {
-    val previous = store.listPythonEnvironmentRevisions(profileId)
-      .filter(_.state == PythonEnvironmentState.READY)
-      .sortBy(_.revision)
-      .lastOption
-      .flatMap(_.requirementsLock)
-      .map(_.split("\\r?\\n").toSeq.filter(_.nonEmpty))
-      .getOrElse(Seq.empty)
+    val previous = requirementsOf(latestReadyEnvironment(profileId))
     requests.sortBy(_.createdAt).foldLeft(previous) { (requirements, request) =>
       request.operation match {
         case PythonEnvironmentOperation.INSTALL =>
@@ -568,11 +708,12 @@ class PythonEnvironmentService(
       profile.owner,
       profile.subdomain)
     try {
+      hasOpenComputeAllocation(profile.profileId) ||
       withDiscoveryClient(conf)(_.getServiceNodesInfo(engineSpace, silent = true).nonEmpty)
     } catch {
       case NonFatal(error) =>
         warn(
-          s"Cannot determine whether Engine Profile ${profile.profileId} has a live engine",
+          s"Cannot determine whether Engine Profile ${profile.profileId} has live compute",
           error)
         true
     }
@@ -654,4 +795,77 @@ object PythonEnvironmentService {
 
   private[engineprofile] def profileHash(profileId: String): String =
     Integer.toHexString(profileId.hashCode).replace('-', '0')
+
+  /**
+   * An operator may change the desired StorageClass or access mode only for new claims. Mutating
+   * the live claim would risk detaching it from engines that still use a captured environment.
+   */
+  private[engineprofile] def validateExistingPvc(
+      pvc: PersistentVolumeClaim,
+      requiredAccessMode: String,
+      requiredStorageClass: String): Unit = {
+    val name = Option(pvc.getMetadata).flatMap(metadata => Option(metadata.getName))
+      .getOrElse("<unknown>")
+    val spec = Option(pvc.getSpec).getOrElse {
+      throw new KyuubiException(s"Python environment PVC $name has no spec")
+    }
+    val actualModes = Option(spec.getAccessModes).map(_.asScala.toSet).getOrElse(Set.empty)
+    if (!actualModes.contains(requiredAccessMode)) {
+      throw new KyuubiException(
+        s"Python environment PVC $name uses access modes " +
+          s"${actualModes.toSeq.sorted.mkString(",")} but the server requires " +
+          s"$requiredAccessMode; migrate the PVC explicitly instead of changing it in place")
+    }
+    val actualStorageClass = Option(spec.getStorageClassName).map(_.trim).getOrElse("")
+    if (requiredStorageClass.nonEmpty && actualStorageClass != requiredStorageClass) {
+      throw new KyuubiException(
+        s"Python environment PVC $name uses StorageClass '$actualStorageClass' but the server " +
+          s"requires '$requiredStorageClass'; migrate the PVC explicitly instead of changing " +
+          "it in place")
+    }
+  }
+}
+
+private[server] case class PythonEnvironmentLaunch(
+    id: String,
+    configuration: Map[String, String])
+
+/** Kubernetes resources created for one profile environment lifecycle. */
+private[engineprofile] trait PythonEnvironmentResources {
+  def deleteBuilderJob(name: String): Unit
+  def deleteRequirementsConfigMap(name: String): Unit
+  def deletePersistentVolumeClaim(name: String): Unit
+}
+
+private[engineprofile] class KubernetesPythonEnvironmentResources(
+    kubernetes: KubernetesClient,
+    namespace: String) extends PythonEnvironmentResources {
+
+  override def deleteBuilderJob(name: String): Unit =
+    deleteIgnoringNotFound(s"Python environment Builder Job $name") {
+      kubernetes.batch().v1().jobs().inNamespace(namespace).withName(name).delete()
+    }
+
+  override def deleteRequirementsConfigMap(name: String): Unit =
+    deleteIgnoringNotFound(s"Python environment requirements ConfigMap $name") {
+      kubernetes.configMaps().inNamespace(namespace).withName(name).delete()
+    }
+
+  override def deletePersistentVolumeClaim(name: String): Unit =
+    deleteIgnoringNotFound(s"Python environment PVC $name") {
+      kubernetes.persistentVolumeClaims().inNamespace(namespace).withName(name).delete()
+    }
+
+  private def deleteIgnoringNotFound(resource: String)(delete: => Any): Unit = {
+    try {
+      delete
+      ()
+    } catch {
+      case error: io.fabric8.kubernetes.client.KubernetesClientException
+          if error.getCode == 404 =>
+        ()
+      case error: io.fabric8.kubernetes.client.KubernetesClientException =>
+        throw new KyuubiException(s"Could not delete $resource", error)
+    }
+  }
 }

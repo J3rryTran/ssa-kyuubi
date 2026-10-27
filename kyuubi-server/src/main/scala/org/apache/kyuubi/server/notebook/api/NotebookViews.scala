@@ -178,6 +178,9 @@ case class NotebookScheduleView(
     createdBy: String,
     updatedAt: Long,
     updatedBy: String,
+    sourceRevisionId: Option[String],
+    sourceRevisionNumber: Option[Long],
+    sourceChecksum: Option[String],
     version: Long)
 
 object NotebookScheduleView {
@@ -195,6 +198,9 @@ object NotebookScheduleView {
     schedule.createdBy,
     schedule.updatedAt,
     schedule.updatedBy,
+    schedule.sourceRevisionId,
+    schedule.sourceRevisionNumber,
+    schedule.sourceChecksum,
     schedule.version)
 }
 

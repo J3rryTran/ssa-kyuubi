@@ -176,7 +176,9 @@ trait NotebookStore extends AutoCloseable {
 
   def createRun(run: NotebookRun): Unit
   def getRun(id: String): Option[NotebookRun]
+  def findRunByRequestId(submittedBy: String, clientRequestId: String): Option[NotebookRun]
   def listRuns(notebookId: String, limit: Int): Seq[NotebookRun]
+  def listActiveRuns(): Seq[NotebookRun]
   def updateRun(run: NotebookRun, expectedVersion: Long): Boolean
 
   /**
@@ -197,6 +199,9 @@ trait NotebookStore extends AutoCloseable {
   /** Profile IDs that have a builder environment in BUILDING state. */
   def listBuildingPythonEnvironmentProfileIds(): Seq[String]
   def updatePythonEnvironmentRevision(environment: PythonEnvironmentRevision): Boolean
+
+  /** Deletes all terminal Python environment rows and package-change requests for one profile. */
+  def deletePythonEnvironmentState(profileId: String): Unit
 
   def createPythonEnvironmentChangeRequest(request: PythonEnvironmentChangeRequest): Unit
   def getPythonEnvironmentChangeRequest(id: String): Option[PythonEnvironmentChangeRequest]

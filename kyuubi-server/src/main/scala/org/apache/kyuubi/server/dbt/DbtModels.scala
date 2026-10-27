@@ -17,6 +17,7 @@
 
 package org.apache.kyuubi.server.dbt
 
+import org.apache.kyuubi.server.compute.{ComputeMode, IssuedComputeBinding}
 import org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
 
 object DbtAction extends Enumeration {
@@ -30,6 +31,11 @@ object DbtRunState extends Enumeration {
 
   val active: Set[Value] = Set(QUEUED, DISPATCHING, SUBMITTED, RUNNING, CANCELLING)
   val terminal: Set[Value] = Set(SUCCEEDED, FAILED, CANCELLED)
+}
+
+object DbtExecutionTransport extends Enumeration {
+  type DbtExecutionTransport = Value
+  val KUBERNETES, LOCAL_CLI = Value
 }
 
 case class DbtWorkspace(
@@ -64,6 +70,12 @@ case class DbtJobRun(
     selector: Option[String],
     projectRef: String,
     profile: EngineProfileSnapshot,
+    attemptId: String,
+    computeMode: ComputeMode.Value,
+    executionTransport: DbtExecutionTransport.Value,
+    computeAllocationId: Option[String],
+    computeBindingId: Option[String],
+    dbtInvocationId: Option[String],
     state: DbtRunState.Value,
     runnerRunId: Option[String],
     dispatchToken: Option[String],
@@ -75,7 +87,34 @@ case class DbtJobRun(
     stateUpdatedAt: Long,
     logNextOffset: Long,
     logTruncated: Boolean,
-    version: Long)
+    runnerResourcesCleaned: Boolean,
+    runnerCleanupError: Option[String],
+    version: Long,
+    clientRequestId: Option[String] = None)
+
+/**
+ * One-time launch envelope for the local managed CLI harness.
+ *
+ * `bindingToken` is deliberately absent from [[DbtJobRun]] and JDBC metadata. The authenticated
+ * caller receives it once and passes it only through the child process environment.
+ */
+case class DbtManagedCliLaunch(
+    runId: String,
+    attemptId: String,
+    allocationId: String,
+    profileId: String,
+    effectiveUser: String,
+    runnerUser: String,
+    bindingId: String,
+    bindingToken: String,
+    bindingExpiresAt: Long,
+    heartbeatIntervalMillis: Long,
+    threads: Int,
+    commandArguments: Seq[String]) {
+  override def toString: String =
+    s"DbtManagedCliLaunch($runId,$attemptId,$allocationId,$profileId,$effectiveUser," +
+      s"$runnerUser,$bindingId,<redacted>,$bindingExpiresAt,$heartbeatIntervalMillis,$threads)"
+}
 
 case class DbtRunnerSubmission(runnerRunId: String, runnerJobUid: Option[String] = None)
 
@@ -98,7 +137,13 @@ case class DbtRunLogChunk(
     content: String,
     createdAt: Long)
 
-case class DbtRunRequest(run: DbtJobRun)
+case class DbtRunArtifact(name: String, content: String, createdAt: Long)
+
+/**
+ * Ephemeral dispatch payload. The bearer token is never persisted in DBT metadata or rendered
+ * into the project/profile ConfigMaps; a runner must transfer it through a secret-bearing channel.
+ */
+case class DbtRunRequest(run: DbtJobRun, binding: IssuedComputeBinding)
 
 /** Port implemented by the Kubernetes runner in Phase D. */
 trait DbtRunner {

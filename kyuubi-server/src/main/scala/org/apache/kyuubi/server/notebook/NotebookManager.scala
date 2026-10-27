@@ -25,6 +25,7 @@ import org.apache.kyuubi.KyuubiException
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.ha.HighAvailabilityConf.HA_ADDRESSES
 import org.apache.kyuubi.ha.client.{DiscoveryClient, DiscoveryClientProvider}
+import org.apache.kyuubi.server.compute.{ComputeAllocationService, ComputeBindingService, ComputeLifecycleReconciler, ComputeStore, JDBCComputeStore, KyuubiComputeEngineController, ManagedComputeDeploymentValidator}
 import org.apache.kyuubi.server.dbt.{DbtStore, DbtWorkspaceService, DisabledDbtRunner, JDBCDbtStore, KubernetesJobDbtRunner}
 import org.apache.kyuubi.server.engineprofile.{EngineProfileRunSnapshotService, EngineProfileRuntimeService, EngineProfileService, EngineProfileStore, PythonEnvironmentService}
 import org.apache.kyuubi.server.metadata.jdbc.DatabaseType.SQLITE
@@ -58,12 +59,17 @@ class NotebookManager(
   @volatile private var _engineProfileRunSnapshots: EngineProfileRunSnapshotService = _
   @volatile private var _engineProfileRuntimes: EngineProfileRuntimeService = _
   @volatile private var _pythonEnvironments: PythonEnvironmentService = _
+  @volatile private var _computeStore: ComputeStore = _
+  @volatile private var _computeAllocations: ComputeAllocationService = _
+  @volatile private var _computeBindings: ComputeBindingService = _
+  @volatile private var _computeLifecycle: ComputeLifecycleReconciler = _
   @volatile private var _dbtStore: DbtStore = _
   @volatile private var _dbt: DbtWorkspaceService = _
   @volatile private var _registry: RuntimeAdapterRegistry = _
   @volatile private var _runtimes: NotebookRuntimeService = _
   @volatile private var _sessions: NotebookSessionService = _
   @volatile private var _executions: NotebookExecutionService = _
+  @volatile private var _runs: NotebookRunService = _
 
   @volatile private var _sessionRegistry: NotebookSessionRegistry = _
 
@@ -101,13 +107,19 @@ class NotebookManager(
   def engineProfileRunSnapshots: EngineProfileRunSnapshotService = _engineProfileRunSnapshots
   def engineProfileRuntimes: EngineProfileRuntimeService = _engineProfileRuntimes
   def pythonEnvironments: PythonEnvironmentService = _pythonEnvironments
+  def computeStore: ComputeStore = _computeStore
+  def computeAllocations: ComputeAllocationService = _computeAllocations
+  def computeBindings: ComputeBindingService = _computeBindings
+  def computeLifecycle: ComputeLifecycleReconciler = _computeLifecycle
   def dbt: DbtWorkspaceService = _dbt
   def registry: RuntimeAdapterRegistry = _registry
   def runtimes: NotebookRuntimeService = _runtimes
   def sessions: NotebookSessionService = _sessions
   def executions: NotebookExecutionService = _executions
+  def runs: NotebookRunService = _runs
 
   override def initialize(conf: KyuubiConf): Unit = {
+    ManagedComputeDeploymentValidator.validate(conf)
     _store = NotebookManager.loadStore(conf)
     if (conf.get(NOTEBOOK_SCHEMA_INIT)) {
       _store.initSchema()
@@ -116,7 +128,7 @@ class NotebookManager(
     _revisions = new NotebookRevisionService(conf, _store)
     _documents = new NotebookDocumentService(conf, _store, _permissions, _revisions)
     _content = new NotebookContentService(conf, _store, _documents, _revisions, _permissions)
-    _schedules = new NotebookScheduleService(_store, _permissions)
+    _schedules = new NotebookScheduleService(_store, _permissions, _revisions)
     _engineProfiles = new EngineProfileService(
       conf,
       EngineProfileStore.create(conf),
@@ -127,11 +139,30 @@ class NotebookManager(
       _engineProfiles,
       conf.get(DBT_ENGINE_PROFILE_RUN_SNAPSHOT_TTL))
     _pythonEnvironments = new PythonEnvironmentService(conf, _store, _engineProfiles)
+    _computeStore = new JDBCComputeStore(conf)
+    if (conf.get(NOTEBOOK_SCHEMA_INIT)) {
+      _computeStore.initSchema()
+    }
+    _computeAllocations = ComputeAllocationService.create(
+      conf,
+      _computeStore,
+      _engineProfiles,
+      Some(_pythonEnvironments))
+    _computeAllocations.initialize()
+    _pythonEnvironments.onHasOpenComputeAllocation(
+      _computeAllocations.hasOpenAllocationForProfile)
+    _computeBindings = new ComputeBindingService(conf, _computeStore, _computeAllocations)
+    _computeLifecycle = new ComputeLifecycleReconciler(
+      conf,
+      _computeStore,
+      new KyuubiComputeEngineController(conf, backendService),
+      instanceUri())
     _engineProfileRuntimes = new EngineProfileRuntimeService(
       conf,
       backendService,
       _engineProfiles,
-      Some(_pythonEnvironments))
+      Some(_pythonEnvironments),
+      Some(_computeAllocations))
     _dbtStore = new JDBCDbtStore(conf)
     if (conf.get(NOTEBOOK_SCHEMA_INIT)) {
       _dbtStore.initSchema()
@@ -145,13 +176,34 @@ class NotebookManager(
     } else {
       DisabledDbtRunner
     }
-    _dbt = new DbtWorkspaceService(conf, _dbtStore, _engineProfiles, dbtRunner)
+    _dbt = new DbtWorkspaceService(
+      conf,
+      _dbtStore,
+      _engineProfiles,
+      _computeAllocations,
+      _computeBindings,
+      dbtRunner)
     _engineProfiles.onBeforeUpdate { (principal, profile) =>
       _engineProfileRuntimes.requireStopped(principal, profile.profileId)
       if (_dbt.hasActiveRunsForProfile(profile.profileId)) {
-        throw NotebookException.invalid(
+        throw new NotebookException(
+          NotebookErrorCode.COMPUTE_ACTIVE,
           "cannot change an Engine Profile while a DBT run is active")
       }
+    }
+    _engineProfiles.onBeforeDelete { (principal, profile) =>
+      _engineProfileRuntimes.requireStopped(principal, profile.profileId, "deleting it")
+      if (_dbt.hasActiveRunsForProfile(profile.profileId)) {
+        throw new NotebookException(
+          NotebookErrorCode.COMPUTE_ACTIVE,
+          "cannot delete an Engine Profile with an active DBT run")
+      }
+      _pythonEnvironments.deleteProfileEnvironment(profile.profileId)
+    }
+    _engineProfiles.onBeforePublishPythonEnvironment { profile =>
+      _computeAllocations.requireNoOpenAllocations(
+        profile.profileId,
+        "publish a Python environment")
     }
     // One notebook session owns one Kyuubi/Spark session. Individual cells select SQL or Python
     // at operation submission time, preserving both SQL session state and Python globals.
@@ -163,7 +215,8 @@ class NotebookManager(
       _registry,
       instanceUri,
       Some(_engineProfiles),
-      Some(_pythonEnvironments))
+      Some(_pythonEnvironments),
+      Some(_computeAllocations))
     _sessions =
       new NotebookSessionService(
         _store,
@@ -182,6 +235,16 @@ class NotebookManager(
       _registry,
       Some(_pythonEnvironments))
     _sessions.onBeforeRuntimeInvalidation(_executions.invalidateSession)
+    _runs = new NotebookRunService(
+      conf,
+      _store,
+      _documents,
+      _permissions,
+      _schedules,
+      _sessions,
+      _runtimes,
+      _executions,
+      _computeAllocations)
     super.initialize(conf)
   }
 
@@ -218,21 +281,25 @@ class NotebookManager(
   private lazy val engineProfileRunSnapshotReaper =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("engine-profile-run-snapshot-reaper")
 
+  private lazy val computeLifecycleReconciler =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("compute-lifecycle-reconciler")
+
   override def start(): Unit = {
     // Nothing that was running can have survived; saying so up front beats letting the first
     // poll of a stale execution report a confusing failure.
     _executions.reconcileAfterRestart()
     _sessions.reconcileAfterRestart()
+    _runs.reconcileAfterRestart()
     val idleTimeout = conf.get(NOTEBOOK_RUNTIME_IDLE_TIMEOUT)
-    if (idleTimeout > 0) {
-      val interval = conf.get(NOTEBOOK_RUNTIME_IDLE_CHECK_INTERVAL)
-      scheduleTolerableRunnableWithFixedDelay(
-        idleReaper,
-        () => _sessions.reapIdle(idleTimeout),
-        interval,
-        interval,
-        TimeUnit.MILLISECONDS)
-    }
+    // Always run the reaper. A zero platform default disables only inherited timeouts; runtimes
+    // created from an Engine Profile can still carry their own positive idle timeout.
+    val interval = conf.get(NOTEBOOK_RUNTIME_IDLE_CHECK_INTERVAL)
+    scheduleTolerableRunnableWithFixedDelay(
+      idleReaper,
+      () => _sessions.reapIdle(idleTimeout),
+      interval,
+      interval,
+      TimeUnit.MILLISECONDS)
     val runSnapshotInterval = math.max(
       1000L,
       math.min(
@@ -244,7 +311,21 @@ class NotebookManager(
       runSnapshotInterval,
       runSnapshotInterval,
       TimeUnit.MILLISECONDS)
-    if (conf.get(DBT_RUNNER_ENABLED)) {
+    if (conf.get(COMPUTE_LIFECYCLE_ENABLED)) {
+      val computeLifecycleInterval = conf.get(COMPUTE_LIFECYCLE_RECONCILE_INTERVAL)
+      try _computeLifecycle.reconcile()
+      catch {
+        case NonFatal(error) =>
+          warn("Initial compute lifecycle reconciliation failed; it will be retried", error)
+      }
+      scheduleTolerableRunnableWithFixedDelay(
+        computeLifecycleReconciler,
+        () => _computeLifecycle.reconcile(),
+        computeLifecycleInterval,
+        computeLifecycleInterval,
+        TimeUnit.MILLISECONDS)
+    }
+    if (conf.get(DBT_RUNNER_ENABLED) || conf.get(DBT_MANAGED_CLI_ENABLED)) {
       val interval = conf.get(DBT_RUNNER_RECONCILE_INTERVAL)
       scheduleTolerableRunnableWithFixedDelay(
         dbtReconciler,
@@ -271,12 +352,27 @@ class NotebookManager(
     ThreadUtils.shutdown(dbtReconciler)
     ThreadUtils.shutdown(pythonEnvironmentReconciler)
     ThreadUtils.shutdown(engineProfileRunSnapshotReaper)
+    if (conf.get(COMPUTE_LIFECYCLE_ENABLED)) {
+      ThreadUtils.shutdown(computeLifecycleReconciler)
+    }
     if (_engineProfileRuntimes != null) {
       _engineProfileRuntimes.close()
+    }
+    if (_runs != null) {
+      try _runs.close()
+      catch { case NonFatal(e) => warn("Failed to close the Notebook job runner", e) }
+    }
+    if (_computeAllocations != null) {
+      try _computeAllocations.close()
+      catch { case NonFatal(e) => warn("Failed to close the compute allocation service", e) }
     }
     if (_engineProfiles != null) {
       try _engineProfiles.close()
       catch { case NonFatal(e) => warn("Failed to close the Engine Profile store", e) }
+    }
+    if (_computeStore != null) {
+      try _computeStore.close()
+      catch { case NonFatal(e) => warn("Failed to close the compute allocation store", e) }
     }
     if (_store != null) {
       try _store.close()
@@ -302,6 +398,7 @@ class NotebookManager(
       try {
         _store.healthCheck()
         _engineProfiles.healthCheck()
+        _computeStore.healthCheck()
         "HEALTHY"
       } catch {
         case NonFatal(e) =>

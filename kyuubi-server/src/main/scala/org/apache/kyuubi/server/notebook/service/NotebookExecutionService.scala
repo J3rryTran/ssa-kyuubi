@@ -22,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ArrayBuffer
 import scala.util.control.NonFatal
 
 import org.apache.kyuubi.Logging
@@ -111,6 +112,82 @@ class NotebookExecutionService(
   }
 
   /**
+   * Submits one cell copied from an immutable Notebook revision onto a server-issued JOB
+   * allocation. It never resolves source, language or allocation identity from live UI state.
+   */
+  def submitManaged(
+      principal: NotebookPrincipal,
+      session: NotebookSession,
+      allocationId: String,
+      runId: String,
+      position: Int,
+      cell: NotebookDocumentCell): CellExecution = sessionLock(session.id).synchronized {
+    if (!cell.cellType.equalsIgnoreCase(CellType.CODE.toString)) {
+      throw NotebookException.invalid("only CODE cells can be submitted by a Notebook job")
+    }
+    val language = CellLanguage.values.find(_.toString.equalsIgnoreCase(cell.language)).getOrElse {
+      throw new NotebookException(
+        NotebookErrorCode.UNSUPPORTED_LANGUAGE,
+        s"${cell.language} cannot be executed")
+    }
+    if (!CellLanguage.executable.contains(language)) {
+      throw new NotebookException(
+        NotebookErrorCode.UNSUPPORTED_LANGUAGE,
+        s"$language cannot be executed")
+    }
+    val requestId = s"notebook-run:$runId:cell:$position"
+    store.findExecutionByRequestId(principal.user, requestId).map { existing =>
+      if (!existing.notebookRunId.contains(runId) || existing.sourceSnapshot != cell.source ||
+        existing.language != language) {
+        throw NotebookException.versionConflict(
+          "the Notebook run cell request was already used with different source")
+      }
+      existing
+    }.getOrElse {
+      validatePythonEnvironmentIntent(session, session.runtimeProfile, language, cell.source)
+      val runtime = runtimes.ensureForAllocation(
+        principal,
+        session,
+        requestedSpecId = None,
+        configuration = cell.configuration,
+        allocationId = allocationId)
+      if (!registry.get(runtime.runtimeSpecId).supports(language)) {
+        throw new NotebookException(
+          NotebookErrorCode.UNSUPPORTED_LANGUAGE,
+          s"runtime ${runtime.id} cannot run $language")
+      }
+      val now = System.currentTimeMillis()
+      val queued = CellExecution(
+        id = UUID.randomUUID().toString,
+        notebookId = session.notebookId,
+        notebookSessionId = session.id,
+        runtimeId = runtime.id,
+        runtimeGeneration = runtime.generation,
+        cellId = None,
+        cellVersion = None,
+        language = language,
+        sourceSnapshot = cell.source,
+        state = ExecutionState.QUEUED,
+        submittedAt = now,
+        startedAt = None,
+        finishedAt = None,
+        submittedBy = principal.user,
+        errorCode = None,
+        errorMessage = None,
+        clientRequestId = Some(requestId),
+        notebookRunId = Some(runId),
+        internalOperationHandle = None,
+        version = 1L)
+      store.createExecution(queued)
+      queuedConfigurations.put(queued.id, cell.configuration)
+      queuedOrder.put(queued.id, nextQueuedOrder.incrementAndGet())
+      emit(queued, "QUEUED", None)
+      drainQueue(principal, session)
+      store.getExecution(queued.id).getOrElse(queued)
+    }
+  }
+
+  /**
    * Reject `%pip` before it reaches the live Python worker when there is no profile to own the
    * durable environment. The intent itself is recorded only after the operation succeeds.
    */
@@ -146,7 +223,8 @@ class NotebookExecutionService(
           profileId,
           intent.operation,
           intent.packages,
-          hotInstallSucceeded = true))
+          hotInstallSucceeded = true,
+          requestId = Some(execution.id)))
       }
     }
   }
@@ -383,6 +461,109 @@ class NotebookExecutionService(
     }
   }
 
+  /**
+   * Captures a bounded, durable audit payload before a managed Notebook session is stopped.
+   * Interactive executions keep their existing streaming APIs; scheduled runs additionally need
+   * evidence that remains readable after their short-lived JOB engine has been reclaimed.
+   */
+  def captureAudit(
+      principal: NotebookPrincipal,
+      execution: CellExecution): CellExecution = {
+    val captureErrors = ArrayBuffer[String]()
+    val capturedLogs = ArrayBuffer[String]()
+    val capturedOutputs = ArrayBuffer[ExecutionOutputView]()
+    val capturedRows = ArrayBuffer[Seq[String]]()
+    var capturedSchema: Option[ExecutionSchema] = None
+    var truncated = false
+
+    try {
+      var offset = 0L
+      var more = true
+      while (more && capturedLogs.size < AUDIT_MAX_LOG_LINES) {
+        val page = logs(
+          principal,
+          execution.id,
+          offset,
+          math.min(200, AUDIT_MAX_LOG_LINES - capturedLogs.size))
+        capturedLogs ++= page.lines
+        more = page.hasMore && page.nextOffset > offset
+        offset = page.nextOffset
+      }
+      truncated = truncated || more
+    } catch {
+      case NonFatal(error) => captureErrors += s"logs: ${safeAuditMessage(error)}"
+    }
+
+    try {
+      var sequence = 0L
+      var more = true
+      while (more && capturedOutputs.size < AUDIT_MAX_OUTPUTS) {
+        val page = outputs(
+          principal,
+          execution.id,
+          sequence,
+          math.min(100, AUDIT_MAX_OUTPUTS - capturedOutputs.size))
+        capturedOutputs ++= page.outputs
+        more = page.hasMore && page.lastSequence > sequence
+        sequence = page.lastSequence
+      }
+      truncated = truncated || more
+    } catch {
+      case NonFatal(error) => captureErrors += s"outputs: ${safeAuditMessage(error)}"
+    }
+
+    if (execution.language == CellLanguage.SQL && execution.state == ExecutionState.SUCCEEDED) {
+      try capturedSchema = Some(schema(principal, execution.id))
+      catch {
+        case NonFatal(error) => captureErrors += s"schema: ${safeAuditMessage(error)}"
+      }
+      try {
+        var cursor: Option[String] = None
+        var more = true
+        while (more && capturedRows.size < AUDIT_MAX_ROWS) {
+          val page = results(
+            principal,
+            execution.id,
+            cursor,
+            math.min(100, AUDIT_MAX_ROWS - capturedRows.size))
+          capturedRows ++= page.rows
+          more = page.hasMore && page.nextCursor.nonEmpty
+          cursor = page.nextCursor
+        }
+        truncated = truncated || more
+      } catch {
+        case NonFatal(error) => captureErrors += s"results: ${safeAuditMessage(error)}"
+      }
+    }
+
+    val snapshot = boundedAuditSnapshot(ExecutionAuditSnapshot(
+      logs = capturedLogs.toSeq,
+      outputs = capturedOutputs.toSeq,
+      schema = capturedSchema,
+      rows = capturedRows.toSeq,
+      truncated = truncated,
+      captureErrors = captureErrors.toSeq,
+      capturedAt = System.currentTimeMillis()))
+    var current = store.getExecution(execution.id).getOrElse(execution)
+    var stored = false
+    while (!stored) {
+      val updated = current.copy(
+        auditSnapshot = Some(NotebookJson.write(snapshot)),
+        version = current.version + 1)
+      if (store.updateExecution(updated, current.version)) {
+        current = updated
+        stored = true
+      } else {
+        current = store.getExecution(execution.id).getOrElse {
+          throw NotebookException.notFound(
+            NotebookErrorCode.EXECUTION_NOT_FOUND,
+            s"execution ${execution.id} was not found")
+        }
+      }
+    }
+    current
+  }
+
   def list(
       principal: NotebookPrincipal,
       filter: ExecutionFilter): Seq[CellExecution] = {
@@ -569,6 +750,35 @@ class NotebookExecutionService(
 
   private def sessionLock(sessionId: String): Object =
     sessionSubmissionLocks.computeIfAbsent(sessionId, _ => new Object())
+
+  private def boundedAuditSnapshot(snapshot: ExecutionAuditSnapshot): ExecutionAuditSnapshot = {
+    if (NotebookJson.write(snapshot).getBytes(java.nio.charset.StandardCharsets.UTF_8).length <=
+        AUDIT_MAX_BYTES) {
+      snapshot
+    } else {
+      val reduced = snapshot.copy(
+        logs = snapshot.logs.take(20).map(_.take(512)),
+        outputs =
+          snapshot.outputs.take(10).map(output => output.copy(data = output.data.take(512))),
+        rows = snapshot.rows.take(20).map(_.map(_.take(256))),
+        truncated = true)
+      if (NotebookJson.write(reduced).getBytes(java.nio.charset.StandardCharsets.UTF_8).length <=
+          AUDIT_MAX_BYTES) {
+        reduced
+      } else {
+        reduced.copy(
+          logs = Seq.empty,
+          outputs = Seq.empty,
+          schema = None,
+          rows = Seq.empty,
+          captureErrors = reduced.captureErrors.take(10).map(_.take(256)))
+      }
+    }
+  }
+
+  private def safeAuditMessage(error: Throwable): String =
+    Option(error.getMessage).map(_.trim).filter(_.nonEmpty)
+      .getOrElse(error.getClass.getSimpleName).take(512)
 
   private def drainAfterTerminal(execution: CellExecution): Unit = {
     val session = sessions.load(execution.notebookSessionId)
@@ -768,6 +978,10 @@ object NotebookExecutionService {
 
   private val EVENT_POLL_INTERVAL_MS = 200L
   private val RECONCILE_BATCH = 1000
+  private val AUDIT_MAX_LOG_LINES = 200
+  private val AUDIT_MAX_OUTPUTS = 100
+  private val AUDIT_MAX_ROWS = 200
+  private val AUDIT_MAX_BYTES = 48 * 1024
 
   /** `key=value`, `key: value` and `key "value"` forms of the usual secret-bearing names. */
   private val REDACTION_PATTERN =

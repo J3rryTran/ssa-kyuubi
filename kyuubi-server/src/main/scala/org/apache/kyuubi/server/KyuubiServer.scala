@@ -206,6 +206,7 @@ class KyuubiServer(name: String) extends Serverable(name) {
     }
 
   private[server] def resolveEngineProfileSessionConfiguration(
+      authenticatedUser: String,
       sessionUser: String,
       configuration: Map[String, String]): Map[String, String] = {
     frontendServices.collectFirst {
@@ -215,13 +216,36 @@ class KyuubiServer(name: String) extends Serverable(name) {
         new EngineProfileSessionConfigResolver(
           manager.engineProfiles,
           manager.pythonEnvironments,
-          manager.engineProfileRunSnapshots).resolve(sessionUser, configuration)
-      case None if configuration.contains(EngineProfileSessionConfigResolver.ProfileIdKey) =>
+          manager.engineProfileRunSnapshots,
+          manager.computeBindings,
+          manager.computeAllocations).resolve(authenticatedUser, sessionUser, configuration)
+      case None
+          if configuration.contains(EngineProfileSessionConfigResolver.ProfileIdKey) ||
+            EngineProfileSessionConfigResolver.ManagedBindingKeys.exists(configuration.contains) =>
         throw new KyuubiException(
           "Engine Profile session selection requires the REST notebook service to be enabled")
       case None => configuration
     }
   }
+
+  private[server] def confirmComputeAttach(reservationId: String): Boolean =
+    frontendServices.collectFirst {
+      case rest: KyuubiRestFrontendService => rest.notebookManager
+    }.flatten.exists(_.computeBindings.confirmAttach(reservationId))
+
+  private[server] def recordComputeEngineReference(
+      allocationId: String,
+      engineReferenceId: String): Unit =
+    frontendServices.collectFirst {
+      case rest: KyuubiRestFrontendService => rest.notebookManager
+    }.flatten.getOrElse {
+      throw new KyuubiException("Compute allocation service is not enabled")
+    }.computeAllocations.recordEngineReference(allocationId, engineReferenceId)
+
+  private[server] def releaseComputeAttach(reservationId: String): Boolean =
+    frontendServices.collectFirst {
+      case rest: KyuubiRestFrontendService => rest.notebookManager
+    }.flatten.exists(_.computeBindings.releaseAttach(reservationId))
 
   override def initialize(conf: KyuubiConf): Unit = synchronized {
     val kinit = new KinitAuxiliaryService()

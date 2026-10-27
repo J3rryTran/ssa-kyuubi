@@ -220,6 +220,36 @@ class FileSystemNotebookStoreSuite extends KyuubiFunSuite {
     assert(!visibleToBob)
   }
 
+  test("a pinned schedule round-trips optional numeric fields as longs") {
+    val id = UUID.randomUUID().toString
+    store.createNotebook(notebook(id, "scheduled"), Seq.empty)
+    val schedule = NotebookSchedule(
+      id = UUID.randomUUID().toString,
+      notebookId = id,
+      cronExpression = "0 3 * * *",
+      timezone = "Asia/Ho_Chi_Minh",
+      enabled = true,
+      runtimeProfile = None,
+      failurePolicy = FailurePolicy.STOP_ON_ERROR,
+      overlapPolicy = OverlapPolicy.SKIP_IF_RUNNING,
+      lastRunAt = Some(1L),
+      nextRunAt = Some(2L),
+      createdAt = 3L,
+      createdBy = "alice",
+      updatedAt = 4L,
+      updatedBy = "alice",
+      version = 1L,
+      sourceRevisionId = Some(UUID.randomUUID().toString),
+      sourceRevisionNumber = Some(1L),
+      sourceChecksum = Some("a" * 64))
+
+    assert(store.upsertSchedule(schedule, None))
+    val loaded = store.getSchedule(id).get
+    assert(loaded.lastRunAt.contains(1L))
+    assert(loaded.nextRunAt.contains(2L))
+    assert(loaded.sourceRevisionNumber.contains(1L))
+  }
+
   test("search reaches names, descriptions and cell sources") {
     val id = UUID.randomUUID().toString
     store.createNotebook(notebook(id, "searchable"), Seq(cell(id, "c1", 0, "select needle")))

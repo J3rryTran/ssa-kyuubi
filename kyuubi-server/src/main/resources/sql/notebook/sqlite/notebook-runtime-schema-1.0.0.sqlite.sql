@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS notebook_runtime(
     owner TEXT NOT NULL,
     state TEXT NOT NULL,
     generation INTEGER NOT NULL,
+    compute_allocation_id TEXT,
     environment_revision_id TEXT,
     runtime_idle_timeout_millis INTEGER,
     created_at INTEGER NOT NULL,
@@ -77,6 +78,7 @@ CREATE TABLE IF NOT EXISTS notebook_execution(
     client_request_id TEXT,
     notebook_run_id TEXT,
     internal_operation_handle TEXT,
+    audit_snapshot TEXT,
     version INTEGER NOT NULL
 );
 
@@ -108,6 +110,15 @@ CREATE TABLE IF NOT EXISTS notebook_run(
     requested_cell_ids TEXT,
     current_cell_id TEXT,
     failure_policy TEXT NOT NULL,
+    schedule_id TEXT,
+    source_revision_id TEXT,
+    source_revision_number INTEGER,
+    source_checksum TEXT,
+    source_snapshot TEXT,
+    attempt_id TEXT,
+    compute_allocation_id TEXT,
+    client_request_id TEXT,
+    error_message TEXT,
     version INTEGER NOT NULL
 );
 

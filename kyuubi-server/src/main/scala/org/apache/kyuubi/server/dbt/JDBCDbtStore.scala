@@ -30,6 +30,7 @@ import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 
 import org.apache.kyuubi.{KyuubiException, Logging, Utils}
 import org.apache.kyuubi.config.KyuubiConf
+import org.apache.kyuubi.server.compute.ComputeMode
 import org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
 import org.apache.kyuubi.server.metadata.jdbc.DatabaseType
 import org.apache.kyuubi.server.metadata.jdbc.DatabaseType._
@@ -88,6 +89,7 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
       }
     }
     addMissingColumns()
+    ensureRequestIndex()
   }
 
   override def close(): Unit = dataSource.close()
@@ -215,6 +217,13 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
         Option(rs.getString("profile_notebook_runtime_idle_timeout")),
         Option(rs.getString("profile_engine_idle_timeout")),
         Option(rs.getString("profile_python_environment_revision_id"))),
+      Option(rs.getString("attempt_id")).getOrElse(rs.getString("id")),
+      Option(rs.getString("compute_mode")).map(ComputeMode.withName).getOrElse(ComputeMode.JOB),
+      Option(rs.getString("execution_transport")).map(DbtExecutionTransport.withName)
+        .getOrElse(DbtExecutionTransport.KUBERNETES),
+      Option(rs.getString("compute_allocation_id")),
+      Option(rs.getString("compute_binding_id")),
+      Option(rs.getString("dbt_invocation_id")),
       DbtRunState.withName(rs.getString("state")),
       Option(rs.getString("runner_run_id")),
       Option(rs.getString("dispatch_token")),
@@ -226,7 +235,10 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
       rs.getLong("state_updated_at"),
       rs.getLong("log_next_offset"),
       rs.getBoolean("log_truncated"),
-      rs.getLong("version"))
+      rs.getBoolean("runner_resources_cleaned"),
+      Option(rs.getString("runner_cleanup_error")),
+      rs.getLong("version"),
+      Option(rs.getString("client_request_id")))
   }
 
   override def createRun(run: DbtJobRun): Unit = {
@@ -237,10 +249,15 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
         | profile_owner, profile_subdomain, profile_config, profile_captured_at,
         | profile_notebook_runtime_idle_timeout, profile_engine_idle_timeout,
         | profile_python_environment_revision_id, profile_revision,
-        | state, runner_run_id, dispatch_token, runner_job_uid, created_at, started_at,
-        | finished_at, error_summary, state_updated_at, log_next_offset, log_truncated, version)
-        | VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        | ?, ?)
+        | attempt_id, compute_mode, execution_transport, compute_allocation_id, compute_binding_id,
+        | dbt_invocation_id, state, runner_run_id, dispatch_token, runner_job_uid,
+        | created_at, started_at,
+        | finished_at, error_summary, state_updated_at, log_next_offset, log_truncated,
+        | runner_resources_cleaned, runner_cleanup_error, version, client_request_id)
+        | VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        | ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        | ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        | ?, ?, ?, ?, ?, ?, ?, ?)
         |""".stripMargin) {
       s =>
         s.setString(1, run.id); s.setString(2, run.workspaceId); s.setString(3, run.jobId.orNull)
@@ -255,18 +272,34 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
         s.setString(15, profile.engineIdleTimeout.orNull)
         s.setString(16, profile.pythonEnvironmentRevisionId.orNull)
         s.setLong(17, 0L) // Legacy physical column; profile version is not a DBT runtime input.
-        s.setString(18, run.state.toString); s.setString(19, run.runnerRunId.orNull)
-        s.setString(20, run.dispatchToken.orNull); s.setString(21, run.runnerJobUid.orNull)
-        s.setLong(22, run.createdAt)
-        setNullableLong(s, 23, run.startedAt); setNullableLong(s, 24, run.finishedAt)
-        s.setString(25, run.errorSummary.orNull); s.setLong(26, run.stateUpdatedAt)
-        s.setLong(27, run.logNextOffset); s.setBoolean(28, run.logTruncated)
-        s.setLong(29, run.version)
+        s.setString(18, run.attemptId); s.setString(19, run.computeMode.toString)
+        s.setString(20, run.executionTransport.toString)
+        s.setString(21, run.computeAllocationId.orNull)
+        s.setString(22, run.computeBindingId.orNull)
+        s.setString(23, run.dbtInvocationId.orNull); s.setString(24, run.state.toString)
+        s.setString(25, run.runnerRunId.orNull); s.setString(26, run.dispatchToken.orNull)
+        s.setString(27, run.runnerJobUid.orNull); s.setLong(28, run.createdAt)
+        setNullableLong(s, 29, run.startedAt); setNullableLong(s, 30, run.finishedAt)
+        s.setString(31, run.errorSummary.orNull); s.setLong(32, run.stateUpdatedAt)
+        s.setLong(33, run.logNextOffset); s.setBoolean(34, run.logTruncated)
+        s.setBoolean(35, run.runnerResourcesCleaned)
+        s.setString(36, run.runnerCleanupError.orNull)
+        s.setLong(37, run.version)
+        s.setString(38, run.clientRequestId.orNull)
     }
   }
 
   override def getRun(id: String): Option[DbtJobRun] =
     queryOne("SELECT * FROM dbt_job_run WHERE id = ?", _.setString(1, id))(runMapper)
+
+  override def findRunByRequestId(
+      submittedBy: String,
+      clientRequestId: String): Option[DbtJobRun] = queryOne(
+    "SELECT * FROM dbt_job_run WHERE submitted_by = ? AND client_request_id = ?",
+    statement => {
+      statement.setString(1, submittedBy)
+      statement.setString(2, clientRequestId)
+    })(runMapper)
 
   override def listRunsForWorkspace(workspaceId: String, limit: Int): Seq[DbtJobRun] =
     listRuns("workspace_id = ?", _.setString(1, workspaceId), limit)
@@ -278,25 +311,30 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
     require(expectedStates.nonEmpty, "expected DBT run states must not be empty")
     val statePlaceholders = List.fill(expectedStates.size)("?").mkString(", ")
     JdbcUtils.executeUpdate(
-      s"""UPDATE dbt_job_run SET state = ?, runner_run_id = ?, dispatch_token = ?,
-         | runner_job_uid = ?, started_at = ?, finished_at = ?, error_summary = ?,
-         | state_updated_at = ?, log_next_offset = ?, log_truncated = ?, version = ?
+      s"""UPDATE dbt_job_run SET compute_binding_id = ?, dbt_invocation_id = ?, state = ?,
+         | runner_run_id = ?, dispatch_token = ?, runner_job_uid = ?, started_at = ?,
+         | finished_at = ?, error_summary = ?, state_updated_at = ?, log_next_offset = ?,
+         | log_truncated = ?, runner_resources_cleaned = ?, runner_cleanup_error = ?, version = ?
          | WHERE id = ? AND version = ? AND state IN ($statePlaceholders)""".stripMargin) { s =>
-      s.setString(1, run.state.toString)
-      s.setString(2, run.runnerRunId.orNull)
-      s.setString(3, run.dispatchToken.orNull)
-      s.setString(4, run.runnerJobUid.orNull)
-      setNullableLong(s, 5, run.startedAt)
-      setNullableLong(s, 6, run.finishedAt)
-      s.setString(7, run.errorSummary.orNull)
-      s.setLong(8, run.stateUpdatedAt)
-      s.setLong(9, run.logNextOffset)
-      s.setBoolean(10, run.logTruncated)
-      s.setLong(11, run.version)
-      s.setString(12, run.id)
-      s.setLong(13, run.version - 1)
+      s.setString(1, run.computeBindingId.orNull)
+      s.setString(2, run.dbtInvocationId.orNull)
+      s.setString(3, run.state.toString)
+      s.setString(4, run.runnerRunId.orNull)
+      s.setString(5, run.dispatchToken.orNull)
+      s.setString(6, run.runnerJobUid.orNull)
+      setNullableLong(s, 7, run.startedAt)
+      setNullableLong(s, 8, run.finishedAt)
+      s.setString(9, run.errorSummary.orNull)
+      s.setLong(10, run.stateUpdatedAt)
+      s.setLong(11, run.logNextOffset)
+      s.setBoolean(12, run.logTruncated)
+      s.setBoolean(13, run.runnerResourcesCleaned)
+      s.setString(14, run.runnerCleanupError.orNull)
+      s.setLong(15, run.version)
+      s.setString(16, run.id)
+      s.setLong(17, run.version - 1)
       expectedStates.toSeq.sortBy(_.toString).zipWithIndex.foreach { case (state, index) =>
-        s.setString(14 + index, state.toString)
+        s.setString(18 + index, state.toString)
       }
     } == 1
   }
@@ -377,9 +415,52 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
       truncated = run.logTruncated)
   }
 
+  override def putArtifact(runId: String, artifact: DbtRunArtifact): Unit = {
+    inTransaction { connection =>
+      val updated = update(
+        connection,
+        """UPDATE dbt_job_run_artifact SET content = ?, created_at = ?
+          | WHERE run_id = ? AND name = ?""".stripMargin) { statement =>
+        statement.setString(1, artifact.content)
+        statement.setLong(2, artifact.createdAt)
+        statement.setString(3, runId)
+        statement.setString(4, artifact.name)
+      }
+      if (updated == 0) {
+        update(
+          connection,
+          """INSERT INTO dbt_job_run_artifact(run_id, name, content, created_at)
+            | VALUES(?, ?, ?, ?)""".stripMargin) { statement =>
+          statement.setString(1, runId)
+          statement.setString(2, artifact.name)
+          statement.setString(3, artifact.content)
+          statement.setLong(4, artifact.createdAt)
+        }
+      }
+    }
+  }
+
+  override def getArtifact(runId: String, name: String): Option[DbtRunArtifact] = queryOne(
+    "SELECT name, content, created_at FROM dbt_job_run_artifact WHERE run_id = ? AND name = ?",
+    statement => {
+      statement.setString(1, runId)
+      statement.setString(2, name)
+    }) { result =>
+    DbtRunArtifact(
+      result.getString("name"),
+      result.getString("content"),
+      result.getLong("created_at"))
+  }
+
   override def listActiveRuns(): Seq[DbtJobRun] =
     JdbcUtils.executeQueryWithRowMapper("SELECT * FROM dbt_job_run WHERE state IN " +
       "('QUEUED', 'DISPATCHING', 'SUBMITTED', 'RUNNING', 'CANCELLING')")(_ => ())(runMapper)
+
+  override def listRunsForReconciliation(): Seq[DbtJobRun] =
+    JdbcUtils.executeQueryWithRowMapper(
+      """SELECT * FROM dbt_job_run WHERE state IN
+        | ('QUEUED', 'DISPATCHING', 'SUBMITTED', 'RUNNING', 'CANCELLING')
+        | OR runner_resources_cleaned = FALSE""".stripMargin)(_ => ())(runMapper)
 
   override def listActiveRunsForProfile(profileId: String): Seq[DbtJobRun] =
     JdbcUtils.executeQueryWithRowMapper("SELECT * FROM dbt_job_run WHERE profile_id = ? " +
@@ -436,10 +517,32 @@ class JDBCDbtStore(conf: KyuubiConf) extends DbtStore with Logging {
       _.next())
   }
 
+  private def ensureRequestIndex(): Unit = JdbcUtils.withConnection { connection =>
+    val index = "dbt_job_run_request_index"
+    val exists = JdbcUtils.withCloseable(
+      connection.getMetaData.getIndexInfo(null, null, "dbt_job_run", true, false)) { rows =>
+      var found = false
+      while (rows.next() && !found) {
+        found = index.equalsIgnoreCase(Option(rows.getString("INDEX_NAME")).getOrElse(""))
+      }
+      found
+    }
+    if (!exists) {
+      try {
+        JdbcUtils.withCloseable(connection.prepareStatement(
+          s"CREATE UNIQUE INDEX $index ON dbt_job_run(submitted_by, client_request_id)"))(
+          _.execute())
+      } catch {
+        case error: SQLException if duplicateColumn(error) =>
+          info(s"DBT request index $index was added by another server replica")
+      }
+    }
+  }
+
   private def duplicateColumn(error: SQLException): Boolean = {
     val message = Option(error.getMessage).getOrElse("").toLowerCase
     error.getSQLState == "42701" || message.contains("duplicate column") ||
-    message.contains("already exists")
+    message.contains("duplicate key name") || message.contains("already exists")
   }
 
   private def inTransaction[T](block: Connection => T): T = JdbcUtils.withConnection { connection =>
@@ -527,5 +630,42 @@ object JDBCDbtStore {
       "dbt_job_run",
       "profile_revision",
       "ALTER TABLE dbt_job_run ADD COLUMN profile_revision BIGINT DEFAULT 1"),
+    (
+      "dbt_job_run",
+      "attempt_id",
+      "ALTER TABLE dbt_job_run ADD COLUMN attempt_id VARCHAR(36)"),
+    (
+      "dbt_job_run",
+      "compute_mode",
+      "ALTER TABLE dbt_job_run ADD COLUMN compute_mode VARCHAR(16) DEFAULT 'JOB'"),
+    (
+      "dbt_job_run",
+      "execution_transport",
+      "ALTER TABLE dbt_job_run ADD COLUMN execution_transport VARCHAR(16) " +
+        "DEFAULT 'KUBERNETES'"),
+    (
+      "dbt_job_run",
+      "compute_allocation_id",
+      "ALTER TABLE dbt_job_run ADD COLUMN compute_allocation_id VARCHAR(36)"),
+    (
+      "dbt_job_run",
+      "compute_binding_id",
+      "ALTER TABLE dbt_job_run ADD COLUMN compute_binding_id VARCHAR(36)"),
+    (
+      "dbt_job_run",
+      "dbt_invocation_id",
+      "ALTER TABLE dbt_job_run ADD COLUMN dbt_invocation_id VARCHAR(64)"),
+    (
+      "dbt_job_run",
+      "runner_resources_cleaned",
+      "ALTER TABLE dbt_job_run ADD COLUMN runner_resources_cleaned BOOLEAN DEFAULT FALSE"),
+    (
+      "dbt_job_run",
+      "runner_cleanup_error",
+      "ALTER TABLE dbt_job_run ADD COLUMN runner_cleanup_error TEXT"),
+    (
+      "dbt_job_run",
+      "client_request_id",
+      "ALTER TABLE dbt_job_run ADD COLUMN client_request_id VARCHAR(255)"),
     ("dbt_job_run", "version", "ALTER TABLE dbt_job_run ADD COLUMN version BIGINT DEFAULT 1"))
 }

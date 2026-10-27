@@ -457,8 +457,12 @@
         logLoading.value = false
       })
 
-    Promise.all([getSqlResultPromise, getSqlLogPromise]).then(() =>
-      closeOperation(runSqlResponse.identifier)
+    // Closing must also happen when result decoding or log retrieval fails. A leaked terminal
+    // operation keeps the Kyuubi session non-idle and consequently prevents engine idle cleanup.
+    Promise.all([getSqlResultPromise, getSqlLogPromise]).finally(() =>
+      closeOperation(runSqlResponse.identifier).catch((error) =>
+        console.warn('Failed to close SQL operation:', error)
+      )
     )
   }
 
@@ -474,6 +478,9 @@
   }
 
   const catchSessionError = (err: IError) => {
+    // An idle backend session is expected to expire. Forget its handle so the next Run opens a
+    // fresh session instead of repeatedly sending requests to one the server has already closed.
+    sessionIdentifier.value = ''
     sqlResult.value = []
     sqlLog.value = ''
     postError(err)

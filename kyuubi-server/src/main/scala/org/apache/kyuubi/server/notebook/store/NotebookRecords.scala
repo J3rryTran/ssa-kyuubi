@@ -119,13 +119,16 @@ case class ScheduleRecord(
     runtimeProfile: Option[String],
     failurePolicy: String,
     overlapPolicy: String,
-    lastRunAt: Option[Long],
-    nextRunAt: Option[Long],
+    lastRunAt: Option[Number],
+    nextRunAt: Option[Number],
     createdAt: Long,
     createdBy: String,
     updatedAt: Long,
     updatedBy: String,
-    version: Long)
+    version: Long,
+    sourceRevisionId: Option[String] = None,
+    sourceRevisionNumber: Option[Number] = None,
+    sourceChecksum: Option[String] = None)
 
 /**
  * Everything one notebook owns, held in a single file.
@@ -195,13 +198,16 @@ case class NotebookRecord(
       s.runtimeProfile,
       FailurePolicy.withName(s.failurePolicy),
       OverlapPolicy.withName(s.overlapPolicy),
-      s.lastRunAt,
-      s.nextRunAt,
+      s.lastRunAt.map(_.longValue()),
+      s.nextRunAt.map(_.longValue()),
       s.createdAt,
       s.createdBy,
       s.updatedAt,
       s.updatedBy,
-      s.version)
+      s.version,
+      s.sourceRevisionId,
+      s.sourceRevisionNumber.map(_.longValue()),
+      s.sourceChecksum)
   }
 
   /** The same cells as a notebook file an operator can open, written beside the metadata. */
@@ -297,11 +303,14 @@ object NotebookRecord {
     schedule.runtimeProfile,
     schedule.failurePolicy.toString,
     schedule.overlapPolicy.toString,
-    schedule.lastRunAt,
-    schedule.nextRunAt,
+    schedule.lastRunAt.map(value => (Long.box(value): Number)),
+    schedule.nextRunAt.map(value => (Long.box(value): Number)),
     schedule.createdAt,
     schedule.createdBy,
     schedule.updatedAt,
     schedule.updatedBy,
-    schedule.version)
+    schedule.version,
+    schedule.sourceRevisionId,
+    schedule.sourceRevisionNumber.map(value => (Long.box(value): Number)),
+    schedule.sourceChecksum)
 }

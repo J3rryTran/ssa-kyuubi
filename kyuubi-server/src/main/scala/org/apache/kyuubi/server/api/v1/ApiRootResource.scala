@@ -238,6 +238,9 @@ private[v1] class ApiRootResource extends ApiRequestContext {
   @Path("executions")
   def executions: Class[ExecutionsResource] = classOf[ExecutionsResource]
 
+  @Path("notebook-runs")
+  def notebookRuns: Class[NotebookRunsResource] = classOf[NotebookRunsResource]
+
   @Path("engine-profiles")
   def engineProfiles: Class[NotebookEngineProfilesResource] =
     classOf[NotebookEngineProfilesResource]

@@ -56,6 +56,75 @@ class NotebookScheduleSuite extends NotebookTestBase {
     }
   }
 
+  test("schedule keeps its pinned source until an explicit repin") {
+    val (notebook, createdCells) = createNotebook(
+      alice,
+      "pinned-source",
+      cells = Seq(("CODE", "SQL", "select 'source-a'")))
+    val first = schedules.set(documents.loadNotebook(notebook.id), alice, scheduleRequest())
+    assert(first.sourceRevisionId.nonEmpty)
+    assert(first.sourceRevisionNumber.nonEmpty)
+    assert(first.sourceChecksum.exists(_.length == 64))
+    assert(schedules.pinnedDocument(schedules.requireModel(notebook.id))._2.cells.head.source ===
+      "select 'source-a'")
+
+    val update = new UpdateCellRequest
+    update.setSource("select 'source-b'")
+    update.setVersion(java.lang.Long.valueOf(createdCells.head.version))
+    documents.updateCell(alice, notebook.id, createdCells.head.id, update)
+
+    val cronOnly = scheduleRequest(cron = "15 4 * * *")
+    cronOnly.setVersion(java.lang.Long.valueOf(first.version))
+    val retained = schedules.set(documents.loadNotebook(notebook.id), alice, cronOnly)
+    assert(retained.sourceRevisionId === first.sourceRevisionId)
+    assert(schedules.pinnedDocument(schedules.requireModel(notebook.id))._2.cells.head.source ===
+      "select 'source-a'")
+
+    val repinned = schedules.pinCurrent(
+      documents.loadNotebook(notebook.id),
+      alice,
+      Some(retained.version))
+    assert(repinned.sourceRevisionId !== retained.sourceRevisionId)
+    assert(schedules.pinnedDocument(schedules.requireModel(notebook.id))._2.cells.head.source ===
+      "select 'source-b'")
+  }
+
+  test("a revision pinned by a schedule cannot be deleted") {
+    val (notebook, _) = createNotebook(
+      alice,
+      "protected-schedule-source",
+      cells = Seq(("CODE", "SQL", "select 1")))
+    val schedule = schedules.set(documents.loadNotebook(notebook.id), alice, scheduleRequest())
+    interceptNotebook(NotebookErrorCode.INVALID_REQUEST) {
+      revisions.delete(notebook.id, schedule.sourceRevisionNumber.get)
+    }
+  }
+
+  test("dispatch source verification rejects an incomplete or tampered pin") {
+    val (notebook, _) = createNotebook(
+      alice,
+      "verified-schedule-source",
+      cells = Seq(("CODE", "SQL", "select 1")))
+    schedules.set(documents.loadNotebook(notebook.id), alice, scheduleRequest())
+    val stored = schedules.requireModel(notebook.id)
+
+    val tampered = stored.copy(sourceChecksum = Some("0" * 64), version = stored.version + 1)
+    assert(manager.store.upsertSchedule(tampered, Some(stored.version)))
+    interceptNotebook(NotebookErrorCode.INVALID_REQUEST) {
+      schedules.pinnedDocument(tampered)
+    }
+
+    val incomplete = tampered.copy(
+      sourceRevisionId = None,
+      sourceRevisionNumber = None,
+      sourceChecksum = None,
+      version = tampered.version + 1)
+    assert(manager.store.upsertSchedule(incomplete, Some(tampered.version)))
+    interceptNotebook(NotebookErrorCode.INVALID_REQUEST) {
+      schedules.pinnedDocument(incomplete)
+    }
+  }
+
   test("timezone must be explicit and known") {
     val (notebook, _) = createNotebook(alice, "schedule-timezone")
     val missing = new SetScheduleRequest

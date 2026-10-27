@@ -114,6 +114,9 @@ CREATE TABLE IF NOT EXISTS notebook_schedule(
     created_by TEXT NOT NULL,
     updated_at INTEGER NOT NULL,
     updated_by TEXT NOT NULL,
+    source_revision_id TEXT,
+    source_revision_number INTEGER,
+    source_checksum TEXT,
     version INTEGER NOT NULL
 );
 

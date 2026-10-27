@@ -74,6 +74,10 @@ class NotebookRouterSuite extends KyuubiFunSuite {
       === Some(RouteKey.Session("s1")))
     assert(NotebookRoutePaths.sessionKeyOf("/v1/executions/e1/logs")
       === Some(RouteKey.Execution("e1")))
+    // Run state and cancellation use shared durable metadata. They must remain available after
+    // the private session and JOB allocation have been cleaned up.
+    assert(NotebookRoutePaths.sessionKeyOf("/v1/notebook-runs/r1").isEmpty)
+    assert(NotebookRoutePaths.sessionKeyOf("/v1/notebook-runs/r1:cancel").isEmpty)
     assert(NotebookRoutePaths.sessionKeyOf("/v1/notebooks/n1/executions").isEmpty)
 
     // Content is shared, so routing it would buy a network hop and nothing else.

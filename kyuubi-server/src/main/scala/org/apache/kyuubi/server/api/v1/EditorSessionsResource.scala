@@ -26,7 +26,8 @@ import io.swagger.v3.oas.annotations.tags.Tag
 
 import org.apache.kyuubi.client.api.v1.dto
 import org.apache.kyuubi.config.KyuubiReservedKeys._
-import org.apache.kyuubi.server.engineprofile.{EngineProfilePrincipal, EngineProfileSnapshot}
+import org.apache.kyuubi.server.compute.ComputeWorkloadType
+import org.apache.kyuubi.server.engineprofile.EngineProfilePrincipal
 import org.apache.kyuubi.server.notebook.api.{NotebookException, OpenEditorSessionRequest}
 
 /**
@@ -47,20 +48,16 @@ private[v1] class EditorSessionsResource extends NotebookApiSupport {
       .map(_.trim)
       .filter(_.nonEmpty)
       .getOrElse(throw NotebookException.invalid("engineProfileId must be set"))
-    val snapshot = notebooks.engineProfiles.snapshotForUse(
+    val allocation = notebooks.computeAllocations.acquireInteractive(
+      EngineProfilePrincipal(principal.user, principal.admin),
       profileId,
-      EngineProfilePrincipal(principal.user, principal.admin))
+      ComputeWorkloadType.SQL)
     val ipAddress = fe.getIpAddress
-    val config = snapshot.sparkConfig ++ EngineProfileSnapshot.engineSessionConfig(snapshot) ++
-      notebooks.pythonEnvironments.launchConfig(snapshot) ++ Map(
-        "kyuubi.engine.type" -> "SPARK_SQL",
-        "kyuubi.engine.share.level" -> "USER",
-        "kyuubi.engine.share.level.subdomain" -> snapshot.subdomain,
-        "kyuubi.engine.share.level.sub.domain" -> snapshot.subdomain,
-        KYUUBI_CLIENT_IP_KEY -> ipAddress,
-        KYUUBI_SERVER_IP_KEY -> fe.host,
-        KYUUBI_SESSION_CONNECTION_URL_KEY -> fe.connectionUrl,
-        KYUUBI_SESSION_REAL_USER_KEY -> fe.getRealUser())
+    val config = notebooks.computeAllocations.routingConfiguration(allocation) ++ Map(
+      KYUUBI_CLIENT_IP_KEY -> ipAddress,
+      KYUUBI_SERVER_IP_KEY -> fe.host,
+      KYUUBI_SESSION_CONNECTION_URL_KEY -> fe.connectionUrl,
+      KYUUBI_SESSION_REAL_USER_KEY -> fe.getRealUser())
     val handle = fe.be.openSession(
       SessionsResource.SESSION_PROTOCOL_VERSION,
       principal.user,

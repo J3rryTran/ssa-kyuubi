@@ -29,6 +29,8 @@ import org.apache.kyuubi.config.KyuubiReservedKeys._
 import org.apache.kyuubi.ha.client.{KyuubiServiceDiscovery, ServiceDiscovery}
 import org.apache.kyuubi.metrics.MetricsConstants._
 import org.apache.kyuubi.metrics.MetricsSystem
+import org.apache.kyuubi.server.compute.ComputeAllocationService
+import org.apache.kyuubi.server.engineprofile.EngineProfileSessionConfigResolver
 import org.apache.kyuubi.service.{Serverable, Service, TBinaryFrontendService}
 import org.apache.kyuubi.service.TFrontendService.{CURRENT_SERVER_CONTEXT, FeServiceServerContext, OK_STATUS}
 import org.apache.kyuubi.session.KyuubiSessionImpl
@@ -43,12 +45,23 @@ final class KyuubiTBinaryFrontendService(
 
   override protected def hadoopConf: Configuration = KyuubiServer.getHadoopConf()
 
+  private val pendingAttachReservation = new ThreadLocal[String]()
+  private val pendingComputeAllocation = new ThreadLocal[String]()
+
   override protected def resolveSessionConfiguration(
-      _realUser: String,
+      realUser: String,
       sessionUser: String,
-      configuration: Map[String, String]): Map[String, String] =
-    serverable.asInstanceOf[KyuubiServer]
-      .resolveEngineProfileSessionConfiguration(sessionUser, configuration)
+      configuration: Map[String, String]): Map[String, String] = {
+    val resolved = serverable.asInstanceOf[KyuubiServer]
+      .resolveEngineProfileSessionConfiguration(realUser, sessionUser, configuration)
+    pendingAttachReservation.remove()
+    pendingComputeAllocation.remove()
+    resolved.get(EngineProfileSessionConfigResolver.AttachReservationIdKey)
+      .foreach(pendingAttachReservation.set)
+    resolved.get(ComputeAllocationService.InternalAllocationIdKey)
+      .foreach(pendingComputeAllocation.set)
+    resolved
+  }
 
   override lazy val discoveryService: Option[Service] = {
     if (ServiceDiscovery.supportServiceDiscovery(conf)) {
@@ -95,11 +108,30 @@ final class KyuubiTBinaryFrontendService(
   }
 
   override def OpenSession(req: TOpenSessionReq): TOpenSessionResp = {
-    debug(req.toString)
+    pendingAttachReservation.remove()
+    pendingComputeAllocation.remove()
+    // OpenSession configuration may contain a short-lived managed compute credential.
+    debug("Received OpenSession request")
     info("Client protocol version: " + req.getClient_protocol)
     val resp = new TOpenSessionResp
     try {
       val sessionHandle = getSessionHandle(req, resp)
+      Option(pendingComputeAllocation.get()).foreach { allocationId =>
+        serverable.asInstanceOf[KyuubiServer].recordComputeEngineReference(
+          allocationId,
+          sessionHandle.identifier.toString)
+      }
+      Option(pendingAttachReservation.get()).foreach { reservationId =>
+        val confirmed = serverable.asInstanceOf[KyuubiServer]
+          .confirmComputeAttach(reservationId)
+        if (!confirmed) {
+          be.closeSession(sessionHandle)
+          throw new KyuubiException(
+            "Managed compute allocation was released while the session was opening")
+        }
+        pendingAttachReservation.remove()
+      }
+      pendingComputeAllocation.remove()
 
       val respConfiguration = new java.util.HashMap[String, String]()
       val launchEngineOp = be.sessionManager.getSession(sessionHandle)
@@ -128,6 +160,12 @@ final class KyuubiTBinaryFrontendService(
       case e: Exception =>
         error("Error opening session: ", e)
         resp.setStatus(KyuubiSQLException.toTStatus(e, verbose = true))
+    } finally {
+      Option(pendingAttachReservation.get()).foreach { reservationId =>
+        serverable.asInstanceOf[KyuubiServer].releaseComputeAttach(reservationId)
+      }
+      pendingAttachReservation.remove()
+      pendingComputeAllocation.remove()
     }
     resp
   }

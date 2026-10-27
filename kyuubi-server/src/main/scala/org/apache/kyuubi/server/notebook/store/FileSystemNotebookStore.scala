@@ -675,8 +675,13 @@ class FileSystemNotebookStore(conf: KyuubiConf) extends NotebookStore with Loggi
 
   override def createRun(run: NotebookRun): Unit = runtime.createRun(run)
   override def getRun(id: String): Option[NotebookRun] = runtime.getRun(id)
+  override def findRunByRequestId(
+      submittedBy: String,
+      clientRequestId: String): Option[NotebookRun] =
+    runtime.findRunByRequestId(submittedBy, clientRequestId)
   override def listRuns(notebookId: String, limit: Int): Seq[NotebookRun] =
     runtime.listRuns(notebookId, limit)
+  override def listActiveRuns(): Seq[NotebookRun] = runtime.listActiveRuns()
   override def updateRun(run: NotebookRun, expectedVersion: Long): Boolean =
     runtime.updateRun(run, expectedVersion)
 
@@ -706,6 +711,9 @@ class FileSystemNotebookStore(conf: KyuubiConf) extends NotebookStore with Loggi
 
   override def updatePythonEnvironmentRevision(environment: PythonEnvironmentRevision): Boolean =
     runtime.updatePythonEnvironmentRevision(environment)
+
+  override def deletePythonEnvironmentState(profileId: String): Unit =
+    runtime.deletePythonEnvironmentState(profileId)
 
   override def createPythonEnvironmentChangeRequest(request: PythonEnvironmentChangeRequest): Unit =
     runtime.createPythonEnvironmentChangeRequest(request)

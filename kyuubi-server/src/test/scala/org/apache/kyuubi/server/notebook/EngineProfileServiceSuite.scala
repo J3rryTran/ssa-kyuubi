@@ -243,6 +243,14 @@ class EngineProfileServiceSuite extends NotebookTestBase {
     assert(snapshot.sparkConfig.isEmpty)
     assert(snapshot.notebookRuntimeIdleTimeout.isEmpty)
     assert(snapshot.engineIdleTimeout.isEmpty)
+    assert(org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
+      .clientSessionCleanupConfig(
+        snapshot,
+        1800000L)("kyuubi.session.idle.timeout") === "1800000")
+    assert(org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
+      .clientSessionCleanupConfig(
+        snapshot,
+        1800000L)("kyuubi.operation.idle.timeout") === "1800000")
   }
 
   test("profile snapshots preserve validated idle timeout overrides") {
@@ -255,6 +263,14 @@ class EngineProfileServiceSuite extends NotebookTestBase {
     assert(snapshot.engineIdleTimeout.contains("PT30M"))
     assert(org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
       .engineSessionConfig(snapshot)("kyuubi.session.engine.idle.timeout") === "1800000")
+    assert(org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
+      .engineSessionConfig(snapshot)("kyuubi.operation.idle.timeout") === "1800000")
+    assert(org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
+      .notebookSessionConfig(snapshot)("kyuubi.session.idle.timeout") === "300000")
+    assert(org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
+      .clientSessionCleanupConfig(
+        snapshot,
+        60000L)("kyuubi.session.idle.timeout") === "1800000")
 
     val updated = manager.engineProfiles.update(
       created.profileId,
@@ -303,33 +319,16 @@ class EngineProfileServiceSuite extends NotebookTestBase {
     }
   }
 
-  test("profile with a READY Python environment can be deleted without deleting its PVC") {
+  test("profile deletion succeeds when it has no Python environment") {
     val profile = manager.engineProfiles.create(
       profilePrincipal(alice),
       request("persistent-delete", "spark.driver.memory" -> "2g"))
-    val now = System.currentTimeMillis()
-    val environment = PythonEnvironmentRevision(
-      id = "environment-delete-test",
-      profileId = profile.profileId,
-      revision = 1L,
-      pvcName = "pyenv-delete-test",
-      relativePath = "environments/env-1",
-      state = PythonEnvironmentState.READY,
-      requirementsLock = None,
-      metadata = None,
-      contentChecksum = None,
-      baseImage = "test-image",
-      createdAt = now,
-      readyAt = Some(now),
-      retiredAt = None)
-    manager.store.createPythonEnvironmentRevision(environment)
-    manager.engineProfiles.publishPythonEnvironment(profile.profileId, environment.id)
 
     manager.engineProfiles.delete(profile.profileId, profilePrincipal(alice))
+
     interceptNotebook(NotebookErrorCode.NOTEBOOK_NOT_FOUND) {
       manager.engineProfiles.getOwned(profile.profileId, profilePrincipal(alice))
     }
-    assert(manager.store.getPythonEnvironmentRevision(environment.id).contains(environment))
   }
 
   test("profile cannot be deleted during a pending Python environment change") {

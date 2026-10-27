@@ -224,9 +224,15 @@ class PySparkRuntimeAdapter(
 
   override def stopRuntime(runtime: NotebookRuntime): Unit = {
     runtime.internalRuntimeHandle.foreach { handle =>
-      try backendService().closeSession(SessionHandle.fromUUID(handle))
-      catch {
-        case NonFatal(e) => debug(s"Failed to close Spark session of runtime ${runtime.id}", e)
+      val sessionHandle = SessionHandle.fromUUID(handle)
+      val backend = backendService()
+      if (backend.sessionManager.getSessionOption(sessionHandle).nonEmpty) {
+        try backend.closeSession(sessionHandle)
+        catch {
+          case NonFatal(e) =>
+            warn(s"Failed to close Spark session of runtime ${runtime.id}; cleanup will retry", e)
+            throw e
+        }
       }
     }
   }

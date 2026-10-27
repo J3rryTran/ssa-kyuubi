@@ -126,6 +126,190 @@ object NotebookConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMPUTE_ALLOCATION_ZK_LOCK_TIMEOUT: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.allocation.zk.lock.timeout")
+      .doc("Maximum time to acquire the global JOB allocation reservation lock in ZooKeeper. " +
+        "The lock serializes quota checks and durable reservation across Kyuubi replicas.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .createWithDefault(java.util.concurrent.TimeUnit.SECONDS.toMillis(30))
+
+  val COMPUTE_JOB_MAX_CONCURRENT_PER_USER: ConfigEntry[Int] =
+    buildConf("kyuubi.compute.job.max.concurrent.per-user")
+      .doc("Maximum number of open dedicated JOB allocations for one effective user.")
+      .version("1.10.3")
+      .serverOnly
+      .intConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(2)
+
+  val COMPUTE_JOB_MAX_CONCURRENT_GLOBAL: ConfigEntry[Int] =
+    buildConf("kyuubi.compute.job.max.concurrent.global")
+      .doc("Maximum number of open dedicated JOB allocations across the deployment.")
+      .version("1.10.3")
+      .serverOnly
+      .intConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(10)
+
+  val COMPUTE_BINDING_TRUSTED_RUNNER_USERS: ConfigEntry[Set[String]] =
+    buildConf("kyuubi.compute.binding.trusted.runner.users")
+      .doc("Authenticated service identities allowed to attach managed JOB sessions. " +
+        "An empty set disables managed binding issuance and attach.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .toSet()
+      .createWithDefault(Set.empty)
+
+  val COMPUTE_BINDING_TTL: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.binding.ttl")
+      .doc("Lifetime of a scoped managed-runner credential. It must exceed the configured " +
+        "managed runner timeout; completion and cancellation revoke it immediately.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.MINUTES.toMillis(65))
+
+  val COMPUTE_ATTACH_RESERVATION_TTL: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.attach.reservation.ttl")
+      .doc("Maximum time between authorizing a managed attach and confirming OpenSession.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.MINUTES.toMillis(2))
+
+  val COMPUTE_LIFECYCLE_RECONCILE_INTERVAL: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.lifecycle.reconcile.interval")
+      .doc("Interval between durable compute lifecycle reconciliation passes.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.SECONDS.toMillis(5))
+
+  val COMPUTE_LIFECYCLE_ENABLED: ConfigEntry[Boolean] =
+    buildConf("kyuubi.compute.lifecycle.enabled")
+      .doc("Whether this Kyuubi replica participates in durable compute lifecycle " +
+        "reconciliation. It is disabled by default until the allocation schema and all " +
+        "replicas have been upgraded.")
+      .version("1.10.3")
+      .serverOnly
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMPUTE_LIFECYCLE_CLAIM_TTL: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.lifecycle.claim.ttl")
+      .doc("Lease held by one Kyuubi replica while reconciling a compute allocation. " +
+        "An expired lease may be taken over by another replica.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.SECONDS.toMillis(30))
+
+  val COMPUTE_LIFECYCLE_BATCH_SIZE: ConfigEntry[Int] =
+    buildConf("kyuubi.compute.lifecycle.batch.size")
+      .doc("Maximum number of newly claimable compute allocations handled in one pass.")
+      .version("1.10.3")
+      .serverOnly
+      .intConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(100)
+
+  val COMPUTE_LIFECYCLE_LATE_LAUNCH_GRACE: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.lifecycle.late-launch.grace")
+      .doc("Minimum time a releasing allocation without an engine reference remains visible. " +
+        "This fences an OpenSession that was already in flight when cancellation won.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.MINUTES.toMillis(2))
+
+  val COMPUTE_LIFECYCLE_CLEANUP_RETRY_INITIAL_BACKOFF: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.lifecycle.cleanup.retry.initial-backoff")
+      .doc("Initial delay before retrying a failed compute cleanup. Retry is idempotent and " +
+        "never re-runs the workload.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.SECONDS.toMillis(1))
+
+  val COMPUTE_LIFECYCLE_CLEANUP_RETRY_MAX_BACKOFF: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.lifecycle.cleanup.retry.max-backoff")
+      .doc("Maximum delay between failed compute cleanup attempts.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.MINUTES.toMillis(1))
+
+  val COMPUTE_LIFECYCLE_CLEANUP_DEADLINE: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.lifecycle.cleanup.deadline")
+      .doc("Operational deadline after cleanup is requested. Passing this deadline does not " +
+        "delete metadata or stop retries; status and logs mark the cleanup overdue.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.MINUTES.toMillis(5))
+
+  val COMPUTE_METADATA_MIN_RETENTION: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.metadata.min.retention")
+      .doc("Minimum retention for terminal allocation metadata. Open or cleanup-pending " +
+        "allocations must never be removed by retention processing.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(
+        _ >= java.util.concurrent.TimeUnit.HOURS.toMillis(24),
+        "must be at least 24 hours")
+      .createWithDefault(java.util.concurrent.TimeUnit.HOURS.toMillis(24))
+
+  val COMPUTE_MANAGED_HA_REQUIRED: ConfigEntry[Boolean] =
+    buildConf("kyuubi.compute.managed.ha.required")
+      .doc("Whether enabled managed DBT/Notebook jobs must use shared MySQL/PostgreSQL " +
+        "metadata, ZooKeeper coordination and the durable compute lifecycle controller. " +
+        "Enable this for multi-replica deployments; leave it false only for local tests.")
+      .version("1.10.3")
+      .serverOnly
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMPUTE_ENGINE_REGISTRATION_TIMEOUT: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.engine.registration.timeout")
+      .doc("Maximum time a STARTING allocation may remain without a discoverable engine. " +
+        "Expiration creates cleanup intent; it never marks the allocation released directly.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.SECONDS.toMillis(60))
+
+  val COMPUTE_JOB_TIMEOUT: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.job.timeout")
+      .doc("Server-owned wall-clock deadline for a managed JOB allocation.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.HOURS.toMillis(1))
+
+  val COMPUTE_JOB_HEARTBEAT_TIMEOUT: ConfigEntry[Long] =
+    buildConf("kyuubi.compute.job.heartbeat.timeout")
+      .doc("Maximum silence from a managed JOB attempt before cleanup is requested. " +
+        "This timeout is independent of client session and engine idle timeouts.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.MINUTES.toMillis(2))
+
   val NOTEBOOK_SCHEMA_INIT: ConfigEntry[Boolean] =
     buildConf("kyuubi.notebook.store.schema.init")
       .doc("Whether to create the notebook tables at startup if they are missing.")
@@ -179,7 +363,8 @@ object NotebookConf {
     buildConf("kyuubi.notebook.runtime.idle.timeout")
       .doc("How long a runtime may sit idle before it is stopped and its resources released. " +
         "A session whose runtimes have all been reclaimed is stopped with them. Set to 0 to " +
-        "keep runtimes until they are stopped explicitly.")
+        "keep runtimes which inherit this platform default until they are stopped explicitly; " +
+        "an Engine Profile may still provide its own positive runtime timeout.")
       .version("1.10.3")
       .serverOnly
       .timeConf
@@ -192,6 +377,43 @@ object NotebookConf {
       .serverOnly
       .timeConf
       .createWithDefault(java.util.concurrent.TimeUnit.MINUTES.toMillis(5))
+
+  val NOTEBOOK_JOB_RUNNER_ENABLED: ConfigEntry[Boolean] =
+    buildConf("kyuubi.notebook.job.runner.enabled")
+      .doc("Whether the authenticated run-now API may execute a pinned Notebook schedule on " +
+        "dedicated JOB compute. This does not enable cron scheduling.")
+      .version("1.10.3")
+      .serverOnly
+      .booleanConf
+      .createWithDefault(false)
+
+  val NOTEBOOK_JOB_RUNNER_THREADS: ConfigEntry[Int] =
+    buildConf("kyuubi.notebook.job.runner.threads")
+      .doc("Maximum number of pinned Notebook occurrences executed concurrently by one server.")
+      .version("1.10.3")
+      .serverOnly
+      .intConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(4)
+
+  val NOTEBOOK_JOB_POLL_INTERVAL: ConfigEntry[Long] =
+    buildConf("kyuubi.notebook.job.poll.interval")
+      .doc("How often the headless Notebook runner polls its current cell and cancellation state.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(250L)
+
+  val NOTEBOOK_JOB_RUN_TIMEOUT: ConfigEntry[Long] =
+    buildConf("kyuubi.notebook.job.run.timeout")
+      .doc("Maximum elapsed time for one headless scheduled Notebook occurrence. A timeout " +
+        "cancels the current cell, fails the run and requests JOB compute cleanup.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.HOURS.toMillis(4))
 
   val NOTEBOOK_EXECUTION_LOG_MAX_LINES: ConfigEntry[Int] =
     buildConf("kyuubi.notebook.execution.log.max.lines")
@@ -271,6 +493,19 @@ object NotebookConf {
       .stringConf
       .createWithDefault("")
 
+  val PYTHON_ENVIRONMENT_PVC_ACCESS_MODE: ConfigEntry[String] =
+    buildConf("kyuubi.notebook.python.environment.pvc.access-mode")
+      .doc(
+        "Kubernetes access mode requested when creating a profile Python environment PVC. " +
+          "ReadWriteOnce constrains all consumers to one node; use an RWX-capable " +
+          "StorageClass with ReadWriteMany when Driver and Executor pods may span nodes. " +
+          "Changing this setting never mutates or deletes an existing PVC.")
+      .version("1.10.3")
+      .serverOnly
+      .stringConf
+      .checkValues(Set("ReadWriteOnce", "ReadWriteMany"))
+      .createWithDefault("ReadWriteOnce")
+
   val PYTHON_ENVIRONMENT_PVC_SIZE: ConfigEntry[String] =
     buildConf("kyuubi.notebook.python.environment.pvc.size")
       .doc("PersistentVolumeClaim size for one Engine Profile Python environment store.")
@@ -296,6 +531,26 @@ object NotebookConf {
       .serverOnly
       .booleanConf
       .createWithDefault(false)
+
+  val DBT_MANAGED_CLI_ENABLED: ConfigEntry[Boolean] =
+    buildConf("kyuubi.dbt.managed.cli.enabled")
+      .doc("Whether an authenticated caller may prepare a local DBT CLI process as a managed " +
+        "SCHEDULE-triggered JOB allocation. This test and integration path is disabled by " +
+        "default and does not start a Kubernetes runner Job.")
+      .version("1.10.3")
+      .serverOnly
+      .booleanConf
+      .createWithDefault(false)
+
+  val DBT_MANAGED_CLI_HEARTBEAT_INTERVAL: ConfigEntry[Long] =
+    buildConf("kyuubi.dbt.managed.cli.heartbeat.interval")
+      .doc("Heartbeat interval returned to the local managed DBT CLI wrapper. It must remain " +
+        "shorter than the managed JOB heartbeat timeout.")
+      .version("1.10.3")
+      .serverOnly
+      .timeConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(java.util.concurrent.TimeUnit.SECONDS.toMillis(10))
 
   val DBT_RUNNER_KUBERNETES_NAMESPACE: ConfigEntry[String] =
     buildConf("kyuubi.dbt.runner.kubernetes.namespace")
@@ -361,9 +616,29 @@ object NotebookConf {
       .stringConf
       .createWithDefault("dbt")
 
+  val DBT_RUNNER_THREADS: ConfigEntry[Int] =
+    buildConf("kyuubi.dbt.runner.threads")
+      .doc("Number of dbt model threads assigned by the server to a managed runner. " +
+        "The browser and project cannot override this value.")
+      .version("1.10.3")
+      .serverOnly
+      .intConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(2)
+
+  val DBT_RUNNER_THREADS_MAX: ConfigEntry[Int] =
+    buildConf("kyuubi.dbt.runner.threads.max")
+      .doc("Upper bound for the server-controlled dbt thread count of a managed runner.")
+      .version("1.10.3")
+      .serverOnly
+      .intConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(4)
+
   val DBT_RUNNER_RECONCILE_INTERVAL: ConfigEntry[Long] =
     buildConf("kyuubi.dbt.runner.reconcile.interval")
-      .doc("How often the server refreshes Kubernetes DBT Job states.")
+      .doc("How often the server reconciles managed DBT runs, including Kubernetes runner " +
+        "state and orphaned local CLI attempts.")
       .version("1.10.3")
       .serverOnly
       .timeConf
@@ -392,6 +667,15 @@ object NotebookConf {
       .serverOnly
       .longConf
       .createWithDefault(10L * 1024 * 1024)
+
+  val DBT_RUNNER_ARTIFACT_MAX_BYTES: ConfigEntry[Long] =
+    buildConf("kyuubi.dbt.runner.artifact.max.bytes")
+      .doc("Maximum decoded size of one managed DBT artifact persisted before runner Job TTL.")
+      .version("1.10.3")
+      .serverOnly
+      .longConf
+      .checkValue(_ > 0, "must be positive")
+      .createWithDefault(16L * 1024 * 1024)
 
   val DBT_ENGINE_PROFILE_RUN_SNAPSHOT_TTL: ConfigEntry[Long] =
     buildConf("kyuubi.dbt.engine-profile.run.snapshot.ttl")

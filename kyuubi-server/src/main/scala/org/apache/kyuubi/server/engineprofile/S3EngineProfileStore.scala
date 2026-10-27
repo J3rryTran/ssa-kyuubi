@@ -88,6 +88,9 @@ class S3EngineProfileStore private[engineprofile] (
     }
   }
 
+  override def withOwnerLock[T](owner: String)(body: => T): T =
+    ownerLock.withLock(ownerHash(owner))(body)
+
   override def list(owner: String): Seq[EngineProfile] =
     readOwner(owner).map(_.profiles).getOrElse(Seq.empty)
 
@@ -165,8 +168,7 @@ class S3EngineProfileStore private[engineprofile] (
   override def close(): Unit = client.close()
 
   private def withOwnerWrite[T](owner: String)(body: OwnerDocument => T): T = {
-    val hash = ownerHash(owner)
-    ownerLock.withLock(hash) {
+    withOwnerLock(owner) {
       body(readOwner(owner).getOrElse(
         OwnerDocument(CurrentFormatVersion, owner, 0L, 0L, Seq.empty, Map.empty)))
     }

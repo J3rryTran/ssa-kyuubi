@@ -34,6 +34,9 @@ trait EngineProfileStore extends AutoCloseable {
 
   def healthCheck(): Unit
 
+  /** Serializes profile reads/mutations with compute reservation for the same owner. */
+  def withOwnerLock[T](owner: String)(body: => T): T
+
   def list(owner: String): Seq[EngineProfile]
 
   def getOwned(profileId: String, owner: String): Option[EngineProfile]

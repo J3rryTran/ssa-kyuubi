@@ -24,12 +24,15 @@ import scala.util.control.NonFatal
 import org.apache.kyuubi.KYUUBI_VERSION
 import org.apache.kyuubi.Logging
 import org.apache.kyuubi.config.KyuubiConf
+import org.apache.kyuubi.config.KyuubiConf.ENGINE_IDLE_TIMEOUT
 import org.apache.kyuubi.config.KyuubiReservedKeys
 import org.apache.kyuubi.engine.ApplicationManagerInfo
 import org.apache.kyuubi.ha.HighAvailabilityConf.{HA_ADDRESSES, HA_NAMESPACE}
 import org.apache.kyuubi.ha.client.DiscoveryClientProvider.withDiscoveryClient
 import org.apache.kyuubi.ha.client.DiscoveryPaths
-import org.apache.kyuubi.server.notebook.api.{EngineProfileEngineStatusView, NotebookException}
+import org.apache.kyuubi.server.compute.{ComputeAllocation, ComputeAllocationService, ComputeWorkloadType}
+import org.apache.kyuubi.server.notebook.NotebookConf.COMPUTE_LIFECYCLE_ENABLED
+import org.apache.kyuubi.server.notebook.api.{EngineProfileEngineStatusView, NotebookErrorCode, NotebookException}
 import org.apache.kyuubi.service.BackendService
 import org.apache.kyuubi.session.KyuubiSessionManager
 import org.apache.kyuubi.shaded.hive.service.rpc.thrift.TProtocolVersion
@@ -40,7 +43,8 @@ class EngineProfileRuntimeService(
     conf: KyuubiConf,
     backendService: () => BackendService,
     profiles: EngineProfileService,
-    pythonEnvironments: Option[PythonEnvironmentService]) extends Logging {
+    pythonEnvironments: Option[PythonEnvironmentService],
+    computeAllocations: Option[ComputeAllocationService] = None) extends Logging {
 
   import EngineProfileRuntimeService._
 
@@ -69,6 +73,12 @@ class EngineProfileRuntimeService(
         view(snapshot, RUNNING, nodes.size)
       } else {
         Option(transitions.get(transitionKey(snapshot))) match {
+          case Some(transition)
+              if transition.state == STOPPING &&
+                computeAllocations.exists(service =>
+                  !service.hasOpenAllocationForProfile(snapshot.profileId)) =>
+            transitions.remove(transitionKey(snapshot))
+            view(snapshot, STOPPED, 0)
           case Some(transition) => view(snapshot, transition.state, 0, transition.errorSummary)
           case None => view(snapshot, STOPPED, 0)
         }
@@ -81,27 +91,44 @@ class EngineProfileRuntimeService(
   }
 
   def start(principal: EngineProfilePrincipal, profileId: String): EngineProfileEngineStatusView = {
-    // A READY Python environment becomes part of the immutable launch configuration only after
-    // the old Driver has disappeared. Do this before taking the snapshot so an explicit Start
-    // cannot accidentally recreate the previous profile configuration without its environment.
-    pythonEnvironments.foreach(_.prepareForEngineLaunch(profileId))
+    if (computeAllocations.isEmpty) {
+      pythonEnvironments.foreach(_.prepareForEngineLaunch(profileId))
+    }
+    val allocation = computeAllocations.map(_.acquireInteractive(
+      principal,
+      profileId,
+      ComputeWorkloadType.SQL))
     val snapshot = profiles.snapshotForUse(profileId, principal)
     if (discoveryNodes(principal.user, snapshot.subdomain).nonEmpty) {
       return view(snapshot, RUNNING, 1)
     }
     transitions.put(transitionKey(snapshot), Transition(STARTING, None))
-    lifecycleExecutor.execute(() => bootstrap(principal, snapshot))
+    lifecycleExecutor.execute(() => bootstrap(principal, snapshot, allocation))
     view(snapshot, STARTING, 0)
   }
 
   def stop(principal: EngineProfilePrincipal, profileId: String): EngineProfileEngineStatusView = {
     val snapshot = profiles.snapshotForUse(profileId, principal)
+    val allocation = computeAllocations.flatMap(
+      _.beginInteractiveRelease(principal, profileId))
+    if (allocation.nonEmpty && conf.get(COMPUTE_LIFECYCLE_ENABLED)) {
+      transitions.put(transitionKey(snapshot), Transition(STOPPING, None))
+      return view(snapshot, STOPPING, 0)
+    }
     if (discoveryNodes(principal.user, snapshot.subdomain).isEmpty) {
-      transitions.remove(transitionKey(snapshot))
-      return view(snapshot, STOPPED, 0)
+      val launchPending = Option(transitions.get(transitionKey(snapshot)))
+        .exists(_.state == STARTING)
+      if (launchPending) {
+        transitions.put(transitionKey(snapshot), Transition(STOPPING, None))
+        return view(snapshot, STOPPING, 0)
+      } else {
+        transitions.remove(transitionKey(snapshot))
+        allocation.foreach(value => computeAllocations.foreach(_.completeRelease(value.id)))
+        return view(snapshot, STOPPED, 0)
+      }
     }
     transitions.put(transitionKey(snapshot), Transition(STOPPING, None))
-    lifecycleExecutor.execute(() => terminate(principal, snapshot))
+    lifecycleExecutor.execute(() => terminate(principal, snapshot, allocation.map(_.id)))
     view(snapshot, STOPPING, 0)
   }
 
@@ -110,11 +137,16 @@ class EngineProfileRuntimeService(
    * Treat an unreadable discovery state as active: accepting a change in that state could launch
    * new sessions with a configuration that conflicts with live compute.
    */
-  def requireStopped(principal: EngineProfilePrincipal, profileId: String): Unit = {
+  def requireStopped(
+      principal: EngineProfilePrincipal,
+      profileId: String,
+      action: String = "changing its configuration"): Unit = {
+    computeAllocations.foreach(_.requireNoOpenAllocations(profileId, action))
     val current = status(principal, profileId)
     if (current.state != STOPPED) {
-      throw NotebookException.invalid(
-        s"stop the Engine Profile engine before changing its configuration: ${current.state}")
+      throw new NotebookException(
+        NotebookErrorCode.COMPUTE_ACTIVE,
+        s"stop the Engine Profile engine before $action: ${current.state}")
     }
   }
 
@@ -122,29 +154,70 @@ class EngineProfileRuntimeService(
 
   private def bootstrap(
       principal: EngineProfilePrincipal,
-      snapshot: EngineProfileSnapshot): Unit = {
+      snapshot: EngineProfileSnapshot,
+      allocation: Option[ComputeAllocation]): Unit = {
     try {
-      val configuration = snapshot.sparkConfig ++
-        EngineProfileSnapshot.engineSessionConfig(snapshot) ++
-        pythonEnvironments.map(_.launchConfig(snapshot)).getOrElse(Map.empty) ++
-        Map(
-          "kyuubi.engine.type" -> "SPARK_SQL",
-          "kyuubi.engine.share.level" -> "USER",
-          "kyuubi.engine.share.level.subdomain" -> snapshot.subdomain,
-          "kyuubi.engine.share.level.sub.domain" -> snapshot.subdomain,
-          "kyuubi.session.tag" -> s"engine-profile-warmup-${snapshot.profileId}")
+      val stopRequested = Option(transitions.get(transitionKey(snapshot)))
+        .exists(_.state == STOPPING)
+      val allocationFenced = allocation.exists(value =>
+        computeAllocations.exists(service => !service.isAttachable(value.id)))
+      if (stopRequested || allocationFenced) {
+        if (conf.get(COMPUTE_LIFECYCLE_ENABLED)) {
+          transitions.put(transitionKey(snapshot), Transition(STOPPING, None))
+        } else {
+          allocation.foreach(value => computeAllocations.foreach(_.completeRelease(value.id)))
+          transitions.remove(transitionKey(snapshot))
+        }
+        return
+      }
+      val configuration = allocation.flatMap(value =>
+        computeAllocations.map(_.routingConfiguration(value))).getOrElse(
+        snapshot.sparkConfig ++
+          EngineProfileSnapshot.engineSessionConfig(snapshot) ++
+          EngineProfileSnapshot.clientSessionCleanupConfig(
+            snapshot,
+            conf.get(ENGINE_IDLE_TIMEOUT)) ++
+          pythonEnvironments.map(_.launchConfig(snapshot)).getOrElse(Map.empty) ++
+          Map(
+            "kyuubi.engine.type" -> "SPARK_SQL",
+            "kyuubi.engine.share.level" -> "USER",
+            "kyuubi.engine.share.level.subdomain" -> snapshot.subdomain,
+            "kyuubi.engine.share.level.sub.domain" -> snapshot.subdomain)) ++
+        Map("kyuubi.session.tag" -> s"engine-profile-warmup-${snapshot.profileId}")
       val handle = backendService().openSession(
         TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V11,
         principal.user,
         "",
         "127.0.0.1",
         configuration)
+      allocation.foreach(value =>
+        computeAllocations.foreach(
+          _.recordEngineReference(value.id, handle.identifier.toString)))
       try {
         // Opening a session submits the engine launch asynchronously. Closing it before the
         // driver has registered cancels the pending LaunchEngine operation, so keep this
         // short-lived bootstrap session until discovery confirms the engine is ready.
         if (awaitRegistration(principal.user, snapshot.subdomain)) {
-          transitions.remove(transitionKey(snapshot))
+          val stoppedDuringLaunch = Option(transitions.get(transitionKey(snapshot)))
+            .exists(_.state == STOPPING)
+          allocation match {
+            case Some(value)
+                if computeAllocations.exists(service => !service.isAttachable(value.id)) =>
+              if (!conf.get(COMPUTE_LIFECYCLE_ENABLED)) {
+                terminate(principal, snapshot, Some(value.id))
+              }
+            case _ if stoppedDuringLaunch =>
+              if (!conf.get(COMPUTE_LIFECYCLE_ENABLED)) {
+                terminate(principal, snapshot, allocation.map(_.id))
+              }
+            case _ => transitions.remove(transitionKey(snapshot))
+          }
+        } else if (Option(transitions.get(transitionKey(snapshot)))
+            .exists(_.state == STOPPING)) {
+          if (!conf.get(COMPUTE_LIFECYCLE_ENABLED)) {
+            allocation.foreach(value => computeAllocations.foreach(_.completeRelease(value.id)))
+            transitions.remove(transitionKey(snapshot))
+          }
         } else {
           transitions.put(
             transitionKey(snapshot),
@@ -160,13 +233,27 @@ class EngineProfileRuntimeService(
     } catch {
       case NonFatal(error) =>
         warn(s"Failed to start engine profile ${snapshot.profileId}", error)
+        allocation.foreach { value =>
+          computeAllocations.foreach { service =>
+            try {
+              service.requestRelease(value.id, "engine launch failed")
+              if (!conf.get(COMPUTE_LIFECYCLE_ENABLED)) {
+                service.completeRelease(value.id)
+              }
+            } catch {
+              case NonFatal(cleanupError) =>
+                warn(s"Failed to request cleanup for allocation ${value.id}", cleanupError)
+            }
+          }
+        }
         transitions.put(transitionKey(snapshot), Transition(FAILED, Some(error.getMessage)))
     }
   }
 
   private def terminate(
       principal: EngineProfilePrincipal,
-      snapshot: EngineProfileSnapshot): Unit = {
+      snapshot: EngineProfileSnapshot,
+      allocationId: Option[String]): Unit = {
     try {
       discoveryNodes(principal.user, snapshot.subdomain).foreach { node =>
         withDiscoveryClient(conf) { client =>
@@ -180,6 +267,7 @@ class EngineProfileRuntimeService(
         }
       }
       transitions.remove(transitionKey(snapshot))
+      allocationId.foreach(id => computeAllocations.foreach(_.completeRelease(id)))
     } catch {
       case NonFatal(error) =>
         warn(s"Failed to stop engine profile ${snapshot.profileId}", error)

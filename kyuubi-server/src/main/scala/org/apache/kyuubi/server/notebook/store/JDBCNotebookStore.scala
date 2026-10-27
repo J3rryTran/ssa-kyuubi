@@ -20,6 +20,7 @@ package org.apache.kyuubi.server.notebook.store
 import java.io.{BufferedReader, InputStreamReader}
 import java.nio.charset.StandardCharsets
 import java.sql.{Connection, PreparedStatement, ResultSet, SQLException}
+import java.util.Locale
 import java.util.stream.Collectors
 
 import scala.collection.JavaConverters._
@@ -104,7 +105,66 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
         }
       }
     }
+    addMissingRunRequestIndex()
     backfillNotebookLanguage()
+  }
+
+  /**
+   * The request ID is the cross-replica claim for one scheduled Notebook occurrence.
+   *
+   * Both fresh and existing schemas create this index here, after all missing columns have been
+   * added. Keeping it out of the schema resource is important: `CREATE TABLE IF NOT EXISTS` does
+   * not add `client_request_id` to an existing table, so an index statement in that resource would
+   * fail before the column migration gets a chance to run.
+   */
+  private def addMissingRunRequestIndex(): Unit = {
+    JdbcUtils.withConnection { connection =>
+      if (!hasIndex(connection, "notebook_run", "notebook_run_request_index")) {
+        val ddl = dbType match {
+          case POSTGRESQL | SQLITE =>
+            "CREATE UNIQUE INDEX IF NOT EXISTS notebook_run_request_index " +
+              "ON notebook_run(submitted_by, client_request_id)"
+          case _ =>
+            "CREATE UNIQUE INDEX notebook_run_request_index " +
+              "ON notebook_run(submitted_by, client_request_id)"
+        }
+        JdbcUtils.withCloseable(connection.prepareStatement(ddl))(_.execute())
+        info("Added missing unique index notebook_run_request_index")
+      }
+    }
+  }
+
+  private def hasIndex(connection: Connection, table: String, index: String): Boolean = {
+    val metadata = connection.getMetaData
+    val catalog = Option(connection.getCatalog)
+    val schema =
+      try Option(connection.getSchema)
+      catch { case _: SQLException => None }
+    val tables = Seq(table, table.toUpperCase(Locale.ROOT), table.toLowerCase(Locale.ROOT)).distinct
+    val locations = Seq((catalog, schema), (catalog, None), (None, schema), (None, None)).distinct
+    locations.exists { case (catalogName, schemaName) =>
+      tables.exists { tableName =>
+        try {
+          val result = metadata.getIndexInfo(
+            catalogName.orNull,
+            schemaName.orNull,
+            tableName,
+            false,
+            false)
+          try {
+            var found = false
+            while (!found && result.next()) {
+              found = Option(result.getString("INDEX_NAME")).exists(_.equalsIgnoreCase(index))
+            }
+            found
+          } finally {
+            result.close()
+          }
+        } catch {
+          case _: SQLException => false
+        }
+      }
+    }
   }
 
   /**
@@ -982,7 +1042,10 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
     createdBy = rs.getString("created_by"),
     updatedAt = rs.getLong("updated_at"),
     updatedBy = rs.getString("updated_by"),
-    version = rs.getLong("version"))
+    version = rs.getLong("version"),
+    sourceRevisionId = optString(rs, "source_revision_id"),
+    sourceRevisionNumber = optLong(rs, "source_revision_number"),
+    sourceChecksum = optString(rs, "source_checksum"))
 
   override def getSchedule(notebookId: String): Option[NotebookSchedule] =
     JdbcUtils.executeQueryWithRowMapper(
@@ -997,8 +1060,9 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       val sql =
         """INSERT INTO notebook_schedule(id, notebook_id, cron_expression, timezone, enabled,
           | runtime_profile, failure_policy, overlap_policy, last_run_at, next_run_at, created_at,
-          | created_by, updated_at, updated_by, version)
-          | VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
+          | created_by, updated_at, updated_by, version, source_revision_id,
+          | source_revision_number, source_checksum)
+          | VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
       JdbcUtils.executeUpdate(sql) { stmt =>
         stmt.setString(1, schedule.id)
         stmt.setString(2, schedule.notebookId)
@@ -1015,12 +1079,16 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
         stmt.setLong(13, schedule.updatedAt)
         stmt.setString(14, schedule.updatedBy)
         stmt.setLong(15, schedule.version)
+        stmt.setString(16, schedule.sourceRevisionId.orNull)
+        setNullableLong(stmt, 17, schedule.sourceRevisionNumber)
+        stmt.setString(18, schedule.sourceChecksum.orNull)
       } == 1
     case Some(version) =>
       val sql =
         """UPDATE notebook_schedule SET cron_expression = ?, timezone = ?, enabled = ?,
           | runtime_profile = ?, failure_policy = ?, overlap_policy = ?, next_run_at = ?,
-          | updated_at = ?, updated_by = ?, version = ? WHERE notebook_id = ?
+          | updated_at = ?, updated_by = ?, version = ?, source_revision_id = ?,
+          | source_revision_number = ?, source_checksum = ? WHERE notebook_id = ?
           | AND version = ?""".stripMargin
       JdbcUtils.executeUpdate(sql) { stmt =>
         stmt.setString(1, schedule.cronExpression)
@@ -1033,8 +1101,11 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
         stmt.setLong(8, schedule.updatedAt)
         stmt.setString(9, schedule.updatedBy)
         stmt.setLong(10, schedule.version)
-        stmt.setString(11, schedule.notebookId)
-        stmt.setLong(12, version)
+        stmt.setString(11, schedule.sourceRevisionId.orNull)
+        setNullableLong(stmt, 12, schedule.sourceRevisionNumber)
+        stmt.setString(13, schedule.sourceChecksum.orNull)
+        stmt.setString(14, schedule.notebookId)
+        stmt.setLong(15, version)
       } == 1
   }
 
@@ -1132,6 +1203,7 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
     owner = rs.getString("owner"),
     state = RuntimeState.withName(rs.getString("state")),
     generation = rs.getLong("generation"),
+    computeAllocationId = optString(rs, "compute_allocation_id"),
     environmentRevisionId = optString(rs, "environment_revision_id"),
     runtimeIdleTimeoutMillis = optLong(rs, "runtime_idle_timeout_millis"),
     createdAt = rs.getLong("created_at"),
@@ -1145,11 +1217,11 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
   override def createRuntime(runtime: NotebookRuntime): Unit = {
     val sql =
       """INSERT INTO notebook_runtime(id, notebook_session_id, runtime_spec_id, runtime_type,
-        | language, owner, state, generation, environment_revision_id, runtime_idle_timeout_millis,
-        | created_at,
+        | language, owner, state, generation, compute_allocation_id, environment_revision_id,
+        | runtime_idle_timeout_millis, created_at,
         | last_activity_at, stopped_at, failure_message, internal_runtime_handle,
         | internal_runtime_location, version)
-        | VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
+        | VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
     JdbcUtils.executeUpdate(sql) { stmt =>
       stmt.setString(1, runtime.id)
       stmt.setString(2, runtime.notebookSessionId)
@@ -1159,15 +1231,16 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       stmt.setString(6, runtime.owner)
       stmt.setString(7, runtime.state.toString)
       stmt.setLong(8, runtime.generation)
-      stmt.setString(9, runtime.environmentRevisionId.orNull)
-      setNullableLong(stmt, 10, runtime.runtimeIdleTimeoutMillis)
-      stmt.setLong(11, runtime.createdAt)
-      stmt.setLong(12, runtime.lastActivityAt)
-      setNullableLong(stmt, 13, runtime.stoppedAt)
-      stmt.setString(14, runtime.failureMessage.orNull)
-      stmt.setString(15, runtime.internalRuntimeHandle.orNull)
-      stmt.setString(16, runtime.internalRuntimeLocation.orNull)
-      stmt.setLong(17, runtime.version)
+      stmt.setString(9, runtime.computeAllocationId.orNull)
+      stmt.setString(10, runtime.environmentRevisionId.orNull)
+      setNullableLong(stmt, 11, runtime.runtimeIdleTimeoutMillis)
+      stmt.setLong(12, runtime.createdAt)
+      stmt.setLong(13, runtime.lastActivityAt)
+      setNullableLong(stmt, 14, runtime.stoppedAt)
+      stmt.setString(15, runtime.failureMessage.orNull)
+      stmt.setString(16, runtime.internalRuntimeHandle.orNull)
+      stmt.setString(17, runtime.internalRuntimeLocation.orNull)
+      stmt.setLong(18, runtime.version)
     }
   }
 
@@ -1184,21 +1257,24 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
 
   override def updateRuntime(runtime: NotebookRuntime, expectedVersion: Long): Boolean = {
     val sql =
-      """UPDATE notebook_runtime SET state = ?, generation = ?, environment_revision_id = ?,
-        | last_activity_at = ?, stopped_at = ?, failure_message = ?, internal_runtime_handle = ?,
+      """UPDATE notebook_runtime SET state = ?, generation = ?, compute_allocation_id = ?,
+        | environment_revision_id = ?, runtime_idle_timeout_millis = ?, last_activity_at = ?,
+        | stopped_at = ?, failure_message = ?, internal_runtime_handle = ?,
         | internal_runtime_location = ?, version = ? WHERE id = ? AND version = ?""".stripMargin
     JdbcUtils.executeUpdate(sql) { stmt =>
       stmt.setString(1, runtime.state.toString)
       stmt.setLong(2, runtime.generation)
-      stmt.setString(3, runtime.environmentRevisionId.orNull)
-      stmt.setLong(4, runtime.lastActivityAt)
-      setNullableLong(stmt, 5, runtime.stoppedAt)
-      stmt.setString(6, runtime.failureMessage.orNull)
-      stmt.setString(7, runtime.internalRuntimeHandle.orNull)
-      stmt.setString(8, runtime.internalRuntimeLocation.orNull)
-      stmt.setLong(9, runtime.version)
-      stmt.setString(10, runtime.id)
-      stmt.setLong(11, expectedVersion)
+      stmt.setString(3, runtime.computeAllocationId.orNull)
+      stmt.setString(4, runtime.environmentRevisionId.orNull)
+      setNullableLong(stmt, 5, runtime.runtimeIdleTimeoutMillis)
+      stmt.setLong(6, runtime.lastActivityAt)
+      setNullableLong(stmt, 7, runtime.stoppedAt)
+      stmt.setString(8, runtime.failureMessage.orNull)
+      stmt.setString(9, runtime.internalRuntimeHandle.orNull)
+      stmt.setString(10, runtime.internalRuntimeLocation.orNull)
+      stmt.setLong(11, runtime.version)
+      stmt.setString(12, runtime.id)
+      stmt.setLong(13, expectedVersion)
     } == 1
   }
 
@@ -1226,15 +1302,16 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
     clientRequestId = optString(rs, "client_request_id"),
     notebookRunId = optString(rs, "notebook_run_id"),
     internalOperationHandle = optString(rs, "internal_operation_handle"),
-    version = rs.getLong("version"))
+    version = rs.getLong("version"),
+    auditSnapshot = optString(rs, "audit_snapshot"))
 
   override def createExecution(execution: CellExecution): Unit = {
     val sql =
       """INSERT INTO notebook_execution(id, notebook_id, notebook_session_id, runtime_id,
         | runtime_generation, cell_id, cell_version, language, source_snapshot, state,
         | submitted_at, started_at, finished_at, submitted_by, error_code, error_message,
-        | client_request_id, notebook_run_id, internal_operation_handle, version)
-        | VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
+        | client_request_id, notebook_run_id, internal_operation_handle, audit_snapshot, version)
+        | VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
     JdbcUtils.executeUpdate(sql) { stmt =>
       stmt.setString(1, execution.id)
       stmt.setString(2, execution.notebookId)
@@ -1255,7 +1332,8 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       stmt.setString(17, execution.clientRequestId.orNull)
       stmt.setString(18, execution.notebookRunId.orNull)
       stmt.setString(19, execution.internalOperationHandle.orNull)
-      stmt.setLong(20, execution.version)
+      stmt.setString(20, execution.auditSnapshot.orNull)
+      stmt.setLong(21, execution.version)
     }
   }
 
@@ -1307,7 +1385,7 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
   override def updateExecution(execution: CellExecution, expectedVersion: Long): Boolean = {
     val sql =
       """UPDATE notebook_execution SET state = ?, started_at = ?, finished_at = ?, error_code = ?,
-        | error_message = ?, internal_operation_handle = ?, version = ?
+        | error_message = ?, internal_operation_handle = ?, audit_snapshot = ?, version = ?
         | WHERE id = ? AND version = ?""".stripMargin
     JdbcUtils.executeUpdate(sql) { stmt =>
       stmt.setString(1, execution.state.toString)
@@ -1316,9 +1394,10 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       stmt.setString(4, execution.errorCode.orNull)
       stmt.setString(5, execution.errorMessage.orNull)
       stmt.setString(6, execution.internalOperationHandle.orNull)
-      stmt.setLong(7, execution.version)
-      stmt.setString(8, execution.id)
-      stmt.setLong(9, expectedVersion)
+      stmt.setString(7, execution.auditSnapshot.orNull)
+      stmt.setLong(8, execution.version)
+      stmt.setString(9, execution.id)
+      stmt.setLong(10, expectedVersion)
     } == 1
   }
 
@@ -1381,13 +1460,25 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       .getOrElse(Seq.empty),
     currentCellId = optString(rs, "current_cell_id"),
     failurePolicy = FailurePolicy.withName(rs.getString("failure_policy")),
-    version = rs.getLong("version"))
+    version = rs.getLong("version"),
+    scheduleId = optString(rs, "schedule_id"),
+    sourceRevisionId = optString(rs, "source_revision_id"),
+    sourceRevisionNumber = optLong(rs, "source_revision_number"),
+    sourceChecksum = optString(rs, "source_checksum"),
+    sourceSnapshot = optString(rs, "source_snapshot"),
+    attemptId = optString(rs, "attempt_id"),
+    computeAllocationId = optString(rs, "compute_allocation_id"),
+    clientRequestId = optString(rs, "client_request_id"),
+    errorMessage = optString(rs, "error_message"))
 
   override def createRun(run: NotebookRun): Unit = {
     val sql =
       """INSERT INTO notebook_run(id, notebook_id, notebook_session_id, state, submitted_at,
         | started_at, finished_at, submitted_by, requested_cell_ids, current_cell_id,
-        | failure_policy, version) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
+        | failure_policy, version, schedule_id, source_revision_id, source_revision_number,
+        | source_checksum, source_snapshot, attempt_id, compute_allocation_id, client_request_id,
+        | error_message) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        | ?)""".stripMargin
     JdbcUtils.executeUpdate(sql) { stmt =>
       stmt.setString(1, run.id)
       stmt.setString(2, run.notebookId)
@@ -1401,12 +1492,30 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       stmt.setString(10, run.currentCellId.orNull)
       stmt.setString(11, run.failurePolicy.toString)
       stmt.setLong(12, run.version)
+      stmt.setString(13, run.scheduleId.orNull)
+      stmt.setString(14, run.sourceRevisionId.orNull)
+      setNullableLong(stmt, 15, run.sourceRevisionNumber)
+      stmt.setString(16, run.sourceChecksum.orNull)
+      stmt.setString(17, run.sourceSnapshot.orNull)
+      stmt.setString(18, run.attemptId.orNull)
+      stmt.setString(19, run.computeAllocationId.orNull)
+      stmt.setString(20, run.clientRequestId.orNull)
+      stmt.setString(21, run.errorMessage.orNull)
     }
   }
 
   override def getRun(id: String): Option[NotebookRun] =
     JdbcUtils.executeQueryWithRowMapper("SELECT * FROM notebook_run WHERE id = ?") { stmt =>
       stmt.setString(1, id)
+    }(runMapper).headOption
+
+  override def findRunByRequestId(
+      submittedBy: String,
+      clientRequestId: String): Option[NotebookRun] =
+    JdbcUtils.executeQueryWithRowMapper(
+      "SELECT * FROM notebook_run WHERE submitted_by = ? AND client_request_id = ?") { stmt =>
+      stmt.setString(1, submittedBy)
+      stmt.setString(2, clientRequestId)
     }(runMapper).headOption
 
   override def listRuns(notebookId: String, limit: Int): Seq[NotebookRun] =
@@ -1416,18 +1525,36 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
       stmt.setString(1, notebookId)
     }(runMapper)
 
+  override def listActiveRuns(): Seq[NotebookRun] =
+    JdbcUtils.executeQueryWithRowMapper(
+      "SELECT * FROM notebook_run WHERE state IN ('QUEUED', 'RUNNING', 'CANCELING')")(_ => ())(
+      runMapper)
+
   override def updateRun(run: NotebookRun, expectedVersion: Long): Boolean = {
     val sql =
-      """UPDATE notebook_run SET state = ?, started_at = ?, finished_at = ?, current_cell_id = ?,
-        | version = ? WHERE id = ? AND version = ?""".stripMargin
+      """UPDATE notebook_run SET notebook_session_id = ?, state = ?, started_at = ?,
+        | finished_at = ?, current_cell_id = ?, schedule_id = ?, source_revision_id = ?,
+        | source_revision_number = ?, source_checksum = ?, source_snapshot = ?, attempt_id = ?,
+        | compute_allocation_id = ?, client_request_id = ?, error_message = ?, version = ?
+        | WHERE id = ? AND version = ?""".stripMargin
     JdbcUtils.executeUpdate(sql) { stmt =>
-      stmt.setString(1, run.state.toString)
-      setNullableLong(stmt, 2, run.startedAt)
-      setNullableLong(stmt, 3, run.finishedAt)
-      stmt.setString(4, run.currentCellId.orNull)
-      stmt.setLong(5, run.version)
-      stmt.setString(6, run.id)
-      stmt.setLong(7, expectedVersion)
+      stmt.setString(1, run.notebookSessionId)
+      stmt.setString(2, run.state.toString)
+      setNullableLong(stmt, 3, run.startedAt)
+      setNullableLong(stmt, 4, run.finishedAt)
+      stmt.setString(5, run.currentCellId.orNull)
+      stmt.setString(6, run.scheduleId.orNull)
+      stmt.setString(7, run.sourceRevisionId.orNull)
+      setNullableLong(stmt, 8, run.sourceRevisionNumber)
+      stmt.setString(9, run.sourceChecksum.orNull)
+      stmt.setString(10, run.sourceSnapshot.orNull)
+      stmt.setString(11, run.attemptId.orNull)
+      stmt.setString(12, run.computeAllocationId.orNull)
+      stmt.setString(13, run.clientRequestId.orNull)
+      stmt.setString(14, run.errorMessage.orNull)
+      stmt.setLong(15, run.version)
+      stmt.setString(16, run.id)
+      stmt.setLong(17, expectedVersion)
     } == 1
   }
 
@@ -1750,6 +1877,14 @@ class JDBCNotebookStore(conf: KyuubiConf) extends NotebookStore with Logging {
         stmt.setString(8, environment.id)
     } == 1
 
+  override def deletePythonEnvironmentState(profileId: String): Unit =
+    inTransaction { conn =>
+      update(conn, "DELETE FROM notebook_python_environment_change_request WHERE profile_id = ?")(
+        _.setString(1, profileId))
+      update(conn, "DELETE FROM notebook_python_environment_revision WHERE profile_id = ?")(
+        _.setString(1, profileId))
+    }
+
   override def createPythonEnvironmentChangeRequest(request: PythonEnvironmentChangeRequest): Unit =
     JdbcUtils.executeUpdate(
       """INSERT INTO notebook_python_environment_change_request
@@ -1868,7 +2003,57 @@ object JDBCNotebookStore {
     (
       "notebook_runtime",
       "runtime_idle_timeout_millis",
-      "ALTER TABLE notebook_runtime ADD COLUMN runtime_idle_timeout_millis BIGINT"))
+      "ALTER TABLE notebook_runtime ADD COLUMN runtime_idle_timeout_millis BIGINT"),
+    (
+      "notebook_runtime",
+      "compute_allocation_id",
+      "ALTER TABLE notebook_runtime ADD COLUMN compute_allocation_id VARCHAR(36)"),
+    (
+      "notebook_execution",
+      "audit_snapshot",
+      "ALTER TABLE notebook_execution ADD COLUMN audit_snapshot TEXT"),
+    (
+      "notebook_schedule",
+      "source_revision_id",
+      "ALTER TABLE notebook_schedule ADD COLUMN source_revision_id VARCHAR(36)"),
+    (
+      "notebook_schedule",
+      "source_revision_number",
+      "ALTER TABLE notebook_schedule ADD COLUMN source_revision_number BIGINT"),
+    (
+      "notebook_schedule",
+      "source_checksum",
+      "ALTER TABLE notebook_schedule ADD COLUMN source_checksum VARCHAR(64)"),
+    ("notebook_run", "schedule_id", "ALTER TABLE notebook_run ADD COLUMN schedule_id VARCHAR(36)"),
+    (
+      "notebook_run",
+      "source_revision_id",
+      "ALTER TABLE notebook_run ADD COLUMN source_revision_id VARCHAR(36)"),
+    (
+      "notebook_run",
+      "source_revision_number",
+      "ALTER TABLE notebook_run ADD COLUMN source_revision_number BIGINT"),
+    (
+      "notebook_run",
+      "source_checksum",
+      "ALTER TABLE notebook_run ADD COLUMN source_checksum VARCHAR(64)"),
+    (
+      "notebook_run",
+      "source_snapshot",
+      "ALTER TABLE notebook_run ADD COLUMN source_snapshot TEXT"),
+    ("notebook_run", "attempt_id", "ALTER TABLE notebook_run ADD COLUMN attempt_id VARCHAR(36)"),
+    (
+      "notebook_run",
+      "compute_allocation_id",
+      "ALTER TABLE notebook_run ADD COLUMN compute_allocation_id VARCHAR(36)"),
+    (
+      "notebook_run",
+      "client_request_id",
+      "ALTER TABLE notebook_run ADD COLUMN client_request_id VARCHAR(255)"),
+    (
+      "notebook_run",
+      "error_message",
+      "ALTER TABLE notebook_run ADD COLUMN error_message VARCHAR(4096)"))
 
   /**
    * Escape character for LIKE patterns. Backslash is avoided because the three supported

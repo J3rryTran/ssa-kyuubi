@@ -17,6 +17,8 @@
 
 package org.apache.kyuubi.server.notebook.service
 
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.ZoneId
 import java.util.UUID
 
@@ -26,11 +28,14 @@ import org.apache.kyuubi.server.notebook.store.NotebookStore
 /**
  * Persistence and validation of notebook schedules.
  *
- * This is the schedule *contract* only: storing a schedule does not yet start runs, which is
- * wired to the notebook-run services once those exist. `enabled` is therefore accepted and
- * persisted, and a disabled schedule is indistinguishable from an enabled one in effect today.
+ * Storing a schedule does not calculate cron occurrences. A scheduler or the manual test client
+ * dispatches an occurrence through NotebookRunService, which always reads the immutable source
+ * pinned here.
  */
-class NotebookScheduleService(store: NotebookStore, permissions: NotebookPermissionService) {
+class NotebookScheduleService(
+    store: NotebookStore,
+    permissions: NotebookPermissionService,
+    revisions: NotebookRevisionService) {
 
   def get(notebook: Notebook, principal: NotebookPrincipal): Option[NotebookScheduleView] = {
     permissions.requireRead(notebook, principal)
@@ -50,6 +55,30 @@ class NotebookScheduleService(store: NotebookStore, permissions: NotebookPermiss
     val enabled = Option(request.getEnabled).forall(_.booleanValue())
     val now = System.currentTimeMillis()
     val existing = store.getSchedule(notebook.id)
+    val expectedVersion = existing.map { current =>
+      Option(request.getVersion).map(_.longValue()) match {
+        case Some(requested) if requested != current.version =>
+          throw NotebookException.versionConflict("the schedule was modified since it was read")
+        case _ => current.version
+      }
+    }
+    val refreshSource = existing.isEmpty || existing.exists(_.sourceRevisionId.isEmpty) ||
+      Option(request.getRefreshSource).exists(_.booleanValue())
+    val pinnedRevision = if (refreshSource) {
+      Some(revisions.create(
+        notebook,
+        store.listCells(notebook.id),
+        principal.user,
+        Some("source pinned by notebook schedule"),
+        protectedRevision = true))
+    } else {
+      None
+    }
+    val sourceRevisionId = pinnedRevision.map(_.id).orElse(existing.flatMap(_.sourceRevisionId))
+    val sourceRevisionNumber = pinnedRevision.map(_.revisionNumber)
+      .orElse(existing.flatMap(_.sourceRevisionNumber))
+    val sourceChecksum = pinnedRevision.map(value => checksum(value.documentSnapshot))
+      .orElse(existing.flatMap(_.sourceChecksum))
     val schedule = NotebookSchedule(
       id = existing.map(_.id).getOrElse(UUID.randomUUID().toString),
       notebookId = notebook.id,
@@ -65,18 +94,72 @@ class NotebookScheduleService(store: NotebookStore, permissions: NotebookPermiss
       createdBy = existing.map(_.createdBy).getOrElse(principal.user),
       updatedAt = now,
       updatedBy = principal.user,
-      version = existing.map(_.version + 1).getOrElse(1L))
-    val expectedVersion = existing.map { current =>
-      Option(request.getVersion).map(_.longValue()) match {
-        case Some(requested) if requested != current.version =>
-          throw NotebookException.versionConflict("the schedule was modified since it was read")
-        case _ => current.version
-      }
-    }
+      version = existing.map(_.version + 1).getOrElse(1L),
+      sourceRevisionId = sourceRevisionId,
+      sourceRevisionNumber = sourceRevisionNumber,
+      sourceChecksum = sourceChecksum)
     if (!store.upsertSchedule(schedule, expectedVersion)) {
+      pinnedRevision.foreach(value => store.deleteRevision(notebook.id, value.revisionNumber))
       throw NotebookException.versionConflict("the schedule was modified concurrently")
     }
     NotebookScheduleView(schedule)
+  }
+
+  /** Explicitly deploys the Notebook's current document as the source of future occurrences. */
+  def pinCurrent(
+      notebook: Notebook,
+      principal: NotebookPrincipal,
+      expectedVersion: Option[Long]): NotebookScheduleView = {
+    permissions.requireOwner(notebook, principal)
+    val current = requireModel(notebook.id)
+    expectedVersion.foreach { value =>
+      if (value != current.version) {
+        throw NotebookException.versionConflict("the schedule was modified since it was read")
+      }
+    }
+    val revision = revisions.create(
+      notebook,
+      store.listCells(notebook.id),
+      principal.user,
+      Some("source repinned by notebook schedule"),
+      protectedRevision = true)
+    val updated = current.copy(
+      sourceRevisionId = Some(revision.id),
+      sourceRevisionNumber = Some(revision.revisionNumber),
+      sourceChecksum = Some(checksum(revision.documentSnapshot)),
+      updatedAt = System.currentTimeMillis(),
+      updatedBy = principal.user,
+      version = current.version + 1)
+    if (!store.upsertSchedule(updated, Some(current.version))) {
+      store.deleteRevision(notebook.id, revision.revisionNumber)
+      throw NotebookException.versionConflict("the schedule was modified concurrently")
+    }
+    NotebookScheduleView(updated)
+  }
+
+  def requireModel(notebookId: String): NotebookSchedule =
+    store.getSchedule(notebookId).getOrElse {
+      throw NotebookException.notFound(
+        NotebookErrorCode.NOTEBOOK_NOT_FOUND,
+        s"notebook $notebookId has no schedule")
+    }
+
+  def pinnedDocument(schedule: NotebookSchedule): (NotebookRevision, NotebookDocument) = {
+    val revisionId = schedule.sourceRevisionId.getOrElse {
+      throw NotebookException.invalid(
+        "the notebook schedule has no pinned source; pin the current version before running it")
+    }
+    val revisionNumber = schedule.sourceRevisionNumber.getOrElse {
+      throw NotebookException.invalid("the notebook schedule has an incomplete source pin")
+    }
+    val expectedChecksum = schedule.sourceChecksum.getOrElse {
+      throw NotebookException.invalid("the notebook schedule has an incomplete source pin")
+    }
+    val revision = revisions.load(schedule.notebookId, revisionNumber)
+    if (revision.id != revisionId || checksum(revision.documentSnapshot) != expectedChecksum) {
+      throw NotebookException.invalid("the notebook schedule source revision failed verification")
+    }
+    revision -> NotebookJson.readDocument(revision.documentSnapshot)
   }
 
   def delete(notebook: Notebook, principal: NotebookPrincipal): Unit = {
@@ -111,6 +194,12 @@ class NotebookScheduleService(store: NotebookStore, permissions: NotebookPermiss
             s"value must be one of ${enumeration.values.mkString(", ")}")
         }
     }
+
+  private def checksum(value: String): String =
+    MessageDigest.getInstance("SHA-256")
+      .digest(value.getBytes(StandardCharsets.UTF_8))
+      .map(byte => f"${byte & 0xFF}%02x")
+      .mkString
 }
 
 /**

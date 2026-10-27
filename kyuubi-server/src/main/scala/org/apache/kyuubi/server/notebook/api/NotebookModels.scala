@@ -115,7 +115,10 @@ case class NotebookSchedule(
     createdBy: String,
     updatedAt: Long,
     updatedBy: String,
-    version: Long)
+    version: Long,
+    sourceRevisionId: Option[String] = None,
+    sourceRevisionNumber: Option[Long] = None,
+    sourceChecksum: Option[String] = None)
 
 /**
  * Portable document form of a notebook, used for revisions, export and import. It deliberately

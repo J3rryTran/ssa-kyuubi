@@ -6,6 +6,7 @@
 *.iws
 *.pyc
 *.pyo
+*.egg-info/
 *.swp
 *~
 .DS_Store

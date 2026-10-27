@@ -22,8 +22,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import ElementPlus from 'element-plus'
 import { expect, test } from 'vitest'
 
-test('proxy ui', async () => {
-  expect(Engine).toBeTruthy()
+const mountEngine = () => {
   const i18n = createI18n({
     legacy: false,
     globalInjection: true
@@ -34,12 +33,23 @@ test('proxy ui', async () => {
     path: '/management/engine'
   }
 
-  const wrapper = shallowMount(Engine, {
+  return shallowMount(Engine, {
     global: {
       plugins: [i18n, mockRouter, getStore(), ElementPlus]
     }
   })
+}
+
+test('proxy ui', async () => {
+  expect(Engine).toBeTruthy()
+  const wrapper = mountEngine()
   expect(wrapper.vm.getProxyEngineUI('host:ip')).toEqual(
     `${import.meta.env.VITE_APP_DEV_WEB_URL}engine-ui/host:ip/`
   )
+})
+
+test('engine profile table does not display a configuration revision', () => {
+  const wrapper = mountEngine()
+
+  expect(wrapper.findAll('[label="Revision"]')).toHaveLength(0)
 })

@@ -87,22 +87,38 @@ class NotebookSessionRegistry(
    * ZooKeeper is alive.
    */
   def ownerOf(sessionId: String): Option[String] =
-    discovery().flatMap { client =>
+    lookupOwner(sessionId) match {
+      case RegisteredOwner(instance) => Some(instance)
+      case _ => None
+    }
+
+  /**
+   * Distinguishes a missing ephemeral owner from an unavailable registry.
+   *
+   * Treating both as `None` is safe for request routing, which must fail closed, but is not safe
+   * for durable-state reconciliation: a ZooKeeper outage must never make every live session look
+   * orphaned.
+   */
+  def lookupOwner(sessionId: String): OwnerLookup = discovery() match {
+    case None => OwnerRegistryUnavailable
+    case Some(client) =>
       try {
         val path = pathOf(sessionId)
-        if (!client.pathExists(path)) None
+        if (!client.pathExists(path)) NoRegisteredOwner
         else {
           Option(client.getData(path))
             .map(new String(_, StandardCharsets.UTF_8))
             .map(_.trim)
             .filter(_.nonEmpty)
+            .map(RegisteredOwner)
+            .getOrElse(NoRegisteredOwner)
         }
       } catch {
         case NonFatal(e) =>
           warn(s"Could not read the owner of notebook session $sessionId", e)
-          None
+          OwnerRegistryUnavailable
       }
-    }
+  }
 
   private def withDiscovery(action: String)(f: DiscoveryClient => Unit): Unit =
     discovery().foreach { client =>
@@ -114,6 +130,11 @@ class NotebookSessionRegistry(
 }
 
 object NotebookSessionRegistry {
+
+  sealed trait OwnerLookup
+  case class RegisteredOwner(instance: String) extends OwnerLookup
+  case object NoRegisteredOwner extends OwnerLookup
+  case object OwnerRegistryUnavailable extends OwnerLookup
 
   /** Kept under the HA namespace so it is discarded with the rest of a namespace's state. */
   val SESSIONS_PATH = "notebook-sessions"

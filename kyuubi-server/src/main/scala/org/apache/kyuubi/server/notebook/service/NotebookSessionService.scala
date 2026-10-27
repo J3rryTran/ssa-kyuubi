@@ -17,18 +17,21 @@
 
 package org.apache.kyuubi.server.notebook.service
 
+import java.time.Duration
 import java.util.UUID
 
 import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
 import org.apache.kyuubi.Logging
+import org.apache.kyuubi.server.compute.{ComputeAllocation, ComputeAllocationService, ComputeAllocationState, ComputeMode, ComputeWorkloadType}
 import org.apache.kyuubi.server.engineprofile.EngineProfilePrincipal
 import org.apache.kyuubi.server.engineprofile.EngineProfileService
 import org.apache.kyuubi.server.engineprofile.EngineProfileSnapshot
 import org.apache.kyuubi.server.engineprofile.PythonEnvironmentService
 import org.apache.kyuubi.server.notebook.api._
 import org.apache.kyuubi.server.notebook.routing.NotebookSessionRegistry
+import org.apache.kyuubi.server.notebook.routing.NotebookSessionRegistry.{NoRegisteredOwner, OwnerRegistryUnavailable, RegisteredOwner}
 import org.apache.kyuubi.server.notebook.runtime.RuntimeAdapterRegistry
 import org.apache.kyuubi.server.notebook.store.NotebookStore
 
@@ -46,6 +49,10 @@ class NotebookSessionService(
     runtimes: NotebookRuntimeService,
     instanceUri: () => String,
     registry: () => Option[NotebookSessionRegistry] = () => None) extends Logging {
+
+  // Persistence precedes ZooKeeper registration when a session opens. Do not let a peer that
+  // happens to list sessions inside that small window declare the brand-new session orphaned.
+  private val orphanRegistrationGraceMillis = 30000L
 
   // The execution service is constructed after sessions. Keep this narrow lifecycle callback
   // rather than making either service own the other or bypassing this service from REST.
@@ -98,12 +105,47 @@ class NotebookSessionService(
     session
   }
 
+  /**
+   * Creates the isolated session owned by one server-dispatched Notebook JOB attempt.
+   *
+   * ComputeAllocationService authorizes and snapshots the profile before this session starts a
+   * runtime. This path deliberately does not read the mutable Notebook document or accept browser
+   * runtime configuration.
+   */
+  def createManagedJob(
+      principal: NotebookPrincipal,
+      notebookId: String,
+      runtimeProfile: String): NotebookSession = {
+    val now = System.currentTimeMillis()
+    val session = NotebookSession(
+      id = UUID.randomUUID().toString,
+      notebookId = notebookId,
+      owner = principal.user,
+      state = NotebookSessionState.IDLE,
+      runtimeProfile = Some(runtimeProfile),
+      createdAt = now,
+      lastActivityAt = now,
+      stoppedAt = None,
+      failureMessage = None,
+      kyuubiInstance = Some(instanceUri()),
+      version = 1L)
+    store.createSession(session)
+    registry().foreach(_.register(session.id, instanceUri()))
+    session
+  }
+
   def list(principal: NotebookPrincipal, notebookId: String): Seq[NotebookSession] = {
     val notebook = documents.loadNotebook(notebookId)
     permissions.requireRead(notebook, principal)
+    val stored = store.listSessions(notebookId)
+    reconcileOrphanedSessions(stored)
+    // Headless scheduled runs own private sessions. Exposing one as the newest usable session
+    // makes a browser attach to a JOB allocation which is deliberately stopped after the run.
+    val managedSessionIds = store.listRuns(notebookId, Int.MaxValue)
+      .iterator.map(_.notebookSessionId).toSet
     // Only the caller's own sessions; another user's session is not theirs to see or touch.
-    store.listSessions(notebookId).filter(session =>
-      principal.admin || session.owner == principal.user)
+    store.listSessions(notebookId).filterNot(session => managedSessionIds.contains(session.id))
+      .filter(session => principal.admin || session.owner == principal.user)
   }
 
   def load(sessionId: String): NotebookSession =
@@ -214,41 +256,43 @@ class NotebookSessionService(
    * a Kyuubi session open indefinitely.
    */
   def reapIdle(idleTimeoutMillis: Long): Unit = {
-    if (idleTimeoutMillis > 0) {
-      store.listLiveSessions().filter(isLocal).foreach { session =>
-        try {
-          // Execution state is durable but its adapter handle is not. Mark it terminal before
-          // closing a runtime; otherwise a row left RUNNING by a disconnected browser can block
-          // every later cell in the session's single-flight queue forever.
-          val reclaimable = runtimes.idleRuntimes(session, idleTimeoutMillis)
-          if (reclaimable.nonEmpty) {
-            invalidateExecutions(
-              NotebookPrincipal(session.owner, admin = false),
-              session,
-              "execution lost because the notebook runtime was stopped after idle timeout")
-          }
-          val reclaimed = reclaimable.map(runtimes.stop)
-          val remaining = runtimes.listFor(session)
-          if (remaining.isEmpty && (reclaimed.nonEmpty || session.lastActivityAt <
-              System.currentTimeMillis() - idleTimeoutMillis)) {
-            // There may already have been no runtime row, for example after a prior failed
-            // close. Do not leave a durable RUNNING execution behind in that case either.
-            invalidateExecutions(
-              NotebookPrincipal(session.owner, admin = false),
-              session,
-              "execution lost because the notebook session expired after idle timeout")
-            val now = System.currentTimeMillis()
-            val stopped = session.copy(
-              state = NotebookSessionState.STOPPED,
-              stoppedAt = Some(now),
-              lastActivityAt = now,
-              version = session.version + 1)
-            store.updateSession(stopped, session.version)
-            registry().foreach(_.unregister(session.id))
-          }
-        } catch {
-          case NonFatal(e) => warn(s"Failed to reap notebook session ${session.id}", e)
+    reconcileOrphanedSessions(store.listLiveSessions())
+    store.listLiveSessions().filter(isLocal).foreach { session =>
+      try {
+        // Execution state is durable but its adapter handle is not. Mark it terminal before
+        // closing a runtime; otherwise a row left RUNNING by a disconnected browser can block
+        // every later cell in the session's single-flight queue forever.
+        val reclaimable = runtimes.idleRuntimes(session, idleTimeoutMillis)
+        if (reclaimable.nonEmpty) {
+          invalidateExecutions(
+            NotebookPrincipal(session.owner, admin = false),
+            session,
+            "execution lost because the notebook runtime was stopped after idle timeout")
         }
+        val reclaimed = reclaimable.map(runtimes.stop)
+        val remaining = runtimes.listFor(session)
+        val inheritedSessionExpired = idleTimeoutMillis > 0 &&
+          session.lastActivityAt < System.currentTimeMillis() - idleTimeoutMillis
+        if (remaining.isEmpty && (reclaimed.nonEmpty || inheritedSessionExpired)) {
+          // There may already have been no runtime row, for example after a prior failed
+          // close. Do not leave a durable RUNNING execution behind in that case either.
+          invalidateExecutions(
+            NotebookPrincipal(session.owner, admin = false),
+            session,
+            "execution lost because the notebook session expired after idle timeout")
+          val now = System.currentTimeMillis()
+          val stopped = session.copy(
+            state = NotebookSessionState.STOPPED,
+            stoppedAt = Some(now),
+            lastActivityAt = now,
+            version = session.version + 1)
+          store.updateSession(stopped, session.version)
+          registry().foreach(_.unregister(session.id))
+        }
+      } catch {
+        // Keep the runtime and its internal handle durable. The next reaper pass can retry the
+        // backend close instead of forgetting a live session that would block engine idleness.
+        case NonFatal(e) => warn(s"Failed to reap notebook session ${session.id}", e)
       }
     }
   }
@@ -260,11 +304,51 @@ class NotebookSessionService(
    */
   private def isLocal(session: NotebookSession): Boolean = {
     val local = instanceUri()
-    registry().flatMap(_.ownerOf(session.id)) match {
-      case Some(owner) => owner == local
-      // Registry registration happens immediately after persistence, but keep the persisted
-      // owner as a short-lived fallback if ZooKeeper is unavailable during that narrow window.
-      case None => session.kyuubiInstance.contains(local)
+    registry().map(_.lookupOwner(session.id)) match {
+      case Some(RegisteredOwner(owner)) => owner == local
+      case Some(NoRegisteredOwner) | Some(OwnerRegistryUnavailable) | None =>
+        // Registry registration happens immediately after persistence, but keep the persisted
+        // owner as a short-lived fallback if ZooKeeper is unavailable during that narrow window.
+        session.kyuubiInstance.contains(local)
+    }
+  }
+
+  private def isOrphaned(session: NotebookSession, now: Long): Boolean = {
+    val registrationExpired = session.createdAt <= now - orphanRegistrationGraceMillis
+    val ownedByAnotherFrontend = session.kyuubiInstance.exists(_ != instanceUri())
+    registrationExpired && ownedByAnotherFrontend && registry().exists(
+      _.lookupOwner(session.id) == NoRegisteredOwner)
+  }
+
+  private def reconcileOrphanedSessions(candidates: Seq[NotebookSession]): Unit = {
+    val now = System.currentTimeMillis()
+    candidates.filterNot(session => NotebookSessionState.terminal.contains(session.state))
+      .filter(isOrphaned(_, now)).foreach { session =>
+        markSessionLost(
+          session,
+          "the Kyuubi instance that owned this notebook session is no longer available")
+      }
+  }
+
+  private def markSessionLost(session: NotebookSession, reason: String): Unit = {
+    try {
+      invalidateExecutions(NotebookPrincipal(session.owner, admin = false), session, reason)
+      runtimes.listFor(session).foreach(runtimes.markLost)
+      store.getSession(session.id)
+        .filterNot(current => NotebookSessionState.terminal.contains(current.state)).foreach {
+          current =>
+            val now = System.currentTimeMillis()
+            val lost = current.copy(
+              state = NotebookSessionState.LOST,
+              failureMessage = Some(reason),
+              lastActivityAt = now,
+              stoppedAt = Some(now),
+              version = current.version + 1)
+            store.updateSession(lost, current.version)
+        }
+      registry().foreach(_.unregister(session.id))
+    } catch {
+      case NonFatal(e) => warn(s"Failed to mark orphaned notebook session ${session.id} lost", e)
     }
   }
 
@@ -279,22 +363,11 @@ class NotebookSessionService(
   def reconcileAfterRestart(): Unit = {
     // Only this frontend knows that its own in-process Kyuubi session handles disappeared.
     // Invalidating shared-store sessions owned by a peer disconnects otherwise healthy users.
-    store.listLiveSessions().filter(isLocal).foreach { session =>
-      try {
-        val now = System.currentTimeMillis()
-        runtimes.listFor(session).foreach(runtimes.markLost)
-        val lost = session.copy(
-          state = NotebookSessionState.LOST,
-          failureMessage = Some("the server restarted while this session was open"),
-          lastActivityAt = now,
-          stoppedAt = Some(now),
-          version = session.version + 1)
-        store.updateSession(lost, session.version)
-        registry().foreach(_.unregister(session.id))
-      } catch {
-        case NonFatal(e) => warn(s"Failed to reconcile notebook session ${session.id}", e)
-      }
+    val live = store.listLiveSessions()
+    live.filter(isLocal).foreach { session =>
+      markSessionLost(session, "the server restarted while this session was open")
     }
+    reconcileOrphanedSessions(live)
   }
 }
 
@@ -307,7 +380,8 @@ class NotebookRuntimeService(
     registry: RuntimeAdapterRegistry,
     instanceUri: () => String,
     engineProfiles: Option[EngineProfileService] = None,
-    pythonEnvironments: Option[PythonEnvironmentService] = None) extends Logging {
+    pythonEnvironments: Option[PythonEnvironmentService] = None,
+    computeAllocations: Option[ComputeAllocationService] = None) extends Logging {
 
   def specs: Seq[RuntimeSpec] = registry.specs
 
@@ -341,17 +415,60 @@ class NotebookRuntimeService(
       principal: NotebookPrincipal,
       session: NotebookSession,
       requestedSpecId: Option[String],
-      configuration: Map[String, String]): NotebookRuntime = {
+      configuration: Map[String, String]): NotebookRuntime =
+    ensureForAllocation(principal, session, requestedSpecId, configuration, None)
+
+  /**
+   * Starts or reuses a Notebook runtime on an explicit server-issued allocation. The overload is
+   * the integration boundary for the headless Notebook runner; an allocation ID is never accepted
+   * from the browser-facing session request.
+   */
+  def ensureForAllocation(
+      principal: NotebookPrincipal,
+      session: NotebookSession,
+      requestedSpecId: Option[String],
+      configuration: Map[String, String],
+      allocationId: String): NotebookRuntime = {
+    if (computeAllocations.isEmpty) {
+      throw NotebookException.invalid("managed Notebook compute allocation is not configured")
+    }
+    ensureForAllocation(principal, session, requestedSpecId, configuration, Some(allocationId))
+  }
+
+  private def ensureForAllocation(
+      principal: NotebookPrincipal,
+      session: NotebookSession,
+      requestedSpecId: Option[String],
+      configuration: Map[String, String],
+      requestedAllocationId: Option[String]): NotebookRuntime = {
     val specId = requestedSpecId.getOrElse(registry.defaultSpecFor(CellLanguage.SQL).id)
-
-    val profileSnapshot = resolveProfileSnapshot(principal, session)
-    val profileConfig = profileSessionConfig(profileSnapshot)
-    val mergedConfig = (configuration -- profileConfig.keySet) ++ profileConfig
-    val runtimeIdleTimeoutMillis = profileSnapshot.flatMap(
-      EngineProfileSnapshot.notebookRuntimeIdleTimeoutMillis)
-
-    listFor(session).headOption.map(refresh) match {
+    computeAllocations.foreach(_.rejectReservedClientConfiguration(configuration))
+    requestedAllocationId.foreach { allocationId =>
+      val terminalRuntime = list(session).find(runtime =>
+        runtime.computeAllocationId.contains(allocationId) &&
+          RuntimeState.terminal.contains(runtime.state))
+      terminalRuntime.foreach { _ =>
+        val allocation = computeAllocations.get.getNotebookAllocation(
+          profilePrincipal(principal),
+          allocationId)
+        if (allocation.mode == ComputeMode.JOB) {
+          throw new NotebookException(
+            NotebookErrorCode.KYUUBI_SESSION_LOST,
+            "the managed Notebook job cannot replace a terminal runtime; retry it as a new " +
+              "attempt",
+            retryable = false)
+        }
+      }
+    }
+    val existing = listFor(session).headOption.map(refresh)
+    existing match {
       case Some(runtime) if !RuntimeState.terminal.contains(runtime.state) =>
+        requestedAllocationId.foreach { allocationId =>
+          if (!runtime.computeAllocationId.contains(allocationId)) {
+            throw NotebookException.invalid(
+              "the Notebook session is already attached to a different compute allocation")
+          }
+        }
         // Editing, adding, moving or deleting a cell touches notebook.updatedAt for document
         // optimistic locking. Those changes must not recreate a Python worker: its global
         // namespace is the state shared by notebook cells. A selected Engine Profile is changed
@@ -359,15 +476,37 @@ class NotebookRuntimeService(
         // runtime is created.
         warn(s"Reusing Spark runtime ${runtime.id} for session ${session.id}")
         runtime
+      case Some(runtime) if isJobRuntime(principal, runtime) =>
+        throw new NotebookException(
+          NotebookErrorCode.KYUUBI_SESSION_LOST,
+          "the managed Notebook job lost its Spark session; retry it as a new attempt",
+          retryable = false)
       case _ =>
+        val allocation = resolveAllocation(principal, session, requestedAllocationId)
+        val profileSnapshot = if (allocation.isEmpty) {
+          resolveProfileSnapshot(principal, session)
+        } else {
+          None
+        }
+        val serverConfig = allocation.map(notebookAllocationConfiguration).getOrElse(
+          profileSessionConfig(profileSnapshot))
+        val mergedConfig = configuration ++ serverConfig
+        val runtimeIdleTimeoutMillis = allocation.flatMap(value =>
+          value.launchSnapshot.notebookRuntimeIdleTimeout.map(timeout =>
+            Duration.parse(timeout).toMillis)).orElse(
+          profileSnapshot.flatMap(EngineProfileSnapshot.notebookRuntimeIdleTimeoutMillis))
+        val environmentRevisionId = allocation.flatMap(
+          _.launchSnapshot.pythonEnvironmentRevisionId).orElse(
+          profileSnapshot.flatMap(snapshot =>
+            pythonEnvironments.flatMap(_.environmentRevisionId(snapshot))))
         warn(s"No existing runtime found. Creating new runtime for session ${session.id}")
         create(
           session,
           specId,
           mergedConfig,
           runtimeIdleTimeoutMillis,
-          profileSnapshot.flatMap(snapshot =>
-            pythonEnvironments.flatMap(_.environmentRevisionId(snapshot))))
+          environmentRevisionId,
+          allocation.map(_.id))
     }
   }
 
@@ -376,7 +515,8 @@ class NotebookRuntimeService(
       runtimeSpecId: String,
       configuration: Map[String, String],
       runtimeIdleTimeoutMillis: Option[Long] = None,
-      environmentRevisionId: Option[String] = None): NotebookRuntime = {
+      environmentRevisionId: Option[String] = None,
+      computeAllocationId: Option[String] = None): NotebookRuntime = {
     // A notebook session is deliberately a single Spark conversation. The explicit runtime API
     // is retained for compatibility, but cannot create a second live session behind a notebook.
     listFor(session).headOption.foreach(return _)
@@ -397,6 +537,7 @@ class NotebookRuntimeService(
       owner = session.owner,
       state = RuntimeState.CREATING,
       generation = 1L,
+      computeAllocationId = computeAllocationId,
       environmentRevisionId = environmentRevisionId,
       runtimeIdleTimeoutMillis = runtimeIdleTimeoutMillis,
       createdAt = now,
@@ -411,6 +552,9 @@ class NotebookRuntimeService(
     store.createRuntime(creating)
     try {
       val started = adapter.startRuntime(creating, configuration)
+      computeAllocationId.foreach(id =>
+        computeAllocations.foreach(
+          _.recordEngineReference(id, started.handle)))
       val ready = creating.copy(
         state = RuntimeState.IDLE,
         internalRuntimeHandle = Some(started.handle),
@@ -468,16 +612,40 @@ class NotebookRuntimeService(
       runtime: NotebookRuntime): NotebookRuntime = {
     val adapter = registry.get(runtime.runtimeSpecId)
     val restarting = store.getRuntime(runtime.id).getOrElse(runtime)
-    val profileSnapshot = resolveProfileSnapshot(principal, session)
+    val allocation = restarting.computeAllocationId.flatMap { id =>
+      computeAllocations.map(_.getNotebookAllocation(profilePrincipal(principal), id))
+    }
+    if (allocation.exists(_.mode == ComputeMode.JOB)) {
+      throw NotebookException.invalid(
+        "a managed Notebook job cannot restart its runtime; submit a new attempt")
+    }
+    val usableAllocation = allocation.filter(current =>
+      Set(
+        ComputeAllocationState.RESERVED,
+        ComputeAllocationState.STARTING,
+        ComputeAllocationState.ACTIVE).contains(current.state))
+      .orElse(resolveAllocation(principal, session, None))
+    val profileSnapshot = if (usableAllocation.isEmpty) {
+      resolveProfileSnapshot(principal, session)
+    } else {
+      None
+    }
+    val serverConfig = usableAllocation.map(notebookAllocationConfiguration).getOrElse(
+      profileSessionConfig(profileSnapshot))
     try {
-      val started = adapter.restartRuntime(restarting, profileSessionConfig(profileSnapshot))
+      val started = adapter.restartRuntime(restarting, serverConfig)
       val updated = restarting.copy(
         state = RuntimeState.IDLE,
         generation = restarting.generation + 1,
-        environmentRevisionId = profileSnapshot.flatMap(snapshot =>
-          pythonEnvironments.flatMap(_.environmentRevisionId(snapshot))),
-        runtimeIdleTimeoutMillis = profileSnapshot.flatMap(
-          EngineProfileSnapshot.notebookRuntimeIdleTimeoutMillis),
+        computeAllocationId = usableAllocation.map(_.id),
+        environmentRevisionId = usableAllocation.flatMap(
+          _.launchSnapshot.pythonEnvironmentRevisionId).orElse(
+          profileSnapshot.flatMap(snapshot =>
+            pythonEnvironments.flatMap(_.environmentRevisionId(snapshot)))),
+        runtimeIdleTimeoutMillis = usableAllocation.flatMap(value =>
+          value.launchSnapshot.notebookRuntimeIdleTimeout.map(timeout =>
+            Duration.parse(timeout).toMillis)).orElse(
+          profileSnapshot.flatMap(EngineProfileSnapshot.notebookRuntimeIdleTimeoutMillis)),
         internalRuntimeHandle = Some(started.handle),
         internalRuntimeLocation = started.location.orElse(Some(instanceUri())),
         failureMessage = None,
@@ -495,8 +663,9 @@ class NotebookRuntimeService(
   private def resolveProfileSnapshot(
       principal: NotebookPrincipal,
       session: NotebookSession): Option[EngineProfileSnapshot] = {
-    val profileId = store.getNotebook(session.notebookId).flatMap(_.runtimeProfile)
-      .orElse(session.runtimeProfile)
+    // The session pins the selected profile. Editing the Notebook document later must not move
+    // an existing interactive session, and a managed job must use its allocation snapshot.
+    val profileId = session.runtimeProfile
     // A completed Python environment build is deliberately not applied to a live engine. The
     // service also prevents a replacement Driver from starting with env-N while env-N+1 is being
     // restored after the old Driver disappeared.
@@ -508,10 +677,47 @@ class NotebookRuntimeService(
         EngineProfilePrincipal(principal.user, principal.admin))))
   }
 
+  private def resolveAllocation(
+      principal: NotebookPrincipal,
+      session: NotebookSession,
+      requestedAllocationId: Option[String]): Option[ComputeAllocation] =
+    computeAllocations.map { allocations =>
+      requestedAllocationId match {
+        case Some(id) => allocations.requireNotebookAllocation(profilePrincipal(principal), id)
+        case None =>
+          allocations.acquireInteractive(
+            profilePrincipal(principal),
+            session.runtimeProfile.getOrElse(EngineProfileService.DefaultProfileId),
+            ComputeWorkloadType.NOTEBOOK)
+      }
+    }
+
+  private def notebookAllocationConfiguration(
+      allocation: ComputeAllocation): Map[String, String] = {
+    val notebookIdleTimeout = allocation.launchSnapshot.notebookRuntimeIdleTimeout.map { timeout =>
+      "kyuubi.session.idle.timeout" -> Duration.parse(timeout).toMillis.toString
+    }.toMap
+    computeAllocations.get.routingConfiguration(allocation) ++ notebookIdleTimeout
+  }
+
+  private def isJobRuntime(
+      principal: NotebookPrincipal,
+      runtime: NotebookRuntime): Boolean =
+    runtime.computeAllocationId.exists { allocationId =>
+      computeAllocations.exists(_.getNotebookAllocation(
+        profilePrincipal(principal),
+        allocationId).mode == ComputeMode.JOB)
+    }
+
+  private def profilePrincipal(principal: NotebookPrincipal): EngineProfilePrincipal =
+    EngineProfilePrincipal(principal.user, principal.admin)
+
   /** Returns only server-owned profile settings to use when opening a Kyuubi session. */
   private def profileSessionConfig(snapshot: Option[EngineProfileSnapshot]): Map[String, String] = {
     val profileSparkConfig = snapshot.map(_.sparkConfig).getOrElse(Map.empty)
     val engineTimeoutConfig = snapshot.map(EngineProfileSnapshot.engineSessionConfig)
+      .getOrElse(Map.empty)
+    val notebookSessionConfig = snapshot.map(EngineProfileSnapshot.notebookSessionConfig)
       .getOrElse(Map.empty)
     val pythonEnvironmentConfig = snapshot.map(value =>
       pythonEnvironments.map(_.launchConfig(value)).getOrElse(Map.empty)).getOrElse(Map.empty)
@@ -521,7 +727,8 @@ class NotebookRuntimeService(
         "kyuubi.engine.share.level" -> "USER",
         "kyuubi.engine.share.level.subdomain" -> value.subdomain,
         "kyuubi.engine.share.level.sub.domain" -> value.subdomain)).getOrElse(Map.empty)
-    profileSparkConfig ++ engineTimeoutConfig ++ pythonEnvironmentConfig ++ sessionOverlay
+    profileSparkConfig ++ engineTimeoutConfig ++ notebookSessionConfig ++
+      pythonEnvironmentConfig ++ sessionOverlay
   }
 
   /** Idempotent: stopping a stopped runtime is a no-op that still reports success. */
@@ -529,8 +736,9 @@ class NotebookRuntimeService(
     if (RuntimeState.terminal.contains(runtime.state)) {
       runtime
     } else {
-      try registry.get(runtime.runtimeSpecId).stopRuntime(runtime)
-      catch { case NonFatal(e) => warn(s"Failed to stop runtime ${runtime.id}", e) }
+      // Do not erase the backend handle when close fails. Keeping the row non-terminal allows the
+      // idle reaper or an explicit Stop retry to close the session on a later pass.
+      registry.get(runtime.runtimeSpecId).stopRuntime(runtime)
       val now = System.currentTimeMillis()
       val stopped = runtime.copy(
         state = RuntimeState.STOPPED,
@@ -569,7 +777,7 @@ class NotebookRuntimeService(
         if (idleTimeoutMillis > 0 &&
           runtime.lastActivityAt < System.currentTimeMillis() - idleTimeoutMillis) {
           info(s"Reclaiming runtime ${runtime.id} after ${idleTimeoutMillis}ms idle")
-          Some(stop(runtime))
+          Some(runtime)
         } else {
           None
         }

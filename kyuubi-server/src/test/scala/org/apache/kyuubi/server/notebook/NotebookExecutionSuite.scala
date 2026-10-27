@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.JavaConverters._
 
 import org.apache.kyuubi.server.notebook.api._
+import org.apache.kyuubi.server.notebook.routing.NotebookSessionRegistry
 import org.apache.kyuubi.server.notebook.runtime._
 import org.apache.kyuubi.server.notebook.service._
 import org.apache.kyuubi.server.notebook.store.ExecutionFilter
@@ -46,7 +47,13 @@ class NotebookExecutionSuite extends NotebookTestBase {
     super.beforeAll()
     adapter = new ScriptedAdapter
     registry = new RuntimeAdapterRegistry(Seq(adapter))
-    runtimeService = new NotebookRuntimeService(manager.store, registry, () => "test-instance")
+    runtimeService = new NotebookRuntimeService(
+      manager.store,
+      registry,
+      () => "test-instance",
+      None,
+      None,
+      None)
     sessionService = new NotebookSessionService(
       manager.store,
       documents,
@@ -405,6 +412,40 @@ class NotebookExecutionSuite extends NotebookTestBase {
     assert(manager.store.getExecution(execution.id).get.state === ExecutionState.STARTING)
   }
 
+  test("listing sessions loses an orphan left by a replaced frontend") {
+    val (notebook, _) = createNotebook(alice, "exec-orphaned-session")
+    val emptyOwnerRegistry = new NotebookSessionRegistry(conf, () => None) {
+      override def lookupOwner(sessionId: String): NotebookSessionRegistry.OwnerLookup =
+        NotebookSessionRegistry.NoRegisteredOwner
+    }
+    val orphanAwareSessionService = new NotebookSessionService(
+      manager.store,
+      documents,
+      permissions,
+      runtimeService,
+      () => "test-instance",
+      () => Some(emptyOwnerRegistry))
+    val old = System.currentTimeMillis() - 60000L
+    val orphan = NotebookSession(
+      id = java.util.UUID.randomUUID().toString,
+      notebookId = notebook.id,
+      owner = alice.user,
+      state = NotebookSessionState.IDLE,
+      runtimeProfile = None,
+      createdAt = old,
+      lastActivityAt = old,
+      stoppedAt = None,
+      failureMessage = None,
+      kyuubiInstance = Some("replaced-instance"),
+      version = 1L)
+    manager.store.createSession(orphan)
+
+    val listed = orphanAwareSessionService.list(alice, notebook.id)
+
+    assert(listed.find(_.id == orphan.id).exists(_.state === NotebookSessionState.LOST))
+    assert(manager.store.getSession(orphan.id).exists(_.state === NotebookSessionState.LOST))
+  }
+
   test("an idle runtime is reclaimed and its session stopped with it") {
     val session = openSession(alice, "exec-idle")
     val execution = submit(alice, session, "select 1")
@@ -420,6 +461,50 @@ class NotebookExecutionSuite extends NotebookTestBase {
     assert(manager.store.getSession(session.id).get.state === NotebookSessionState.STOPPED)
     assert(manager.store.getExecution(execution.id).get.state === ExecutionState.LOST)
     assert(adapter.interrupted.contains(execution.id))
+  }
+
+  test("a profile runtime timeout is honored when the platform default is disabled") {
+    val session = openSession(alice, "exec-profile-idle")
+    submit(alice, session, "select 1")
+    val runtime = runtimeService.listFor(session).head
+    val expired = runtime.copy(
+      runtimeIdleTimeoutMillis = Some(1L),
+      lastActivityAt = 0L,
+      version = runtime.version + 1)
+    assert(manager.store.updateRuntime(expired, runtime.version))
+    val stoppedBefore = adapter.stoppedRuntimeIds.size
+
+    sessionService.reapIdle(0L)
+
+    assert(runtimeService.listFor(session).isEmpty)
+    assert(manager.store.getSession(session.id).get.state === NotebookSessionState.STOPPED)
+    assert(adapter.stoppedRuntimeIds.size === stoppedBefore + 1)
+    assert(adapter.stoppedRuntimeIds.last === runtime.id)
+  }
+
+  test("an idle runtime close failure retains its handle and is retried") {
+    val session = openSession(alice, "exec-idle-close-retry")
+    submit(alice, session, "select 1")
+    val runtime = runtimeService.listFor(session).head
+    val expired = runtime.copy(
+      runtimeIdleTimeoutMillis = Some(1L),
+      lastActivityAt = 0L,
+      version = runtime.version + 1)
+    assert(manager.store.updateRuntime(expired, runtime.version))
+    adapter.stopFailure = Some(new IllegalStateException("backend close failed"))
+
+    sessionService.reapIdle(0L)
+
+    val retained = manager.store.getRuntime(runtime.id).get
+    assert(!RuntimeState.terminal.contains(retained.state))
+    assert(retained.internalRuntimeHandle.nonEmpty)
+    assert(manager.store.getSession(session.id).get.state !== NotebookSessionState.STOPPED)
+
+    adapter.stopFailure = None
+    sessionService.reapIdle(0L)
+
+    assert(runtimeService.listFor(session).isEmpty)
+    assert(manager.store.getSession(session.id).get.state === NotebookSessionState.STOPPED)
   }
 
   test("an execution left active by an idle timeout cannot block a later cell") {
@@ -484,6 +569,25 @@ class NotebookExecutionSuite extends NotebookTestBase {
     assert(listed.size === 2)
     assert(listed.forall(_.notebookId == session.notebookId))
   }
+
+  test("managed execution audit remains in the store after backend output is captured") {
+    val session = openSession(alice, "exec-audit")
+    adapter.logLines = Seq("first line", "second line")
+    adapter.rows = Seq(Seq("1", "alpha"), Seq("2", "beta"))
+    val execution = submit(alice, session, "select id, label from values")
+    adapter.finish(execution.id, ExecutionState.SUCCEEDED)
+    val terminal = executionService.get(alice, execution.id)
+
+    val audited = executionService.captureAudit(alice, terminal)
+    assert(audited.auditSnapshot.nonEmpty)
+    val snapshot = NotebookJson.mapper.readValue(
+      audited.auditSnapshot.get,
+      classOf[ExecutionAuditSnapshot])
+    assert(snapshot.logs === adapter.logLines)
+    assert(snapshot.rows === adapter.rows)
+    assert(snapshot.schema.exists(_.columns.map(_.name) == Seq("id", "label")))
+    assert(manager.store.getExecution(execution.id).flatMap(_.auditSnapshot).nonEmpty)
+  }
 }
 
 /**
@@ -500,6 +604,8 @@ private class ScriptedAdapter extends TabularNotebookRuntimeAdapter {
   var rows: Seq[Seq[String]] = Seq.empty
   var logLines: Seq[String] = Seq.empty
   var executeFailure: Option[RuntimeException] = None
+  var stopFailure: Option[RuntimeException] = None
+  var stoppedRuntimeIds: Seq[String] = Seq.empty
   private var lostRuntimeIds: Set[String] = Set.empty
 
   override val runtimeType: String = "SQL"
@@ -564,7 +670,10 @@ private class ScriptedAdapter extends TabularNotebookRuntimeAdapter {
       configuration: Map[String, String]): AdapterRuntime =
     AdapterRuntime(s"handle-${runtime.id}-restarted", Some("test-instance"))
 
-  override def stopRuntime(runtime: NotebookRuntime): Unit = ()
+  override def stopRuntime(runtime: NotebookRuntime): Unit = {
+    stopFailure.foreach(throw _)
+    stoppedRuntimeIds = stoppedRuntimeIds :+ runtime.id
+  }
 
   override def fetchLogs(execution: CellExecution, offset: Long, maxLines: Int): AdapterLogPage = {
     val page = logLines.drop(offset.toInt).take(maxLines)

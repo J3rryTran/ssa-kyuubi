@@ -76,7 +76,36 @@ class NotebookSchemaUpgradeSuite extends KyuubiFunSuite {
       |    deleted INTEGER NOT NULL DEFAULT 0
       |)""".stripMargin
 
-  /** A database left behind by the previous release, with no `language` column. */
+  /** The scheduled-run table before source pinning and idempotent request IDs were added. */
+  private val previousReleaseRunDdl =
+    """CREATE TABLE notebook_run(
+      |    id TEXT PRIMARY KEY NOT NULL,
+      |    notebook_id TEXT NOT NULL,
+      |    notebook_session_id TEXT NOT NULL,
+      |    state TEXT NOT NULL,
+      |    submitted_at INTEGER NOT NULL,
+      |    started_at INTEGER,
+      |    finished_at INTEGER,
+      |    submitted_by TEXT NOT NULL,
+      |    requested_cell_ids TEXT,
+      |    current_cell_id TEXT,
+      |    failure_policy TEXT NOT NULL,
+      |    version INTEGER NOT NULL
+      |)""".stripMargin
+
+  /** DBT run metadata before managed-attempt idempotency was added. */
+  private val previousReleaseDbtRunDdl =
+    """CREATE TABLE dbt_job_run(
+      |    id TEXT PRIMARY KEY NOT NULL,
+      |    workspace_id TEXT NOT NULL,
+      |    submitted_by TEXT NOT NULL,
+      |    profile_id TEXT NOT NULL,
+      |    state TEXT NOT NULL,
+      |    created_at INTEGER NOT NULL,
+      |    state_updated_at INTEGER NOT NULL
+      |)""".stripMargin
+
+  /** A database left behind by the previous release, before both column migrations. */
   private def previousReleaseDatabase(): String = {
     val databaseFile = Files.createTempDirectory("kyuubi-notebook-upgrade")
       .resolve(s"notebook-${UUID.randomUUID()}.db")
@@ -84,8 +113,11 @@ class NotebookSchemaUpgradeSuite extends KyuubiFunSuite {
     val connection = DriverManager.getConnection(url)
     try {
       val statement = connection.createStatement()
-      try statement.execute(previousReleaseDdl)
-      finally statement.close()
+      try {
+        statement.execute(previousReleaseDdl)
+        statement.execute(previousReleaseRunDdl)
+        statement.execute(previousReleaseDbtRunDdl)
+      } finally statement.close()
     } finally connection.close()
     url
   }
@@ -117,6 +149,29 @@ class NotebookSchemaUpgradeSuite extends KyuubiFunSuite {
       language = None,
       cursor = None,
       limit = Some(200)).items.map(_.name)
+
+  private def hasColumn(url: String, table: String, column: String): Boolean = {
+    val connection = DriverManager.getConnection(url)
+    try {
+      val result = connection.getMetaData.getColumns(null, null, table, column)
+      try result.next()
+      finally result.close()
+    } finally connection.close()
+  }
+
+  private def hasIndex(url: String, table: String, index: String): Boolean = {
+    val connection = DriverManager.getConnection(url)
+    try {
+      val result = connection.getMetaData.getIndexInfo(null, null, table, false, false)
+      try {
+        var found = false
+        while (!found && result.next()) {
+          found = Option(result.getString("INDEX_NAME")).exists(_.equalsIgnoreCase(index))
+        }
+        found
+      } finally result.close()
+    } finally connection.close()
+  }
 
   test("a database from the previous release gains the language column and stays usable") {
     val url = previousReleaseDatabase()
@@ -154,5 +209,25 @@ class NotebookSchemaUpgradeSuite extends KyuubiFunSuite {
     try {
       assert(listNames(second, alice).contains("survives-restart"))
     } finally second.stop()
+  }
+
+  test("an old notebook run table adds request ID before creating its unique index") {
+    val url = previousReleaseDatabase()
+    val manager = started(url)
+
+    try {
+      assert(hasColumn(url, "notebook_run", "client_request_id"))
+      assert(hasIndex(url, "notebook_run", "notebook_run_request_index"))
+    } finally manager.stop()
+  }
+
+  test("an old DBT run table adds request ID before creating its unique index") {
+    val url = previousReleaseDatabase()
+    val manager = started(url)
+
+    try {
+      assert(hasColumn(url, "dbt_job_run", "client_request_id"))
+      assert(hasIndex(url, "dbt_job_run", "dbt_job_run_request_index"))
+    } finally manager.stop()
   }
 }

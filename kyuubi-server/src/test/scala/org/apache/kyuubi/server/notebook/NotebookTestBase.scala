@@ -26,7 +26,7 @@ import org.apache.kyuubi.KyuubiFunSuite
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.ha.HighAvailabilityConf.{HA_ADDRESSES, HA_NAMESPACE}
 import org.apache.kyuubi.server.metadata.jdbc.JDBCMetadataStoreConf._
-import org.apache.kyuubi.server.notebook.NotebookConf.ENGINE_PROFILE_STORE_FS_ROOT
+import org.apache.kyuubi.server.notebook.NotebookConf.{COMPUTE_BINDING_TRUSTED_RUNNER_USERS, ENGINE_PROFILE_STORE_FS_ROOT}
 import org.apache.kyuubi.server.notebook.api._
 import org.apache.kyuubi.server.notebook.service._
 import org.apache.kyuubi.zookeeper.{EmbeddedZookeeper, ZookeeperConf}
@@ -60,7 +60,9 @@ trait NotebookTestBase extends KyuubiFunSuite {
       .set(METADATA_STORE_JDBC_DATABASE_SCHEMA_INIT, false)
       .set(HA_ADDRESSES, zkServer.getConnectString)
       .set(HA_NAMESPACE, s"notebook-test-${UUID.randomUUID()}")
+      .set(COMPUTE_BINDING_TRUSTED_RUNNER_USERS, Set("dbt-runner", "notebook-runner"))
       .set(ENGINE_PROFILE_STORE_FS_ROOT, profileRoot.toUri.toString)
+    configureTest(conf)
     // The document-level suites never reach a runtime, so the backend accessor is a trap
     // rather than a stub: if one of them ever does, the test fails loudly.
     manager = new NotebookManager(
@@ -69,6 +71,9 @@ trait NotebookTestBase extends KyuubiFunSuite {
     manager.initialize(conf)
     manager.start()
   }
+
+  /** Lets a suite enable an opt-in subsystem before NotebookManager is initialized. */
+  protected def configureTest(testConf: KyuubiConf): Unit = {}
 
   override def afterAll(): Unit = {
     if (manager != null) manager.stop()

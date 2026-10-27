@@ -37,17 +37,27 @@ CREATE TABLE IF NOT EXISTS dbt_job_run(
     profile_notebook_runtime_idle_timeout TEXT, profile_engine_idle_timeout TEXT,
     profile_python_environment_revision_id TEXT,
     profile_revision INTEGER NOT NULL DEFAULT 1,
+    attempt_id TEXT NOT NULL, compute_mode TEXT NOT NULL,
+    execution_transport TEXT NOT NULL DEFAULT 'KUBERNETES', compute_allocation_id TEXT NOT NULL,
+    compute_binding_id TEXT, dbt_invocation_id TEXT,
     state TEXT NOT NULL, runner_run_id TEXT, dispatch_token TEXT, runner_job_uid TEXT,
     created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER, error_summary TEXT,
     state_updated_at INTEGER NOT NULL, log_next_offset INTEGER NOT NULL DEFAULT 0,
-    log_truncated INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1
+    log_truncated INTEGER NOT NULL DEFAULT 0, runner_resources_cleaned INTEGER NOT NULL DEFAULT 0,
+    runner_cleanup_error TEXT, version INTEGER NOT NULL DEFAULT 1, client_request_id TEXT
 );
 CREATE INDEX IF NOT EXISTS dbt_job_run_workspace_index ON dbt_job_run(workspace_id, created_at);
 CREATE INDEX IF NOT EXISTS dbt_job_run_profile_state_index ON dbt_job_run(profile_id, state);
 CREATE INDEX IF NOT EXISTS dbt_job_run_state_index ON dbt_job_run(state, state_updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS dbt_job_run_request_index
+    ON dbt_job_run(submitted_by, client_request_id);
 CREATE TABLE IF NOT EXISTS dbt_job_run_log(
     run_id TEXT NOT NULL, sequence INTEGER NOT NULL, start_offset INTEGER NOT NULL,
     end_offset INTEGER NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL,
     PRIMARY KEY(run_id, sequence)
 );
 CREATE INDEX IF NOT EXISTS dbt_job_run_log_offset_index ON dbt_job_run_log(run_id, start_offset);
+CREATE TABLE IF NOT EXISTS dbt_job_run_artifact(
+    run_id TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL,
+    PRIMARY KEY(run_id, name)
+);

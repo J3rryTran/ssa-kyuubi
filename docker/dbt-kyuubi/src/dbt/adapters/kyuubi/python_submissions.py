@@ -30,6 +30,8 @@ from dbt.adapters.spark.connections import (
 )
 from dbt_common.exceptions import DbtRuntimeError
 
+from dbt.adapters.kyuubi.capabilities import validate_python_incremental_config
+
 try:
     from TCLIService import ttypes
     from pyhive import hive
@@ -66,7 +68,7 @@ class KyuubiThriftPythonJobHelper(PythonJobHelper):
 
         self.parsed_model = parsed_model
         self.credentials = credentials
-        self._validate_incremental_configuration()
+        validate_python_incremental_config(self.parsed_model.get("config") or {})
         configured_timeout = parsed_model["config"].get("timeout")
         self.timeout_seconds = int(
             configured_timeout
@@ -77,25 +79,6 @@ class KyuubiThriftPythonJobHelper(PythonJobHelper):
         self.poll_interval_seconds = max(
             int(credentials.poll_interval or _DEFAULT_POLL_INTERVAL_SECONDS),
             _DEFAULT_POLL_INTERVAL_SECONDS)
-
-    def _validate_incremental_configuration(self) -> None:
-        config = self.parsed_model.get("config") or {}
-        if config.get("materialized") != "incremental":
-            return
-
-        file_format = str(config.get("file_format") or "").lower()
-        strategy = str(config.get("incremental_strategy") or "").lower()
-        unique_key = config.get("unique_key")
-        on_schema_change = str(config.get("on_schema_change") or "ignore").lower()
-
-        if file_format != "iceberg" or strategy != "merge" or not unique_key:
-            raise DbtRuntimeError(
-                "Kyuubi Python incremental supports only file_format=iceberg, "
-                "incremental_strategy=merge, and a non-empty unique_key")
-        if on_schema_change not in {"ignore", "append_new_columns"}:
-            raise DbtRuntimeError(
-                "Kyuubi Python incremental supports on_schema_change only as "
-                "ignore or append_new_columns")
 
     def submit(self, compiled_code: str) -> None:
         connection = None
@@ -139,9 +122,13 @@ class KyuubiThriftPythonJobHelper(PythonJobHelper):
         alias = self.parsed_model.get("alias") or self.parsed_model.get("name")
         if not isinstance(schema, str) or not schema or not isinstance(alias, str) or not alias:
             return None
+        suffix = "__dbt_tmp"
+        batch = self.parsed_model.get("batch")
+        if isinstance(batch, dict) and batch.get("id"):
+            suffix += "_{}".format(batch["id"])
         identifiers = [
             identifier
-            for identifier in (database, schema, alias + "__dbt_tmp")
+            for identifier in (database, schema, alias + suffix)
             if isinstance(identifier, str) and identifier
         ]
         return ".".join(

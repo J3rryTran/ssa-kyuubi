@@ -19,8 +19,10 @@ FROM python:3.12-slim
 LABEL org.opencontainers.image.version="0.1.1"
 
 COPY docker/dbt-kyuubi /opt/dbt-kyuubi
+COPY docker/dbt-runner/run-dbt-managed.sh /opt/kyuubi/bin/run-dbt-managed
 
 RUN pip install --no-cache-dir dbt-core==1.12.0 'dbt-spark[PyHive]==1.10.3' /opt/dbt-kyuubi && \
+    chmod 0555 /opt/kyuubi/bin/run-dbt-managed && \
     useradd --create-home --uid 10001 dbt
 
 ENV HOME=/home/dbt

@@ -23,7 +23,7 @@ import java.util.Locale
 
 import scala.collection.JavaConverters._
 
-import io.fabric8.kubernetes.api.model.ConfigMapBuilder
+import io.fabric8.kubernetes.api.model.{ConfigMapBuilder, SecretBuilder}
 import io.fabric8.kubernetes.api.model.batch.v1.{Job, JobBuilder}
 import io.fabric8.kubernetes.client.{Config, ConfigBuilder, KubernetesClient, KubernetesClientBuilder, KubernetesClientException}
 
@@ -56,6 +56,7 @@ class KubernetesJobDbtRunner(
   extends DbtRunner with Logging {
   import DbtAction._
   import DbtRunState._
+  import KubernetesJobDbtRunner._
 
   private val namespace = conf.get(DBT_RUNNER_KUBERNETES_NAMESPACE)
   private val image = required(DBT_RUNNER_KUBERNETES_IMAGE)
@@ -64,17 +65,39 @@ class KubernetesJobDbtRunner(
 
   override def submit(request: DbtRunRequest): DbtRunnerSubmission = {
     val run = request.run
+    if (!run.computeAllocationId.contains(request.binding.allocationId) ||
+      !run.computeBindingId.contains(request.binding.bindingId)) {
+      throw new KyuubiException("DBT dispatch binding does not match its managed compute attempt")
+    }
     findSubmission(run.id) match {
       case Some(existing) => return existing
       case None =>
     }
     val jobName = resourceName("kyuubi-dbt", run.id)
     val profileConfigMap = resourceName("kyuubi-dbt-profile", run.id)
+    val bindingSecret = resourceName("kyuubi-dbt-binding", run.id)
     val projectConfigMap = projectResolver.resolve(run.projectRef)
     val labels = Map(
       "app.kubernetes.io/managed-by" -> "kyuubi-dbt-runner",
-      "kyuubi.apache.org/dbt-run-id" -> run.id) ++
-      run.dispatchToken.map("kyuubi.apache.org/dbt-dispatch-token" -> _)
+      "kyuubi.apache.org/workload-type" -> "dbt",
+      "kyuubi.apache.org/dbt-run-id" -> run.id,
+      "kyuubi.apache.org/compute-attempt-id" -> run.attemptId,
+      "kyuubi.apache.org/compute-allocation-id" -> request.binding.allocationId)
+
+    val secret = new SecretBuilder()
+      .withNewMetadata()
+      .withName(bindingSecret)
+      .addToLabels(labels.asJava)
+      .endMetadata()
+      .withType("Opaque")
+      .addToStringData(ManagedProfileIdEnv, run.profile.profileId)
+      .addToStringData(ManagedRunIdEnv, run.id)
+      .addToStringData(ManagedAttemptIdEnv, run.attemptId)
+      .addToStringData(ManagedAllocationIdEnv, request.binding.allocationId)
+      .addToStringData(ManagedBindingIdEnv, request.binding.bindingId)
+      .addToStringData(ManagedBindingTokenEnv, request.binding.token)
+      .build()
+    client.secrets().inNamespace(namespace).resource(secret).createOrReplace()
 
     val profile = new ConfigMapBuilder()
       .withNewMetadata()
@@ -142,8 +165,13 @@ class KubernetesJobDbtRunner(
       .withName("dbt")
       .withImage(image)
       .withWorkingDir("/workspace")
-      .withCommand("dbt")
+      .withCommand("/opt/kyuubi/bin/run-dbt-managed")
       .withArgs(commandArguments(run): _*)
+      .addNewEnvFrom()
+      .withNewSecretRef()
+      .withName(bindingSecret)
+      .endSecretRef()
+      .endEnvFrom()
       .addNewEnv()
       .withName("DBT_PROFILES_DIR")
       .withValue("/opt/dbt")
@@ -211,6 +239,8 @@ class KubernetesJobDbtRunner(
   override def cleanup(runId: String): Unit = {
     val configMap = resourceName("kyuubi-dbt-profile", runId)
     client.configMaps().inNamespace(namespace).withName(configMap).delete()
+    val bindingSecret = resourceName("kyuubi-dbt-binding", runId)
+    client.secrets().inNamespace(namespace).withName(bindingSecret).delete()
   }
 
   private def toStatus(job: Job): DbtRunnerStatus = {
@@ -238,8 +268,12 @@ class KubernetesJobDbtRunner(
   private def renderProfile(run: DbtJobRun): String = {
     val parameters = Map(
       "hive.server2.proxy.user" -> run.effectiveKyuubiUser,
-      EngineProfileSessionConfigResolver.ProfileIdKey -> run.profile.profileId,
-      EngineProfileSessionConfigResolver.RunIdKey -> run.id)
+      EngineProfileSessionConfigResolver.ProfileIdKey -> env(ManagedProfileIdEnv),
+      EngineProfileSessionConfigResolver.RunIdKey -> env(ManagedRunIdEnv),
+      EngineProfileSessionConfigResolver.AttemptIdKey -> env(ManagedAttemptIdEnv),
+      EngineProfileSessionConfigResolver.AllocationIdKey -> env(ManagedAllocationIdEnv),
+      EngineProfileSessionConfigResolver.BindingIdKey -> env(ManagedBindingIdEnv),
+      EngineProfileSessionConfigResolver.BindingTokenKey -> env(ManagedBindingTokenEnv))
       .toSeq.sortBy(_._1).map { case (key, value) =>
         s"        ${yaml(key)}: ${yaml(value)}"
       }
@@ -255,7 +289,7 @@ class KubernetesJobDbtRunner(
        |      user: ${yaml(conf.get(DBT_RUNNER_KYUUBI_USER))}
        |      auth: ${yaml(conf.get(DBT_RUNNER_KYUUBI_AUTH))}
        |      schema: ${yaml(conf.get(DBT_RUNNER_KYUUBI_SCHEMA))}
-       |      threads: 1
+       |      threads: ${configuredThreads}
        |      server_side_parameters:
        |$parameters
        |""".stripMargin
@@ -285,12 +319,52 @@ class KubernetesJobDbtRunner(
     }
 
   private def yaml(value: String): String = "'" + value.replace("'", "''") + "'"
+
+  private def env(name: String): String = s"""{{ env_var("$name") }}"""
+
+  private def configuredThreads: Int = {
+    val threads = conf.get(DBT_RUNNER_THREADS)
+    val maximum = conf.get(DBT_RUNNER_THREADS_MAX)
+    if (threads > maximum) {
+      throw new KyuubiException(
+        s"${DBT_RUNNER_THREADS.key} ($threads) exceeds ${DBT_RUNNER_THREADS_MAX.key} ($maximum)")
+    }
+    threads
+  }
 }
 
 object KubernetesJobDbtRunner {
+  private val ManagedProfileIdEnv = "KYUUBI_ENGINE_PROFILE_ID"
+  private val ManagedRunIdEnv = "KYUUBI_MANAGED_RUN_ID"
+  private val ManagedAttemptIdEnv = "KYUUBI_MANAGED_ATTEMPT_ID"
+  private val ManagedAllocationIdEnv = "KYUUBI_MANAGED_ALLOCATION_ID"
+  private val ManagedBindingIdEnv = "KYUUBI_MANAGED_BINDING_ID"
+  private val ManagedBindingTokenEnv = "KYUUBI_MANAGED_BINDING_TOKEN"
+
   def create(
       conf: KyuubiConf,
       pythonEnvironments: Option[PythonEnvironmentService] = None): KubernetesJobDbtRunner = {
+    val runnerUser = conf.get(DBT_RUNNER_KYUUBI_USER).trim
+    if (runnerUser.isEmpty || !conf.get(COMPUTE_BINDING_TRUSTED_RUNNER_USERS).contains(
+        runnerUser)) {
+      throw new KyuubiException(
+        s"${DBT_RUNNER_KYUUBI_USER.key} must be listed in " +
+          s"${COMPUTE_BINDING_TRUSTED_RUNNER_USERS.key}")
+    }
+    if (conf.get(COMPUTE_BINDING_TTL) <= conf.get(DBT_RUNNER_KUBERNETES_JOB_TIMEOUT)) {
+      throw new KyuubiException(
+        s"${COMPUTE_BINDING_TTL.key} must exceed " +
+          s"${DBT_RUNNER_KUBERNETES_JOB_TIMEOUT.key} for managed DBT runs")
+    }
+    if (conf.get(DBT_RUNNER_KUBERNETES_JOB_TIMEOUT) > conf.get(COMPUTE_JOB_TIMEOUT)) {
+      throw new KyuubiException(
+        s"${DBT_RUNNER_KUBERNETES_JOB_TIMEOUT.key} must not exceed " +
+          s"${COMPUTE_JOB_TIMEOUT.key}")
+    }
+    if (conf.get(DBT_RUNNER_THREADS) > conf.get(DBT_RUNNER_THREADS_MAX)) {
+      throw new KyuubiException(
+        s"${DBT_RUNNER_THREADS.key} must not exceed ${DBT_RUNNER_THREADS_MAX.key}")
+    }
     val namespace = conf.get(DBT_RUNNER_KUBERNETES_NAMESPACE)
     val client = new KubernetesClientBuilder()
       .withConfig(new ConfigBuilder(Config.autoConfigure(null)).withNamespace(namespace).build())

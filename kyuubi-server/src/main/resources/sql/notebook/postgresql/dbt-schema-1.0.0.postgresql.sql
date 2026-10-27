@@ -36,18 +36,29 @@ CREATE TABLE IF NOT EXISTS dbt_job_run(
     profile_captured_at bigint NOT NULL, profile_notebook_runtime_idle_timeout varchar(32),
     profile_engine_idle_timeout varchar(32), profile_python_environment_revision_id varchar(64),
     profile_revision bigint NOT NULL DEFAULT 1,
+    attempt_id varchar(36) NOT NULL, compute_mode varchar(16) NOT NULL,
+    execution_transport varchar(16) NOT NULL DEFAULT 'KUBERNETES',
+    compute_allocation_id varchar(36) NOT NULL, compute_binding_id varchar(36),
+    dbt_invocation_id varchar(64),
     state varchar(32) NOT NULL, runner_run_id varchar(255),
     dispatch_token varchar(36), runner_job_uid varchar(255), created_at bigint NOT NULL,
     started_at bigint, finished_at bigint, error_summary text, state_updated_at bigint NOT NULL,
     log_next_offset bigint NOT NULL DEFAULT 0, log_truncated boolean NOT NULL DEFAULT false,
-    version bigint NOT NULL DEFAULT 1
+    runner_resources_cleaned boolean NOT NULL DEFAULT false, runner_cleanup_error text,
+    version bigint NOT NULL DEFAULT 1, client_request_id varchar(255)
 );
 CREATE INDEX IF NOT EXISTS dbt_job_run_workspace_index ON dbt_job_run(workspace_id, created_at);
 CREATE INDEX IF NOT EXISTS dbt_job_run_profile_state_index ON dbt_job_run(profile_id, state);
 CREATE INDEX IF NOT EXISTS dbt_job_run_state_index ON dbt_job_run(state, state_updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS dbt_job_run_request_index
+    ON dbt_job_run(submitted_by, client_request_id);
 CREATE TABLE IF NOT EXISTS dbt_job_run_log(
     run_id varchar(36) NOT NULL, sequence bigint NOT NULL, start_offset bigint NOT NULL,
     end_offset bigint NOT NULL, content text NOT NULL, created_at bigint NOT NULL,
     PRIMARY KEY(run_id, sequence)
 );
 CREATE INDEX IF NOT EXISTS dbt_job_run_log_offset_index ON dbt_job_run_log(run_id, start_offset);
+CREATE TABLE IF NOT EXISTS dbt_job_run_artifact(
+    run_id varchar(36) NOT NULL, name varchar(64) NOT NULL, content text NOT NULL,
+    created_at bigint NOT NULL, PRIMARY KEY(run_id, name)
+);

@@ -33,13 +33,17 @@ trait DbtStore extends AutoCloseable {
 
   def createRun(run: DbtJobRun): Unit
   def getRun(id: String): Option[DbtJobRun]
+  def findRunByRequestId(submittedBy: String, clientRequestId: String): Option[DbtJobRun]
   def listRunsForWorkspace(workspaceId: String, limit: Int): Seq[DbtJobRun]
   def listRunsForJob(jobId: String, limit: Int): Seq[DbtJobRun]
   def updateRun(run: DbtJobRun, expectedStates: Set[DbtRunState.Value]): Boolean
   def claimDispatch(id: String, expectedVersion: Long, token: String, now: Long): Boolean
   def appendLog(run: DbtJobRun, content: String, now: Long): Boolean
   def readLogs(runId: String, offset: Long, limit: Int): DbtRunnerLogPage
+  def putArtifact(runId: String, artifact: DbtRunArtifact): Unit
+  def getArtifact(runId: String, name: String): Option[DbtRunArtifact]
   def listActiveRuns(): Seq[DbtJobRun]
+  def listRunsForReconciliation(): Seq[DbtJobRun]
   def listActiveRunsForProfile(profileId: String): Seq[DbtJobRun]
   def listActiveRunsForWorkspace(workspaceId: String): Seq[DbtJobRun]
 }

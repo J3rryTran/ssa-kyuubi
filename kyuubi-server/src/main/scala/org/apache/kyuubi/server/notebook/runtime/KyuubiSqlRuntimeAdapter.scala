@@ -63,7 +63,7 @@ class SparkNotebookRuntimeAdapter(
     language = CellLanguage.SQL.toString,
     version = org.apache.kyuubi.KYUUBI_VERSION,
     enabled = true,
-    configurableKeys = Seq("kyuubi.engine.share.level", "spark.sql.shuffle.partitions"),
+    configurableKeys = Seq("spark.sql.shuffle.partitions"),
     limits = Map("maxResultRows" -> maxResultRows.toString, "packagesSource" -> "spark-image"),
     supportedLanguages = Seq(CellLanguage.SQL.toString, CellLanguage.PYTHON.toString))
 
@@ -72,7 +72,15 @@ class SparkNotebookRuntimeAdapter(
       configuration: Map[String, String]): AdapterRuntime = {
     val subdomain = configuration.get("kyuubi.engine.share.level.subdomain")
       .orElse(configuration.get("kyuubi.engine.share.level.sub.domain"))
-      .getOrElse("default")
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .getOrElse(throw NotebookException.invalid(
+        "Notebook runtime requires server-generated compute routing"))
+    if (configuration.get("kyuubi.engine.share.level").forall(_ != "USER") ||
+      configuration.get("kyuubi.engine.type").forall(_ != "SPARK_SQL")) {
+      throw NotebookException.invalid(
+        "Notebook runtime requires server-generated USER/SPARK_SQL routing")
+    }
     val handle = backendService().openSession(
       TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V11,
       runtime.owner,
@@ -113,6 +121,7 @@ class SparkNotebookRuntimeAdapter(
       runtime: NotebookRuntime,
       execution: CellExecution,
       configuration: Map[String, String]): AdapterExecution = {
+    rejectReservedOperationConfiguration(configuration)
     val sessionHandle = requireSession(runtime)
     val overlay = execution.language match {
       case CellLanguage.PYTHON => configuration + (OPERATION_LANGUAGE.key -> "PYTHON")
@@ -142,6 +151,26 @@ class SparkNotebookRuntimeAdapter(
             cause = e)
       }
     AdapterExecution(operationHandle.identifier.toString)
+  }
+
+  private def rejectReservedOperationConfiguration(configuration: Map[String, String]): Unit = {
+    val rejected = configuration.keys.filter { key =>
+      val normalized = key.trim.toLowerCase(java.util.Locale.ROOT)
+      normalized.startsWith("spark.") && !normalized.startsWith("spark.sql.") ||
+      normalized.startsWith("kyuubi.compute.") ||
+      normalized == "hive.server2.proxy.user" ||
+      normalized == "kyuubi.engine.type" ||
+      normalized == "kyuubi.engine.share.level" ||
+      normalized == "kyuubi.engine.share.level.subdomain" ||
+      normalized == "kyuubi.engine.share.level.sub.domain" ||
+      normalized == "kyuubi.session.engine.idle.timeout" ||
+      normalized == "kyuubi.session.idle.timeout" ||
+      normalized == "kyuubi.operation.idle.timeout"
+    }.toSeq.sorted
+    if (rejected.nonEmpty) {
+      throw NotebookException.invalid(
+        s"cell cannot override server-owned compute configuration: ${rejected.mkString(", ")}")
+    }
   }
 
   override def getExecutionStatus(execution: CellExecution): AdapterExecutionStatus = {
@@ -218,9 +247,15 @@ class SparkNotebookRuntimeAdapter(
 
   override def stopRuntime(runtime: NotebookRuntime): Unit = {
     runtime.internalRuntimeHandle.foreach { handle =>
-      try backendService().closeSession(SessionHandle.fromUUID(handle))
-      catch {
-        case NonFatal(e) => debug(s"Failed to close Spark session of runtime ${runtime.id}", e)
+      val sessionHandle = SessionHandle.fromUUID(handle)
+      val backend = backendService()
+      if (backend.sessionManager.getSessionOption(sessionHandle).nonEmpty) {
+        try backend.closeSession(sessionHandle)
+        catch {
+          case NonFatal(e) =>
+            warn(s"Failed to close Spark session of runtime ${runtime.id}; cleanup will retry", e)
+            throw e
+        }
       }
     }
   }

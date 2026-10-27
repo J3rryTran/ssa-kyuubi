@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+"""Run a local dbt project on one server-managed scheduled JOB allocation."""
+
+import argparse
+import base64
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import threading
+from typing import Any, Dict, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+
+class ApiError(RuntimeError):
+    pass
+
+
+def api_headers() -> Dict[str, str]:
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    bearer = os.environ.get("KYUUBI_MANAGED_API_BEARER_TOKEN", "").strip()
+    cookie = os.environ.get("KYUUBI_MANAGED_API_COOKIE", "").strip()
+    user = os.environ.get("KYUUBI_MANAGED_API_USER", "")
+    password = os.environ.get("KYUUBI_MANAGED_API_PASSWORD", "")
+    if bearer:
+        headers["Authorization"] = "Bearer {}".format(bearer)
+    elif user:
+        encoded = base64.b64encode("{}:{}".format(user, password).encode("utf-8"))
+        headers["Authorization"] = "Basic {}".format(encoded.decode("ascii"))
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
+
+
+def post_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=api_headers(),
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8")
+    except HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        try:
+            message = json.loads(body).get("error", {}).get("message", body)
+        except json.JSONDecodeError:
+            message = body
+        raise ApiError("Kyuubi API returned HTTP {}: {}".format(error.code, message))
+    except URLError as error:
+        raise ApiError("Could not reach Kyuubi API: {}".format(error.reason))
+    try:
+        return json.loads(body) if body else {}
+    except json.JSONDecodeError as error:
+        raise ApiError("Kyuubi API returned invalid JSON") from error
+
+
+def invocation_id(project_dir: Path) -> Optional[str]:
+    path = project_dir / "target" / "run_results.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        result = str(value.get("metadata", {}).get("invocation_id", "")).strip()
+        return result or None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Prepare a SCHEDULE-triggered Kyuubi JOB allocation and run the configured dbt job "
+            "from a local project directory."
+        )
+    )
+    parser.add_argument(
+        "--api-base",
+        required=True,
+        help="Kyuubi API base, for example http://host:10099/api/v1",
+    )
+    parser.add_argument("--job-id", required=True, help="Existing Kyuubi DBT job ID")
+    parser.add_argument("--project-dir", default=".", help="Local dbt project directory")
+    parser.add_argument("--profiles-dir", help="Local directory containing managed profiles.yml")
+    parser.add_argument("--target", help="Optional dbt target name")
+    parser.add_argument("--dbt-executable", default="dbt", help="dbt executable from the active venv")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    api_base = args.api_base.rstrip("/")
+    job_id = quote(args.job_id, safe="")
+    launch = post_json("{}/dbt-jobs/{}:prepare-managed-cli".format(api_base, job_id), {})
+    required = (
+        "runId",
+        "attemptId",
+        "allocationId",
+        "profileId",
+        "effectiveUser",
+        "runnerUser",
+        "bindingId",
+        "bindingToken",
+        "heartbeatIntervalMillis",
+        "threads",
+        "commandArguments",
+    )
+    missing = [key for key in required if key not in launch]
+    if missing:
+        raise ApiError("Managed CLI launch response is missing: {}".format(", ".join(missing)))
+
+    run_id = str(launch["runId"])
+    run_url = "{}/dbt-job-runs/{}".format(api_base, quote(run_id, safe=""))
+    child_env = dict(os.environ)
+    child_env.update(
+        {
+            "KYUUBI_USER": str(launch["runnerUser"]),
+            "KYUUBI_EFFECTIVE_USER": str(launch["effectiveUser"]),
+            "KYUUBI_ENGINE_PROFILE_ID": str(launch["profileId"]),
+            "KYUUBI_MANAGED_RUN_ID": run_id,
+            "KYUUBI_MANAGED_ATTEMPT_ID": str(launch["attemptId"]),
+            "KYUUBI_MANAGED_ALLOCATION_ID": str(launch["allocationId"]),
+            "KYUUBI_MANAGED_BINDING_ID": str(launch["bindingId"]),
+            "KYUUBI_MANAGED_BINDING_TOKEN": str(launch["bindingToken"]),
+        }
+    )
+    project_dir = Path(args.project_dir).resolve()
+    command = [args.dbt_executable] + [str(value) for value in launch["commandArguments"]]
+    command.extend(["--threads", str(launch["threads"])])
+    if args.target:
+        command.extend(["--target", args.target])
+    if args.profiles_dir:
+        command.extend(["--profiles-dir", str(Path(args.profiles_dir).resolve())])
+
+    stop_heartbeat = threading.Event()
+    heartbeat_failed = threading.Event()
+    process: Optional[subprocess.Popen] = None
+    cancel_signal = 0
+
+    def heartbeat() -> None:
+        interval = max(0.25, int(launch["heartbeatIntervalMillis"]) / 1000.0)
+        while not stop_heartbeat.wait(interval):
+            try:
+                post_json(run_url + ":heartbeat-managed-cli", {})
+            except ApiError as error:
+                print("Managed DBT heartbeat failed: {}".format(error), file=sys.stderr)
+                heartbeat_failed.set()
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                return
+
+    def forward_signal(signum: int, _frame: Any) -> None:
+        nonlocal cancel_signal
+        cancel_signal = signum
+        if process is not None and process.poll() is None:
+            process.send_signal(signum)
+
+    old_int = signal.signal(signal.SIGINT, forward_signal)
+    old_term = signal.signal(signal.SIGTERM, forward_signal)
+    heartbeat_thread = threading.Thread(target=heartbeat, name="kyuubi-dbt-heartbeat", daemon=True)
+    heartbeat_thread.start()
+    exit_code = 70
+    summary: Optional[str] = None
+    try:
+        process = subprocess.Popen(command, cwd=str(project_dir), env=child_env)
+        exit_code = process.wait()
+        if heartbeat_failed.is_set():
+            exit_code = exit_code if exit_code != 0 else 70
+            summary = "managed compute heartbeat failed"
+    except OSError as error:
+        summary = "could not start dbt: {}".format(error)
+        print(summary, file=sys.stderr)
+    finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=5)
+        signal.signal(signal.SIGINT, old_int)
+        signal.signal(signal.SIGTERM, old_term)
+
+    if cancel_signal:
+        state = "CANCELLED"
+        exit_code = 128 + cancel_signal
+    elif exit_code == 0:
+        state = "SUCCEEDED"
+    else:
+        state = "FAILED"
+        summary = summary or "dbt exited with code {}".format(exit_code)
+
+    complete_payload: Dict[str, Any] = {"state": state, "exitCode": exit_code}
+    if summary:
+        complete_payload["errorSummary"] = summary
+    dbt_invocation_id = invocation_id(project_dir)
+    if dbt_invocation_id:
+        complete_payload["dbtInvocationId"] = dbt_invocation_id
+    try:
+        post_json(run_url + ":complete-managed-cli", complete_payload)
+    except ApiError as error:
+        print("Could not finalize managed DBT run: {}".format(error), file=sys.stderr)
+        return exit_code if exit_code != 0 else 70
+    return exit_code
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (ApiError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(70)

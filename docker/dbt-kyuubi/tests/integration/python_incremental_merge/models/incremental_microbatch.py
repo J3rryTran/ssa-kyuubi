@@ -1,0 +1,45 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from pyspark.sql import functions
+from pyspark.sql.types import LongType
+
+
+def model(dbt, session):
+    dbt.config(
+        materialized="incremental",
+        file_format="iceberg",
+        incremental_strategy="microbatch",
+        partition_by=["event_date"],
+        event_time="event_time",
+        begin="2026-01-01",
+        batch_size="day",
+        concurrent_batches=False,
+        on_schema_change="ignore",
+    )
+
+    def fail_when_requested(value, should_fail):
+        if should_fail:
+            raise RuntimeError("microbatch temporary table write failure")
+        return value
+
+    fail = functions.udf(fail_when_requested, LongType())
+    source = dbt.source("incremental_fixture", "microbatch_input")
+    return source.select(
+        "id",
+        fail("value", "should_fail").alias("value"),
+        "event_time",
+        "event_date",
+    )

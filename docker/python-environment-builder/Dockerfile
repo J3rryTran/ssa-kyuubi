@@ -17,7 +17,7 @@
 
 # The base image must be pinned to the same Python ABI/image family used by Spark driver and
 # executor pods. The Kyuubi server compares the configured identity before it mounts a revision.
-ARG BASE_IMAGE=python:3.11-slim
+ARG BASE_IMAGE=python:3.10-slim
 FROM ${BASE_IMAGE}
 
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel

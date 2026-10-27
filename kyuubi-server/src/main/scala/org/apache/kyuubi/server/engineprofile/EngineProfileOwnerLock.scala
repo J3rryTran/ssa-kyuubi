@@ -17,7 +17,7 @@
 
 package org.apache.kyuubi.server.engineprofile
 
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
 
 import org.apache.kyuubi.KyuubiException
 import org.apache.kyuubi.shaded.curator.framework.CuratorFramework
@@ -31,8 +31,14 @@ private[engineprofile] class EngineProfileOwnerLock(
 
   require(timeoutMillis > 0, "Engine Profile ZooKeeper lock timeout must be positive")
 
+  // InterProcessMutex is reentrant only when nested calls reuse the same mutex instance. Profile
+  // services intentionally hold this owner lock across authorization/guard checks and then call a
+  // store mutation which takes the same lock again. Keep one mutex per owner path so that nesting
+  // is reentrant while different threads and Kyuubi replicas are still serialized by Curator.
+  private val locks = new ConcurrentHashMap[String, InterProcessMutex]()
+
   def withLock[T](ownerHash: String)(body: => T): T = {
-    val lock = new InterProcessMutex(client, s"/$namespace/engine-profile-store/owners/$ownerHash")
+    val lock = mutex(ownerHash)
     val acquired =
       try lock.acquire(timeoutMillis, TimeUnit.MILLISECONDS)
       catch {
@@ -50,6 +56,19 @@ private[engineprofile] class EngineProfileOwnerLock(
         case error: Exception =>
           throw new KyuubiException("Could not release Engine Profile ZooKeeper owner lock", error)
       }
+    }
+  }
+
+  private def mutex(ownerHash: String): InterProcessMutex = {
+    val existing = locks.get(ownerHash)
+    if (existing != null) {
+      existing
+    } else {
+      val created = new InterProcessMutex(
+        client,
+        s"/$namespace/engine-profile-store/owners/$ownerHash")
+      val raced = locks.putIfAbsent(ownerHash, created)
+      if (raced == null) created else raced
     }
   }
 }

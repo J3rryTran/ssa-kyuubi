@@ -56,11 +56,13 @@ build/scala-*/**
 **/BeeLine.properties
 **/sql-keywords.properties
 **/python/**
+**/*.egg-info/**
 hadoop/**
 spark/**
 docker/python-for-notebook/**
 bin/build-spark-image.sh
 docker/build-spark-image.sh
+docker/dbt-kyuubi/tests/integration/command_matrix/seeds/*.csv
 extensions/server/kyuubi-oidc-auth/**
 extensions/spark/kyuubi-spark-authz/src/main/scala/org/apache/kyuubi/plugin/spark/authz/ranger/RangerServiceProfile.scala
 extensions/spark/kyuubi-spark-authz/src/test/scala/org/apache/kyuubi/plugin/spark/authz/ranger/RangerServiceProfileSuite.scala

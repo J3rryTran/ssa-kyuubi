@@ -29,6 +29,17 @@ dependencies = [
   "dbt-spark[PyHive]==1.10.3",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=8,<9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: requires a live Kyuubi, Spark, and Iceberg deployment",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["dbt.adapters.kyuubi*", "dbt.include.kyuubi*"]

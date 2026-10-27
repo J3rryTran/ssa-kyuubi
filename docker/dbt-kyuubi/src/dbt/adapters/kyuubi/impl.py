@@ -15,16 +15,14 @@
 # limitations under the License.
 #
 
-from typing import Dict, Type
-
-from dbt.adapters.base import PythonJobHelper
 from dataclasses import dataclass
+from typing import Any, Dict, Iterable, Type
 
+from dbt.adapters.base import BaseRelation, PythonJobHelper
 from dbt.adapters.spark.impl import SparkAdapter, SparkConfig
 
 from dbt.adapters.kyuubi.connections import KyuubiConnectionManager
 from dbt.adapters.kyuubi.python_submissions import KyuubiThriftPythonJobHelper
-
 
 
 @dataclass
@@ -39,6 +37,23 @@ class KyuubiAdapter(SparkAdapter):
 
     ConnectionManager = KyuubiConnectionManager
     AdapterSpecificConfigs = KyuubiConfig
+
+    def _get_columns_for_catalog(
+        self,
+        relation: BaseRelation,
+    ) -> Iterable[Dict[str, Any]]:
+        """Read Iceberg V2 columns when Spark cannot use SHOW TABLE EXTENDED."""
+
+        columns = list(super()._get_columns_for_catalog(relation))
+        if not columns:
+            columns = []
+            for column in self.get_columns_in_relation(relation):
+                as_dict = column.to_column_dict()
+                as_dict["column_name"] = as_dict.pop("column", None)
+                as_dict["column_type"] = as_dict.pop("dtype")
+                as_dict["table_database"] = None
+                columns.append(as_dict)
+        yield from columns
 
     @property
     def default_python_submission_method(self) -> str:

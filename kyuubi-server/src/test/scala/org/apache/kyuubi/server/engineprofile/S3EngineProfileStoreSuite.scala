@@ -110,4 +110,22 @@ class S3EngineProfileStoreSuite extends KyuubiFunSuite {
       assert(engineProfiles.list("bob").map(_.profileId) === Seq("two"))
     } finally engineProfiles.close()
   }
+
+  test("owner coordination lock is reentrant for guarded service mutations") {
+    val root = Files.createTempDirectory("kyuubi-s3-engine-profile-reentrant")
+    val engineProfiles = store(root, "s3-store-reentrant")
+    try {
+      engineProfiles.initialize()
+      engineProfiles.create(profile("one"))
+      engineProfiles.withOwnerLock("alice") {
+        engineProfiles.withOwnerLock("alice") {
+          val current = engineProfiles.getOwned("one", "alice").get
+          val updated = engineProfiles.update(
+            current.copy(sparkConfig = Map("spark.driver.memory" -> "4g")),
+            current.version)
+          assert(updated.exists(_.sparkConfig("spark.driver.memory") === "4g"))
+        }
+      }
+    } finally engineProfiles.close()
+  }
 }

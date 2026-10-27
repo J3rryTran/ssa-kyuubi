@@ -56,6 +56,7 @@ case class NotebookRuntime(
     owner: String,
     state: RuntimeState,
     generation: Long,
+    computeAllocationId: Option[String],
     environmentRevisionId: Option[String],
     runtimeIdleTimeoutMillis: Option[Long],
     createdAt: Long,
@@ -86,7 +87,17 @@ case class CellExecution(
     clientRequestId: Option[String],
     notebookRunId: Option[String],
     internalOperationHandle: Option[String],
-    version: Long)
+    version: Long,
+    auditSnapshot: Option[String] = None)
+
+case class ExecutionAuditSnapshot(
+    logs: Seq[String],
+    outputs: Seq[ExecutionOutputView],
+    schema: Option[ExecutionSchema],
+    rows: Seq[Seq[String]],
+    truncated: Boolean,
+    captureErrors: Seq[String],
+    capturedAt: Long)
 
 case class ExecutionEvent(
     executionId: String,
@@ -107,7 +118,16 @@ case class NotebookRun(
     requestedCellIds: Seq[String],
     currentCellId: Option[String],
     failurePolicy: FailurePolicy,
-    version: Long)
+    version: Long,
+    scheduleId: Option[String] = None,
+    sourceRevisionId: Option[String] = None,
+    sourceRevisionNumber: Option[Long] = None,
+    sourceChecksum: Option[String] = None,
+    sourceSnapshot: Option[String] = None,
+    attemptId: Option[String] = None,
+    computeAllocationId: Option[String] = None,
+    clientRequestId: Option[String] = None,
+    errorMessage: Option[String] = None)
 
 /**
  * A runtime a user may ask for. Startup commands, connection details and credentials are
@@ -206,6 +226,7 @@ case class CellExecutionView(
     errorCode: Option[String],
     errorMessage: Option[String],
     notebookRunId: Option[String],
+    auditSnapshot: Option[String],
     version: Long)
 
 object CellExecutionView {
@@ -226,6 +247,7 @@ object CellExecutionView {
     execution.errorCode,
     execution.errorMessage,
     execution.notebookRunId,
+    execution.auditSnapshot,
     execution.version)
 }
 
@@ -281,6 +303,13 @@ case class NotebookRunView(
     requestedCellIds: Seq[String],
     currentCellId: Option[String],
     failurePolicy: String,
+    scheduleId: Option[String],
+    sourceRevisionId: Option[String],
+    sourceRevisionNumber: Option[Long],
+    sourceChecksum: Option[String],
+    attemptId: Option[String],
+    computeAllocationId: Option[String],
+    errorMessage: Option[String],
     version: Long)
 
 object NotebookRunView {
@@ -296,6 +325,13 @@ object NotebookRunView {
     run.requestedCellIds,
     run.currentCellId,
     run.failurePolicy.toString,
+    run.scheduleId,
+    run.sourceRevisionId,
+    run.sourceRevisionNumber,
+    run.sourceChecksum,
+    run.attemptId,
+    run.computeAllocationId,
+    run.errorMessage,
     run.version)
 }
 
@@ -327,5 +363,10 @@ class SubmitExecutionRequest {
 class RunAllRequest {
   @BeanProperty var failurePolicy: String = _
   @BeanProperty var cellIds: java.util.List[String] = _
+  @BeanProperty var clientRequestId: String = _
+}
+
+/** Dispatches one occurrence of the immutable source pinned by a Notebook schedule. */
+class DispatchScheduledNotebookRequest {
   @BeanProperty var clientRequestId: String = _
 }

@@ -324,6 +324,30 @@ private[v1] class NotebooksResource extends NotebookApiSupport {
       request: SetScheduleRequest): NotebookScheduleView =
     notebooks.schedules.set(notebooks.documents.loadNotebook(notebookId), principal, request)
 
+  @POST
+  @Path("{notebookId: [^:/]+}/schedule:pin-current")
+  def pinScheduleSource(
+      @PathParam("notebookId") notebookId: String,
+      request: PinNotebookScheduleSourceRequest): NotebookScheduleView =
+    notebooks.schedules.pinCurrent(
+      notebooks.documents.loadNotebook(notebookId),
+      principal,
+      Option(request).flatMap(value => Option(value.getVersion)).map(_.longValue()))
+
+  @POST
+  @Path("{notebookId: [^:/]+}/schedule:run")
+  def runSchedule(
+      @PathParam("notebookId") notebookId: String,
+      request: DispatchScheduledNotebookRequest): NotebookRunView =
+    NotebookRunView(notebooks.runs.dispatch(principal, notebookId, request))
+
+  @GET
+  @Path("{notebookId: [^:/]+}/runs")
+  def listRuns(
+      @PathParam("notebookId") notebookId: String,
+      @QueryParam("limit") @DefaultValue("50") limit: Int): Seq[NotebookRunView] =
+    notebooks.runs.list(principal, notebookId, limit).map(NotebookRunView.apply)
+
   @DELETE
   @Path("{notebookId: [^:/]+}/schedule")
   def deleteSchedule(@PathParam("notebookId") notebookId: String): Response = {

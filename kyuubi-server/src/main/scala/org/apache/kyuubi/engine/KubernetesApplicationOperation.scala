@@ -87,6 +87,51 @@ class KubernetesApplicationOperation extends ApplicationOperation with Logging {
       })
   }
 
+  /** Exact allocation-label lookup used by the durable compute cleanup reconciler. */
+  private[kyuubi] def getApplicationByLabel(
+      kubernetesInfo: KubernetesInfo,
+      labelKey: String,
+      labelValue: String): Option[KubernetesLabeledApplication] = {
+    val pods = getOrCreateKubernetesClient(kubernetesInfo).pods()
+      .withLabel(labelKey, labelValue).list().getItems.asScala
+    val pod = pods.find(value =>
+      Option(value.getMetadata.getLabels)
+        .exists(labels => "driver" == labels.get("spark-role"))).orElse(pods.headOption)
+    pod.map { value =>
+      val metadata = value.getMetadata
+      val states = pods.map { current =>
+        toApplicationState(
+          current,
+          appStateSource,
+          appStateContainer,
+          KubernetesResourceEventTypes.UPDATE)
+      }
+      val aggregateState = if (states.contains(RUNNING)) {
+        RUNNING
+      } else if (states.contains(PENDING)) {
+        PENDING
+      } else if (states.exists(state => !isTerminated(state))) {
+        UNKNOWN
+      } else {
+        states.find(state => state == FAILED || state == KILLED).getOrElse(FINISHED)
+      }
+      KubernetesLabeledApplication(
+        Option(metadata.getLabels).flatMap(labels =>
+          Option(labels.get(LABEL_KYUUBI_UNIQUE_KEY))).filter(_.nonEmpty),
+        Option(getPodAppId(value)).filter(_.nonEmpty),
+        Option(metadata.getUid).filter(_.nonEmpty),
+        aggregateState)
+    }
+  }
+
+  /** Deletes only resources carrying the immutable allocation label. */
+  private[kyuubi] def deleteApplicationByLabel(
+      kubernetesInfo: KubernetesInfo,
+      labelKey: String,
+      labelValue: String): Boolean =
+    !getOrCreateKubernetesClient(kubernetesInfo).pods()
+      .withLabel(labelKey, labelValue).delete().isEmpty
+
   private def cleanTerminatedAppPodsOnKubernetesClientInitialize(
       kubernetesInfo: KubernetesInfo,
       kubernetesClient: KubernetesClient): Unit = {
@@ -696,3 +741,9 @@ object KubernetesApplicationOperation extends Logging {
     Option(pod.getMetadata.getLabels.get(SPARK_APP_NAME_LABEL)).getOrElse(pod.getMetadata.getName)
   }
 }
+
+case class KubernetesLabeledApplication(
+    engineReferenceId: Option[String],
+    applicationId: Option[String],
+    resourceUid: Option[String],
+    state: ApplicationState)

@@ -9,7 +9,7 @@ CONTEXT_DIR="$PROJECT_ROOT/docker/python-for-notebook"
 # Default values
 REGISTRY="docker.io/j3rrytran"
 IMAGE_NAME="spark-img"
-TAG="3.5.5-py311-r1"
+TAG="3.5.5-py310-r1"
 SPARK_HOME=""
 HADOOP_HOME=""
 NO_CACHE=""
@@ -21,7 +21,7 @@ Usage: \$0 [options]
 Options:
   -r <registry>      Docker registry (default: docker.io/j3rrytran)
   -i <name>          Image name (default: spark-img)
-  -t <tag>           Image tag (default: 3.5.5-py311-r1)
+  -t <tag>           Image tag (default: 3.5.5-py310-r1)
   -s <path>          Path to local Spark binary (optional)
   -d <path>          Path to local Hadoop binary (optional)
   -n                 Build with --no-cache
@@ -53,7 +53,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Copy Dockerfile and requirements to build context
-cp "$CONTEXT_DIR/Dockerfile.spark-py311" "$BUILD_CONTEXT/"
+cp "$CONTEXT_DIR/Dockerfile.spark-py310" "$BUILD_CONTEXT/"
 cp "$CONTEXT_DIR/python-requirements.txt" "$BUILD_CONTEXT/"
 
 # Copy Spark if local path provided
@@ -105,9 +105,9 @@ if [[ -n "$HADOOP_HOME" ]]; then
 fi
 
 docker build $NO_CACHE \
-    --build-arg "PYTHON_IMAGE=python:3.11-slim" \
+    --build-arg "PYTHON_IMAGE=python:3.10-slim" \
     $HADOOP_ARG \
-    -f "$BUILD_CONTEXT/Dockerfile.spark-py311" \
+    -f "$BUILD_CONTEXT/Dockerfile.spark-py310" \
     -t "$IMAGE" \
     "$BUILD_CONTEXT"
 
