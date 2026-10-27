@@ -27,6 +27,7 @@ arrow-memory-core/16.0.0//arrow-memory-core-16.0.0.jar
 arrow-memory-netty-buffer-patch/16.0.0//arrow-memory-netty-buffer-patch-16.0.0.jar
 arrow-memory-netty/16.0.0//arrow-memory-netty-16.0.0.jar
 arrow-vector/16.0.0//arrow-vector-16.0.0.jar
+aws-java-sdk-bundle/1.12.262//aws-java-sdk-bundle-1.12.262.jar
 checker-qual/3.42.0//checker-qual-3.42.0.jar
 classgraph/4.8.138//classgraph-4.8.138.jar
 commons-codec/1.17.1//commons-codec-1.17.1.jar
@@ -47,8 +48,9 @@ grpc-stub/1.65.1//grpc-stub-1.65.1.jar
 grpc-util/1.65.1//grpc-util-1.65.1.jar
 gson/2.10.1//gson-2.10.1.jar
 guava/33.3.1-jre//guava-33.3.1-jre.jar
-hadoop-client-api/3.3.6//hadoop-client-api-3.3.6.jar
-hadoop-client-runtime/3.3.6//hadoop-client-runtime-3.3.6.jar
+hadoop-aws/3.3.4//hadoop-aws-3.3.4.jar
+hadoop-client-api/3.3.4//hadoop-client-api-3.3.4.jar
+hadoop-client-runtime/3.3.4//hadoop-client-runtime-3.3.4.jar
 hk2-api/2.6.1//hk2-api-2.6.1.jar
 hk2-locator/2.6.1//hk2-locator-2.6.1.jar
 hk2-utils/2.6.1//hk2-utils-2.6.1.jar

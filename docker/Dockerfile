@@ -17,8 +17,15 @@
 
 
 ARG BASE_IMAGE=eclipse-temurin:8-jdk-focal
-# JAVA_HOME and SPARK_HOME are deliberately not set here: the Helm chart provides them.
+# SPARK_HOME is deliberately not set here: the Helm chart provides it. JAVA_HOME comes from
+# BASE_IMAGE, or is /opt/java when docker-image-tool.sh is given a local JDK directory.
 FROM ${BASE_IMAGE}
+
+# Filled by docker-image-tool.sh when -b BASE_IMAGE=<local JDK dir>; empty directory otherwise.
+ARG LOCAL_JDK_HOME=
+COPY local-jdk /opt/java
+ENV JAVA_HOME=${LOCAL_JDK_HOME:-${JAVA_HOME}}
+ENV PATH=${LOCAL_JDK_HOME:+${LOCAL_JDK_HOME}/bin:}${PATH}
 
 ARG kyuubi_uid=10009
 USER root
@@ -29,9 +36,16 @@ ENV KYUUBI_PID_DIR=${KYUUBI_HOME}/pid
 ENV KYUUBI_WORK_DIR_ROOT=${KYUUBI_HOME}/work
 
 RUN set -ex && \
-    sed -i 's/http:\/\/deb.\(.*\)/https:\/\/deb.\1/g' /etc/apt/sources.list && \
+    if ! command -v java >/dev/null 2>&1; then \
+      echo "BASE_IMAGE has no 'java' on PATH, please use a JDK image such as eclipse-temurin:17-jdk or a local JDK directory" >&2; \
+      exit 1; \
+    fi && \
+    java -version && \
+    for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do \
+      if [ -f "$f" ]; then sed -i 's/http:\/\/deb.\(.*\)/https:\/\/deb.\1/g' "$f"; fi; \
+    done && \
     apt update && \
-    apt install -y bash tini libc6 libpam-modules krb5-user libnss3 procps && \
+    DEBIAN_FRONTEND=noninteractive apt install -y bash tini libc6 libpam-modules krb5-user libnss3 procps curl ca-certificates && \
     ln -snf /bin/bash /bin/sh && \
     useradd -u ${kyuubi_uid} -g root kyuubi -d /home/kyuubi -m && \
     mkdir -p ${KYUUBI_HOME} ${KYUUBI_LOG_DIR} ${KYUUBI_PID_DIR} ${KYUUBI_WORK_DIR_ROOT} && \
@@ -50,26 +64,10 @@ RUN curl -fL -o ${KYUUBI_HOME}/jars/mysql-connector-j-8.3.0.jar \
     ln -s ../../../jars/mysql-connector-j-8.3.0.jar \
       ${KYUUBI_HOME}/externals/engines/jdbc/mysql-connector-j-8.3.0.jar
 
-ARG MAVEN_MIRROR=https://repo1.maven.org/maven2
-ARG INCLUDE_AWS=true
-ARG HADOOP_AWS_VERSION=3.3.4
-ARG AWS_SDK_BUNDLE_VERSION=1.12.262
-ARG HADOOP_AWS_SHA256=53f9ae03c681a30a50aa17524bd9790ab596b28481858e54efd989a826ed3a4a
-ARG AWS_SDK_BUNDLE_SHA256=873fe7cf495126619997bec21c44de5d992544aea7e632fdc77adb1a0915bae5
-RUN if [ "${INCLUDE_AWS}" = "true" ]; then \
-      curl -fSL -o ${KYUUBI_HOME}/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
-        ${MAVEN_MIRROR}/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar && \
-      echo "${HADOOP_AWS_SHA256}  ${KYUUBI_HOME}/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar" | sha256sum -c - && \
-      curl -fSL -o ${KYUUBI_HOME}/jars/aws-java-sdk-bundle-${AWS_SDK_BUNDLE_VERSION}.jar \
-        ${MAVEN_MIRROR}/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_BUNDLE_VERSION}/aws-java-sdk-bundle-${AWS_SDK_BUNDLE_VERSION}.jar && \
-      echo "${AWS_SDK_BUNDLE_SHA256}  ${KYUUBI_HOME}/jars/aws-java-sdk-bundle-${AWS_SDK_BUNDLE_VERSION}.jar" | sha256sum -c - ; \
-    fi
-
 # Filled by docker-image-tool.sh -H; empty directory otherwise.
 ENV HADOOP_HOME=/opt/hadoop
 COPY hadoop-native ${HADOOP_HOME}/lib/native
 ENV LD_LIBRARY_PATH=${HADOOP_HOME}/lib/native${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
-
 
 WORKDIR ${KYUUBI_HOME}
 RUN chown -R kyuubi:root ${KYUUBI_HOME} && \

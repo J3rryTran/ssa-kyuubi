@@ -83,6 +83,17 @@
             <artifactId>hadoop-client-runtime</artifactId>
         </dependency>
 
+        <!-- S3A filesystem for the server; lands in dist/jars like the other runtime deps -->
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-aws</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.amazonaws</groupId>
+            <artifactId>aws-java-sdk-bundle</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>com.google.code.findbugs</groupId>
             <artifactId>jsr305</artifactId>
