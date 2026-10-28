@@ -138,6 +138,8 @@
         <aws-java-sdk-bundle.version>1.12.262</aws-java-sdk-bundle.version>
         <!-- Must match the solr-solrj version on the Spark engine classpath (JavaBinCodec needs solr-api since Solr 9.7) -->
         <solr-api.version>9.10.1</solr-api.version>
+        <!-- jakarta.* namespace JAX-RS used by solr-api; Kyuubi's own Jersey 2 keeps jakarta.ws.rs-api 2.x (javax.*) -->
+        <solr-api.jakarta.ws.rs.version>3.1.0</solr-api.jakarta.ws.rs.version>
         <byte-buddy.version>1.14.15</byte-buddy.version>
         <bouncycastle.version>1.78</bouncycastle.version>
         <codahale.metrics.version>4.2.30</codahale.metrics.version>
@@ -418,6 +420,18 @@
                 <groupId>org.apache.solr</groupId>
                 <artifactId>solr-api</artifactId>
                 <version>${solr-api.version}</version>
+                <exclusions>
+                    <!-- 3.x would evict the 2.x (javax.ws.rs) that Jersey needs; shipped separately by kyuubi-assembly -->
+                    <exclusion>
+                        <groupId>jakarta.ws.rs</groupId>
+                        <artifactId>jakarta.ws.rs-api</artifactId>
+                    </exclusion>
+                    <!-- Same io.swagger.v3.oas.annotations packages as swagger-annotations 2.2.1 already shipped -->
+                    <exclusion>
+                        <groupId>io.swagger.core.v3</groupId>
+                        <artifactId>swagger-annotations-jakarta</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
 
             <dependency>

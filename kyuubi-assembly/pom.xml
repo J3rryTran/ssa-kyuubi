@@ -137,4 +137,37 @@
             <artifactId>log4j-1.2-api</artifactId>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <!--
+                      solr-api needs the jakarta.* JAX-RS API, while the server's Jersey 2 needs the
+                      javax.* one from jakarta.ws.rs-api 2.x. Both versions share one artifactId, so
+                      Maven keeps only one; copy 3.x next to it here (no overlapping packages).
+                      -->
+                    <execution>
+                        <id>copy-solr-api-jakarta-ws-rs</id>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <phase>package</phase>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>jakarta.ws.rs</groupId>
+                                    <artifactId>jakarta.ws.rs-api</artifactId>
+                                    <version>${solr-api.jakarta.ws.rs.version}</version>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>${jars.target.dir}</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

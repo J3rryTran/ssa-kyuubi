@@ -165,6 +165,7 @@ protobuf-java-util/3.25.5//protobuf-java-util-3.25.5.jar
 protobuf-java/3.25.5//protobuf-java-3.25.5.jar
 scala-library/2.12.19//scala-library-2.12.19.jar
 scopt_2.12/4.1.0//scopt_2.12-4.1.0.jar
+semver4j/5.8.0//semver4j-5.8.0.jar
 simpleclient/0.16.0//simpleclient-0.16.0.jar
 simpleclient_common/0.16.0//simpleclient_common-0.16.0.jar
 simpleclient_dropwizard/0.16.0//simpleclient_dropwizard-0.16.0.jar
