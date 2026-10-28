@@ -94,6 +94,12 @@
             <artifactId>aws-java-sdk-bundle</artifactId>
         </dependency>
 
+        <!-- Ranger SolrAuditProvider: JavaBinCodec in solr-solrj needs this -->
+        <dependency>
+            <groupId>org.apache.solr</groupId>
+            <artifactId>solr-api</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>com.google.code.findbugs</groupId>
             <artifactId>jsr305</artifactId>
