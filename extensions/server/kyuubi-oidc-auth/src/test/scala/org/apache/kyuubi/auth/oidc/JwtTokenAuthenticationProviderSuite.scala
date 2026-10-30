@@ -129,7 +129,8 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
   test("wrong issuer is rejected") {
     val provider = new JwtTokenAuthenticationProvider(baseConf())
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(iss = "https://evil.example.com", typ = "at+jwt")))
+      provider.authenticate(
+        credential(signedToken(iss = "https://evil.example.com", typ = "at+jwt")))
     }
   }
 

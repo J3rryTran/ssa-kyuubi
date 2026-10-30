@@ -114,8 +114,8 @@ object AuthenticationProviderFactory {
     case _ => throw new AuthenticationException("Not a valid authentication method")
   }
 
-  // Một provider là đối tượng nặng (tải JWKS, giữ cache khoá), nên được dùng lại
-  // cho mọi request thay vì dựng lại từng lần.
+  // A provider is heavyweight (fetches JWKS, holds a key cache), so reuse one instance
+  // across requests instead of rebuilding it every time.
   private val bearerProviders =
     new ConcurrentHashMap[String, TokenAuthenticationProvider]()
 
@@ -133,6 +133,6 @@ object AuthenticationProviderFactory {
       })
   }
 
-  /** Chỉ dùng trong test để đổi conf giữa các case. */
+  /** Test only: lets suites switch conf between cases. */
   private[kyuubi] def resetBearerProviderCache(): Unit = bearerProviders.clear()
 }

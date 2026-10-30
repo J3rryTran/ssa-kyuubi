@@ -71,7 +71,7 @@ class AuthenticationProviderFactorySuite extends KyuubiFunSuite {
     intercept[KyuubiException] {
       AuthenticationProviderFactory.getHttpBearerAuthenticationProvider(cls, KyuubiConf())
     }
-    // lần 2 vẫn phải thử dựng lại, không trả null/instance hỏng
+    // the second call must retry construction, not return null or a broken instance
     intercept[KyuubiException] {
       AuthenticationProviderFactory.getHttpBearerAuthenticationProvider(cls, KyuubiConf())
     }

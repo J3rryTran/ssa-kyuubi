@@ -145,7 +145,8 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
       JwtPasswordAuthenticationProvider.PASSWORD_USER_ALIASES -> "token, custom-placeholder"
     ))
     val provider = new JwtPasswordAuthenticationProvider(conf)
-    assert(provider.authenticateAndResolve("custom-placeholder", signedToken(typ = "at+jwt")) === "alice")
+    val token = signedToken(typ = "at+jwt")
+    assert(provider.authenticateAndResolve("custom-placeholder", token) === "alice")
   }
 
   test("1d. Bearer prefix in password field is stripped and accepted") {
@@ -243,9 +244,16 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
   }
 
   test("empty expected.typ disables the check") {
-    val provider = new JwtPasswordAuthenticationProvider(
-      baseConf(Map(JwtTokenAuthenticationProvider.EXPECTED_TYP -> "")))
-    assert(provider.authenticateAndResolve("alice", signedToken(typ = null)) === "alice")
+    // The verifier is a JVM-wide singleton built from the first conf it sees; rebuild it so
+    // this conf takes effect, and reset afterwards so later tests get the default typ check.
+    JwtPasswordAuthenticationProvider.resetVerifier()
+    try {
+      val provider = new JwtPasswordAuthenticationProvider(
+        baseConf(Map(JwtTokenAuthenticationProvider.EXPECTED_TYP -> "")))
+      assert(provider.authenticateAndResolve("alice", signedToken(typ = null)) === "alice")
+    } finally {
+      JwtPasswordAuthenticationProvider.resetVerifier()
+    }
   }
 
   test("5. authenticating 1000 times only fetches discovery and JWKS once") {

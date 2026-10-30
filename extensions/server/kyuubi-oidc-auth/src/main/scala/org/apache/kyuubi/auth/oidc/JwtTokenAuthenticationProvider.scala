@@ -53,7 +53,8 @@ import org.apache.kyuubi.service.authentication.{TokenAuthenticationProvider, To
  *  - `kyuubi.authentication.jwt.username.claim` (default `preferred_username`)
  *  - `kyuubi.authentication.jwt.allowed.algorithms` (default `RS256`, comma-separated)
  *  - `kyuubi.authentication.jwt.expected.typ` (default `at+jwt`; set to empty to disable)
- *  - `kyuubi.authentication.jwt.allowed.azp` (optional) allowed authorized party (`azp`), comma-separated
+ *  - `kyuubi.authentication.jwt.allowed.azp` (optional) allowed authorized party (`azp`),
+ *    comma-separated
  *  - `kyuubi.authentication.jwt.clock.skew.seconds` (default `30`)
  *  - `kyuubi.authentication.jwt.connect.timeout.ms` (default `5000`)
  *  - `kyuubi.authentication.jwt.read.timeout.ms` (default `5000`)
@@ -87,9 +88,10 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
     raw.split(",").map(_.trim).filter(_.nonEmpty).map(JWSAlgorithm.parse).toSet
   }
   /**
-   * JOSE `typ` bắt buộc. Mặc định `at+jwt` (RFC 9068) để chỉ nhận access token và loại
-   * id_token. Đặt rõ giá trị rỗng (`kyuubi.authentication.jwt.expected.typ=`) để tắt kiểm tra,
-   * ví dụ với IdP không ghi typ.
+   * Required JOSE `typ`. Defaults to `at+jwt` (RFC 9068) so only access tokens are accepted
+   * and id_tokens are rejected. Set it explicitly to empty
+   * (`kyuubi.authentication.jwt.expected.typ=`) to disable the check, e.g. for an IdP that
+   * does not emit `typ`.
    */
   private val expectedTyp: Option[String] = conf.getOption(EXPECTED_TYP) match {
     case None => Some(DEFAULT_EXPECTED_TYP)
