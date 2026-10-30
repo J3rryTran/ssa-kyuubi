@@ -17,12 +17,16 @@
 
 package org.apache.kyuubi.service.authentication
 
+import java.nio.charset.StandardCharsets.UTF_8
 import java.security.Security
+import java.util.Collections
+import javax.security.sasl.{AuthenticationException, SaslException}
 
 import org.apache.kyuubi.{KYUUBI_VERSION, KyuubiFunSuite}
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.service.{NoopTBinaryFrontendServer, TBinaryFrontendService}
 import org.apache.kyuubi.service.authentication.PlainSASLServer.SaslPlainProvider
+import org.apache.kyuubi.service.authentication.PlainSASLServer.SaslPlainServerFactory
 import org.apache.kyuubi.shaded.thrift.transport.{TSaslServerTransport, TSocket}
 import org.apache.kyuubi.util.SemanticVersion
 
@@ -62,5 +66,47 @@ class PlainSASLHelperSuite extends KyuubiFunSuite {
     assert(saslPlainProvider.containsKey("SaslServerFactory.PLAIN"))
     assert(saslPlainProvider.getName === "KyuubiSaslPlain")
     assertResult(saslPlainProvider.getVersion)(SemanticVersion(KYUUBI_VERSION).toDouble)
+  }
+
+  test("PlainServerCallbackHandler authenticates and resolves effective user") {
+    val conf = KyuubiConf()
+    conf.set(
+      KyuubiConf.AUTHENTICATION_CUSTOM_CLASS,
+      classOf[TestResolvePasswdAuthProvider].getName)
+    val handler = new PlainSASLHelper.PlainServerCallbackHandler("CUSTOM", conf, true)
+    val serverFactory = new SaslPlainServerFactory()
+    val server = serverFactory.createSaslServer(
+      PlainSASLServer.PLAIN_METHOD,
+      "CUSTOM",
+      "KYUUBI",
+      Collections.emptyMap[String, String](),
+      handler)
+
+    server.evaluateResponse("\u0000token\u0000good".getBytes(UTF_8))
+    assert(server.isComplete)
+    assert(server.getAuthorizationID === "alice")
+
+    val badServer = serverFactory.createSaslServer(
+      PlainSASLServer.PLAIN_METHOD,
+      "CUSTOM",
+      "KYUUBI",
+      Collections.emptyMap[String, String](),
+      handler)
+    intercept[SaslException] {
+      badServer.evaluateResponse("\u0000token\u0000bad".getBytes(UTF_8))
+    }
+  }
+}
+
+class TestResolvePasswdAuthProvider(conf: KyuubiConf) extends PasswdAuthenticationProvider {
+  override def authenticate(user: String, password: String): Unit = {
+    if (password != "good") {
+      throw new AuthenticationException("bad password")
+    }
+  }
+
+  override def authenticateAndResolve(user: String, password: String): String = {
+    authenticate(user, password)
+    "alice"
   }
 }

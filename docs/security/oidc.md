@@ -54,10 +54,38 @@ kyuubi.frontend.thrift.http.request.header.size 32768
 | `jwt.clock.skew.seconds` | No | `30` | Clock skew tolerance |
 | `jwt.connect.timeout.ms` | No | `5000` | JWKS connect timeout |
 | `jwt.read.timeout.ms` | No | `5000` | JWKS read timeout |
+| `jwt.password.enabled` | No | `true` | Cho phép xác thực token qua password (Thrift binary và HTTP Basic). Đặt false sẽ chỉ còn Bearer |
+| `jwt.password.user.aliases` | No | `token` | Danh sách alias người dùng phân cách bằng dấu phẩy. Khi username là alias, user thật lấy từ token |
 
 ---
 
-## 3. JDBC URL
+## 3. Thrift binary
+
+### Cấu hình (không cần `custom.class`)
+```properties
+kyuubi.frontend.protocols                         THRIFT_BINARY,THRIFT_HTTP,REST
+kyuubi.authentication                             OIDC
+# mặc định true; đặt false sẽ chặn CẢ binary lẫn HTTP Basic, chỉ còn Bearer
+kyuubi.authentication.jwt.password.enabled        true
+kyuubi.authentication.jwt.password.user.aliases   token
+```
+
+### URL JDBC
+```
+jdbc:kyuubi://<host>:10009/default;auth=oidc;oidcIssuer=<issuer>;oidcClientId=<client>
+jdbc:kyuubi://<host>:10009/default;auth=jwt;jwt=<access-token>
+```
+PyHive / beeline: `username=token` (hoặc đúng `preferred_username`), `password=<access-token>`.
+
+### Quy tắc
+- `user` phải bằng claim username trong token, hoặc là một alias (`token`). Alias **không bao giờ** được trùng tên user thật.
+- Token chỉ kiểm lúc mở kết nối; pool kết nối phải lấy token còn hạn khi tạo kết nối mới.
+- Token đi dạng rõ trong SASL PLAIN nếu không bật `kyuubi.frontend.thrift.binary.ssl.enabled` — coi password như mật khẩu, không log URL/password.
+- Đổi bất kỳ `kyuubi.authentication.jwt.*` nào phải restart Kyuubi.
+
+---
+
+## 4. Thrift HTTP JDBC URL
 
 ### Desktop SSO (Auth Code + PKCE)
 ```
@@ -77,7 +105,7 @@ Set token via `JWT` env var or `;jwt=<token>`
 
 ---
 
-## 4. Driver Parameters
+## 5. Driver Parameters
 
 | Param | Default | Description |
 |-------|---------|-------------|

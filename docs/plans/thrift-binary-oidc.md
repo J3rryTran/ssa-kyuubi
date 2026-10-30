@@ -1,5 +1,7 @@
 # Plan: cấp "chìa kết nối" Thrift binary và REST cho các đội dev, khi `kyuubi.authentication=OIDC`
 
+> Lỗi thời — xem docs/plans/oidc/thrift-binary-oidc.md.
+
 Trạng thái: chưa thực hiện. Đối tượng thực thi: AI agent. Phạm vi: `kyuubi-common` (4 file, port từ
 `kyuubi-custom`), `extensions/server/kyuubi-oidc-auth` (1 class mới + test), cấu hình Kyuubi, Keycloak,
 tài liệu tích hợp cho các đội dev.

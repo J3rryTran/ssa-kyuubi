@@ -740,12 +740,11 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
       if (!isSaslAuthMode()) {
         return socketTransport;
       }
-      // OIDC bearer tokens are only carried over the HTTP transport (Authorization header).
-      if (isOidcAuthMode()) {
-        throw new KyuubiSQLException(
-            "OIDC authentication requires HTTP transport; add "
-                + "transportMode=http;httpPath=cliservice to the JDBC URL",
-            "08S01");
+      // OIDC / JWT over binary: the access token travels as the SASL PLAIN password and the
+      // server resolves the session user from the token's username claim.
+      if (isOidcAuthMode() || isJwtAuthMode()) {
+        String token = acquireBinaryToken();
+        return PlainSaslHelper.getPlainTransport(getBinaryTokenUser(), token, socketTransport);
       }
       // Use PLAIN Sasl connection with user/password
       if (isPlainSaslAuthMode()) {
@@ -780,6 +779,39 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
           "08S01",
           e);
     }
+  }
+
+  /** Access token sent as the SASL PLAIN password; checked by the server only at open. */
+  private String acquireBinaryToken() throws KyuubiSQLException {
+    if (isOidcAuthMode()) {
+      try {
+        return getOrCreateOidcAuthenticator().acquireInitialToken();
+      } catch (RuntimeException e) {
+        throw new KyuubiSQLException("OIDC authentication failed: " + e.getMessage(), "08S01", e);
+      }
+    }
+    String jwt = getJWT();
+    if (jwt == null || jwt.isEmpty()) {
+      throw new KyuubiSQLException("For jwt auth mode, a signed jwt must be provided", "08S01");
+    }
+    return jwt;
+  }
+
+  /**
+   * SASL user for token auth: the explicit user if given, otherwise "token", a placeholder the
+   * server accepts (kyuubi.authentication.jwt.password.user.aliases) and replaces with the
+   * username claim of the verified token.
+   */
+  static String getBinaryTokenUser(Map<String, String> sessConfMap) {
+    if (sessConfMap == null) {
+      return "token";
+    }
+    String user = sessConfMap.get(AUTH_USER);
+    return user == null || user.isEmpty() ? "token" : user;
+  }
+
+  private String getBinaryTokenUser() {
+    return getBinaryTokenUser(sessConfMap);
   }
 
   SSLConnectionSocketFactory getTwoWaySSLSocketFactory() throws SQLException {

@@ -70,11 +70,16 @@ class PlainSASLServer(
       val pcCallback: PasswordCallback = new PasswordCallback("Password", false)
       pcCallback.setPassword(passwd.toCharArray)
       val acCallback: AuthorizeCallback = new AuthorizeCallback(user, authzId)
+      // Default the authorized identity to the authenticated name (never the client-supplied
+      // authzid). The callback handler may override it with the identity it resolved, e.g. the
+      // username claim of an OIDC access token sent as the password.
+      acCallback.setAuthorizedID(user)
       val cbList: Array[Callback] = Array(nameCallback, pcCallback, acCallback)
       handler.handle(cbList)
       if (!acCallback.isAuthorized) {
         throw new SaslException("Authentication failed")
       }
+      user = Option(acCallback.getAuthorizedID).filter(_.nonEmpty).getOrElse(user)
     } catch {
       case eL: IllegalStateException => throw new SaslException("Invalid message format", eL)
       case eI: IOException => throw new SaslException("Error validating the login", eI)
