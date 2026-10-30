@@ -17,6 +17,8 @@
 
 package org.apache.kyuubi.service.authentication
 
+import java.util.concurrent.ConcurrentHashMap
+import java.util.function.{Function => JFunction}
 import javax.security.sasl.AuthenticationException
 
 import org.apache.commons.lang3.StringUtils
@@ -112,12 +114,25 @@ object AuthenticationProviderFactory {
     case _ => throw new AuthenticationException("Not a valid authentication method")
   }
 
+  // Một provider là đối tượng nặng (tải JWKS, giữ cache khoá), nên được dùng lại
+  // cho mọi request thay vì dựng lại từng lần.
+  private val bearerProviders =
+    new ConcurrentHashMap[String, TokenAuthenticationProvider]()
+
   def getHttpBearerAuthenticationProvider(
       providerClass: String,
       conf: KyuubiConf): TokenAuthenticationProvider = {
     require(
       !StringUtils.isBlank(providerClass),
       "kyuubi.authentication.custom.bearer.class must be set for http bearer authentication.")
-    ClassUtils.createInstance(providerClass, classOf[TokenAuthenticationProvider], conf)
+    bearerProviders.computeIfAbsent(
+      providerClass,
+      new JFunction[String, TokenAuthenticationProvider] {
+        override def apply(cls: String): TokenAuthenticationProvider =
+          ClassUtils.createInstance(cls, classOf[TokenAuthenticationProvider], conf)
+      })
   }
+
+  /** Chỉ dùng trong test để đổi conf giữa các case. */
+  private[kyuubi] def resetBearerProviderCache(): Unit = bearerProviders.clear()
 }

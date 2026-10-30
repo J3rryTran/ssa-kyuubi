@@ -124,13 +124,13 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
 
   test("1. valid access token authenticates and matches user") {
     val provider = new JwtPasswordAuthenticationProvider(baseConf())
-    provider.authenticate("alice", signedToken())
-    assert(provider.authenticateAndResolve("alice", signedToken()) === "alice")
+    provider.authenticate("alice", signedToken(typ = "at+jwt"))
+    assert(provider.authenticateAndResolve("alice", signedToken(typ = "at+jwt")) === "alice")
   }
 
   test("1b. user placeholder aliases (token, empty, null) resolve to token user") {
     val provider = new JwtPasswordAuthenticationProvider(baseConf())
-    val token = signedToken()
+    val token = signedToken(typ = "at+jwt")
     // User alias 'token'
     assert(provider.authenticateAndResolve("token", token) === "alice")
     // Empty user
@@ -145,14 +145,14 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
       JwtPasswordAuthenticationProvider.PASSWORD_USER_ALIASES -> "token, custom-placeholder"
     ))
     val provider = new JwtPasswordAuthenticationProvider(conf)
-    assert(provider.authenticateAndResolve("custom-placeholder", signedToken()) === "alice")
+    assert(provider.authenticateAndResolve("custom-placeholder", signedToken(typ = "at+jwt")) === "alice")
   }
 
   test("1d. Bearer prefix in password field is stripped and accepted") {
     val provider = new JwtPasswordAuthenticationProvider(baseConf())
-    val tokenWithPrefix = s"Bearer ${signedToken()}"
+    val tokenWithPrefix = s"Bearer ${signedToken(typ = "at+jwt")}"
     assert(provider.authenticateAndResolve("token", tokenWithPrefix) === "alice")
-    val lowerPrefix = s"bearer ${signedToken()}"
+    val lowerPrefix = s"bearer ${signedToken(typ = "at+jwt")}"
     assert(provider.authenticateAndResolve("alice", lowerPrefix) === "alice")
   }
 
@@ -162,7 +162,7 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
     ))
     val provider = new JwtPasswordAuthenticationProvider(conf)
     val e = intercept[AuthenticationException] {
-      provider.authenticate("alice", signedToken())
+      provider.authenticate("alice", signedToken(typ = "at+jwt"))
     }
     assert(e.getMessage.contains("Password authentication is disabled; use OIDC/JWT bearer"))
   }
@@ -170,7 +170,7 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
   test("2. valid access token with mismatching user is rejected") {
     val provider = new JwtPasswordAuthenticationProvider(baseConf())
     val e = intercept[AuthenticationException] {
-      provider.authenticate("bob", signedToken())
+      provider.authenticate("bob", signedToken(typ = "at+jwt"))
     }
     assert(e.getMessage.contains("does not match"))
   }
@@ -196,22 +196,22 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
 
     // Expired
     intercept[AuthenticationException] {
-      provider.authenticate("alice", signedToken(expMillisFromNow = -60000L))
+      provider.authenticate("alice", signedToken(expMillisFromNow = -60000L, typ = "at+jwt"))
     }
 
     // Wrong issuer
     intercept[AuthenticationException] {
-      provider.authenticate("alice", signedToken(iss = "https://evil.example.com"))
+      provider.authenticate("alice", signedToken(iss = "https://evil.example.com", typ = "at+jwt"))
     }
 
     // Wrong audience
     intercept[AuthenticationException] {
-      provider.authenticate("alice", signedToken(aud = "some-other-audience"))
+      provider.authenticate("alice", signedToken(aud = "some-other-audience", typ = "at+jwt"))
     }
 
     // Bad signature
     intercept[AuthenticationException] {
-      provider.authenticate("alice", signedToken(signer = otherKey))
+      provider.authenticate("alice", signedToken(signer = otherKey, typ = "at+jwt"))
     }
 
     // alg=none
@@ -230,8 +230,26 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
     }
   }
 
+  test("default typ rejects an id_token (typ=JWT) and a token without typ") {
+    val provider = new JwtPasswordAuthenticationProvider(baseConf())
+    // ID token (typ=JWT)
+    intercept[AuthenticationException] {
+      provider.authenticate("alice", signedToken(typ = "JWT"))
+    }
+    // Token without typ
+    intercept[AuthenticationException] {
+      provider.authenticate("alice", signedToken(typ = null))
+    }
+  }
+
+  test("empty expected.typ disables the check") {
+    val provider = new JwtPasswordAuthenticationProvider(
+      baseConf(Map(JwtTokenAuthenticationProvider.EXPECTED_TYP -> "")))
+    assert(provider.authenticateAndResolve("alice", signedToken(typ = null)) === "alice")
+  }
+
   test("5. authenticating 1000 times only fetches discovery and JWKS once") {
-    val token = signedToken()
+    val token = signedToken(typ = "at+jwt")
     val beforeDiscovery = discoveryRequestCount.get()
     val beforeJwks = jwksRequestCount.get()
 
@@ -251,7 +269,7 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
   test("null conf throws IllegalStateException") {
     val provider = new JwtPasswordAuthenticationProvider()
     intercept[IllegalStateException] {
-      provider.authenticate("alice", signedToken())
+      provider.authenticate("alice", signedToken(typ = "at+jwt"))
     }
   }
 }

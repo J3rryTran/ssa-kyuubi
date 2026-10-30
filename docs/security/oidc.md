@@ -1,5 +1,7 @@
 # OIDC SSO Configuration
 
+> Web UI và BFF cookie flow đã bị gỡ khỏi fork này; Kyuubi chỉ nhận `Authorization: Bearer` (REST, Thrift HTTP) và access token trong ô password của SASL PLAIN (Thrift binary).
+
 ## 1. Keycloak Client Setup
 
 ### JDBC Client (public)
@@ -15,24 +17,6 @@
 | Audience | thêm client scope emit audience = `kyuubi-jdbc` |
 
 Discovery: `https://<keycloak-host>/realms/<realm>/.well-known/openid-configuration`
-
-### Web UI Client (public)
-| Setting | Value |
-|---------|-------|
-| Client ID | `kyuubi-ui` |
-| Client authentication | OFF |
-| Standard flow | ON |
-| Valid redirect URIs | `http://<kyuubi-host>:<rest-port>/ui/callback` |
-| Valid post logout redirect URIs | `http://<kyuubi-host>:<rest-port>/ui` |
-| Web origins | `http://<kyuubi-host>:<rest-port>` |
-
-### Web UI Client (BFF - confidential)
-| Setting | Value |
-|---------|-------|
-| Client ID | `kyuubi-ui` |
-| Client authentication | ON |
-| Standard flow | ON |
-| Valid redirect URIs | `http://<kyuubi-host>:<rest-port>/api/v1/authentication/callback` |
 
 ---
 
@@ -65,41 +49,15 @@ kyuubi.frontend.thrift.http.request.header.size 32768
 | `jwt.jwks.url` | No | auto-discovered | JWKS URL |
 | `jwt.username.claim` | No | `preferred_username` | Claim for session user |
 | `jwt.allowed.algorithms` | No | `RS256` | Allowed signature algorithms |
-| `jwt.expected.typ` | No | - | Required JOSE typ header |
+| `jwt.expected.typ` | No | `at+jwt` | Required JOSE typ header (set to empty to disable) |
+| `jwt.allowed.azp` | No | - | Allowed authorized party (`azp`) client ID(s), comma-separated. Dùng để giới hạn token chỉ từ client được cấp phép khi chưa tách riêng audience. |
 | `jwt.clock.skew.seconds` | No | `30` | Clock skew tolerance |
 | `jwt.connect.timeout.ms` | No | `5000` | JWKS connect timeout |
 | `jwt.read.timeout.ms` | No | `5000` | JWKS read timeout |
 
 ---
 
-## 3. Web UI SSO Config
-
-### Public Flow
-```properties
-kyuubi.authentication.oidc.ui.client.id     kyuubi-ui
-kyuubi.authentication.oidc.ui.scope         openid profile email
-```
-
-### BFF Flow (confidential client)
-```properties
-kyuubi.authentication.oidc.ui.client.id       kyuubi-ui
-kyuubi.authentication.oidc.ui.client.secret   <client-secret>
-kyuubi.authentication.oidc.authorization.endpoint  https://keycloak.example.com/realms/lakehouse/protocol/openid-connect/auth
-kyuubi.authentication.oidc.token.endpoint    http://keycloak.internal:8080/realms/lakehouse/protocol/openid-connect/token
-kyuubi.authentication.oidc.end.session.endpoint    https://keycloak.example.com/realms/lakehouse/protocol/openid-connect/logout
-```
-
-### BFF Optional
-```properties
-#kyuubi.authentication.oidc.redirect.uri    http://<kyuubi-host>:<rest-port>/api/v1/authentication/callback
-#kyuubi.authentication.oidc.session.timeout PT4H
-#kyuubi.authentication.oidc.cookie.name     KYUUBI_SESSION
-#kyuubi.authentication.oidc.cookie.secure  false
-```
-
----
-
-## 4. JDBC URL
+## 3. JDBC URL
 
 ### Desktop SSO (Auth Code + PKCE)
 ```
@@ -119,7 +77,7 @@ Set token via `JWT` env var or `;jwt=<token>`
 
 ---
 
-## 5. Driver Parameters
+## 4. Driver Parameters
 
 | Param | Default | Description |
 |-------|---------|-------------|

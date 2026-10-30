@@ -17,10 +17,26 @@
 
 package org.apache.kyuubi.service.authentication
 
+import java.security.Principal
+import java.util.concurrent.atomic.AtomicInteger
 import javax.security.sasl.AuthenticationException
 
-import org.apache.kyuubi.{KyuubiFunSuite, Utils}
+import org.apache.kyuubi.{KyuubiException, KyuubiFunSuite, Utils}
 import org.apache.kyuubi.config.KyuubiConf
+
+class CountingTokenProvider(conf: KyuubiConf) extends TokenAuthenticationProvider {
+  CountingTokenProvider.constructed.incrementAndGet()
+  override def authenticate(credential: TokenCredential): Principal = null
+}
+
+object CountingTokenProvider {
+  val constructed = new AtomicInteger(0)
+}
+
+class ThrowingTokenProvider(conf: KyuubiConf) extends TokenAuthenticationProvider {
+  throw new RuntimeException("boom")
+  override def authenticate(credential: TokenCredential): Principal = null
+}
 
 class AuthenticationProviderFactorySuite extends KyuubiFunSuite {
 
@@ -38,4 +54,26 @@ class AuthenticationProviderFactorySuite extends KyuubiFunSuite {
     assert(e2.getMessage === "Not a valid authentication method")
   }
 
+  test("bearer provider is created once per class and reused") {
+    AuthenticationProviderFactory.resetBearerProviderCache()
+    val conf = KyuubiConf()
+    val cls = classOf[CountingTokenProvider].getName
+    CountingTokenProvider.constructed.set(0)
+    val a = AuthenticationProviderFactory.getHttpBearerAuthenticationProvider(cls, conf)
+    val b = AuthenticationProviderFactory.getHttpBearerAuthenticationProvider(cls, conf)
+    assert(a eq b)
+    assert(CountingTokenProvider.constructed.get() === 1)
+  }
+
+  test("a failing constructor is not cached") {
+    AuthenticationProviderFactory.resetBearerProviderCache()
+    val cls = classOf[ThrowingTokenProvider].getName
+    intercept[KyuubiException] {
+      AuthenticationProviderFactory.getHttpBearerAuthenticationProvider(cls, KyuubiConf())
+    }
+    // lần 2 vẫn phải thử dựng lại, không trả null/instance hỏng
+    intercept[KyuubiException] {
+      AuthenticationProviderFactory.getHttpBearerAuthenticationProvider(cls, KyuubiConf())
+    }
+  }
 }

@@ -24,6 +24,7 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.SynchronousQueue;
@@ -98,11 +99,17 @@ public class LoopbackCallbackServer implements AutoCloseable {
     String body;
     Object outcome;
     String error = params.get("error");
+    String got = params.get("state");
+    boolean stateOk =
+        got != null
+            && MessageDigest.isEqual(
+                expectedState.getBytes(StandardCharsets.UTF_8),
+                got.getBytes(StandardCharsets.UTF_8));
     if (error != null) {
       String desc = params.getOrDefault("error_description", "");
       outcome = new OidcAuthException("Authorization failed: " + error + " " + desc);
       body = page("Sign-in failed", "You can close this tab and return to your SQL client.");
-    } else if (!expectedState.equals(params.get("state"))) {
+    } else if (!stateOk) {
       outcome = new OidcAuthException("Authorization callback state mismatch (possible CSRF)");
       body = page("Sign-in failed", "State mismatch. You can close this tab.");
     } else if (params.get("code") == null) {

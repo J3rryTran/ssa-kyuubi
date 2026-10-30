@@ -17,6 +17,7 @@
 
 package org.apache.kyuubi.server.http.authentication
 
+import java.security.Principal
 import java.util.Base64
 import javax.servlet.http.{HttpServletRequest, HttpServletResponse}
 
@@ -26,7 +27,7 @@ import org.scalatestplus.mockito.MockitoSugar.mock
 import org.apache.kyuubi.KyuubiFunSuite
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.server.http.util.HttpAuthUtils
-import org.apache.kyuubi.service.authentication.{AuthTypes, PasswdAuthenticationProvider}
+import org.apache.kyuubi.service.authentication.{AuthTypes, PasswdAuthenticationProvider, TokenAuthenticationProvider, TokenCredential}
 
 class TestPasswdAuthenticationProvider(conf: KyuubiConf) extends PasswdAuthenticationProvider {
   override def authenticate(user: String, password: String): Unit = {}
@@ -40,6 +41,10 @@ class TestPasswdAuthenticationProvider(conf: KyuubiConf) extends PasswdAuthentic
 object TestPasswdAuthenticationProvider {
   var lastUser: String = _
   var lastPassword: String = _
+}
+
+class TestTokenAuthenticationProvider(conf: KyuubiConf) extends TokenAuthenticationProvider {
+  override def authenticate(credential: TokenCredential): Principal = null
 }
 
 class AuthenticationFilterSuite extends KyuubiFunSuite {
@@ -125,5 +130,21 @@ class AuthenticationFilterSuite extends KyuubiFunSuite {
 
     assert(handler.authenticate(req, resp) == null)
     verify(resp).setStatus(HttpServletResponse.SC_UNAUTHORIZED)
+  }
+
+  test("BearerAuthenticationHandler.authenticationSupported with valid and invalid classes") {
+    // Valid class implementing TokenAuthenticationProvider -> true
+    val validHandler = new BearerAuthenticationHandler(
+      classOf[TestTokenAuthenticationProvider].getName)
+    assert(validHandler.authenticationSupported)
+
+    // Existing class not implementing TokenAuthenticationProvider (e.g. java.lang.String) -> false
+    val invalidHandler = new BearerAuthenticationHandler(classOf[String].getName)
+    assert(!invalidHandler.authenticationSupported)
+
+    // Non-existent class -> false
+    val nonExistentHandler =
+      new BearerAuthenticationHandler("org.apache.kyuubi.NonExistentProvider")
+    assert(!nonExistentHandler.authenticationSupported)
   }
 }

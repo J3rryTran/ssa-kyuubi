@@ -24,6 +24,11 @@ import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.service.authentication.AuthenticationProviderFactory.{getAuthenticationProvider, getHttpBearerAuthenticationProvider}
 
 class CustomAuthenticationProviderImplSuite extends KyuubiFunSuite {
+  override def beforeEach(): Unit = {
+    AuthenticationProviderFactory.resetBearerProviderCache()
+    super.beforeEach()
+  }
+
   test("Test user defined authentication") {
     val conf = KyuubiConf()
 

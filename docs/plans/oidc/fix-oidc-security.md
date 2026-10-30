@@ -429,4 +429,4 @@ Báo cáo cuối phải có:
 
 ## 5. Phát hiện thêm trong lúc thực hiện
 
-_(agent ghi vào đây, kèm file:dòng, không tự sửa)_
+- `kyuubi-server/src/main/scala/org/apache/kyuubi/server/http/authentication/BearerAuthenticationHandler.scala:34`: `private val allowAnonymous = classOf[AnonymousAuthenticationProviderImpl].getName == providerClass`. Tuy nhiên `AnonymousAuthenticationProviderImpl` chỉ implement `PasswdAuthenticationProvider` chứ không implement `TokenAuthenticationProvider`. Do đó nếu cấu hình `AnonymousAuthenticationProviderImpl` làm bearer provider thì `authenticationSupported` sẽ trả về `false` (vì không phải `TokenAuthenticationProvider`). Không ảnh hưởng tới luồng Bearer token/JWT thông thường.

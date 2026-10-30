@@ -93,7 +93,8 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
       username: Option[String] = Some("alice"),
       expMillisFromNow: Long = 600000L,
       iatMillisFromNow: Long = 0L,
-      typ: String = null): String = {
+      typ: String = null,
+      azp: String = null): String = {
     val now = System.currentTimeMillis()
     val builder = new JWTClaimsSet.Builder()
       .subject("alice-subject")
@@ -102,6 +103,7 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
       .expirationTime(new Date(now + expMillisFromNow))
       .issueTime(new Date(now + iatMillisFromNow))
     username.foreach(u => builder.claim("preferred_username", u))
+    if (azp != null) builder.claim("azp", azp)
     val headerBuilder = new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(keyId)
     if (typ != null) headerBuilder.`type`(new com.nimbusds.jose.JOSEObjectType(typ))
     val jwt = new SignedJWT(headerBuilder.build(), builder.build())
@@ -113,42 +115,42 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
 
   test("valid access token authenticates and maps the username claim") {
     val provider = new JwtTokenAuthenticationProvider(baseConf())
-    val principal = provider.authenticate(credential(signedToken()))
+    val principal = provider.authenticate(credential(signedToken(typ = "at+jwt")))
     assert(principal.getName === "alice")
   }
 
   test("expired token is rejected") {
     val provider = new JwtTokenAuthenticationProvider(baseConf())
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(expMillisFromNow = -60000L)))
+      provider.authenticate(credential(signedToken(expMillisFromNow = -60000L, typ = "at+jwt")))
     }
   }
 
   test("wrong issuer is rejected") {
     val provider = new JwtTokenAuthenticationProvider(baseConf())
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(iss = "https://evil.example.com")))
+      provider.authenticate(credential(signedToken(iss = "https://evil.example.com", typ = "at+jwt")))
     }
   }
 
   test("wrong audience is rejected") {
     val provider = new JwtTokenAuthenticationProvider(baseConf())
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(aud = "some-other-audience")))
+      provider.authenticate(credential(signedToken(aud = "some-other-audience", typ = "at+jwt")))
     }
   }
 
   test("missing username claim is rejected") {
     val provider = new JwtTokenAuthenticationProvider(baseConf())
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(username = None)))
+      provider.authenticate(credential(signedToken(username = None, typ = "at+jwt")))
     }
   }
 
   test("bad signature is rejected") {
     val provider = new JwtTokenAuthenticationProvider(baseConf())
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(signer = otherKey)))
+      provider.authenticate(credential(signedToken(signer = otherKey, typ = "at+jwt")))
     }
   }
 
@@ -172,7 +174,7 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
   test("token issued in the future is rejected") {
     val provider = new JwtTokenAuthenticationProvider(baseConf())
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(iatMillisFromNow = 120000L)))
+      provider.authenticate(credential(signedToken(iatMillisFromNow = 120000L, typ = "at+jwt")))
     }
   }
 
@@ -188,10 +190,29 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
     assert(principal.getName === "alice")
   }
 
+  test("default typ rejects an id_token (typ=JWT) and a token without typ") {
+    val provider = new JwtTokenAuthenticationProvider(baseConf())
+    // ID token (typ=JWT)
+    intercept[AuthenticationException] {
+      provider.authenticate(credential(signedToken(typ = "JWT")))
+    }
+    // Token without typ
+    intercept[AuthenticationException] {
+      provider.authenticate(credential(signedToken(typ = null)))
+    }
+  }
+
+  test("empty expected.typ disables the check") {
+    val provider = new JwtTokenAuthenticationProvider(
+      baseConf(Map(JwtTokenAuthenticationProvider.EXPECTED_TYP -> "")))
+    val principal = provider.authenticate(credential(signedToken(typ = null)))
+    assert(principal.getName === "alice")
+  }
+
   test("custom username claim is honored") {
     val provider = new JwtTokenAuthenticationProvider(
       baseConf(Map(JwtTokenAuthenticationProvider.USERNAME_CLAIM -> "sub")))
-    val principal = provider.authenticate(credential(signedToken()))
+    val principal = provider.authenticate(credential(signedToken(typ = "at+jwt")))
     assert(principal.getName === "alice-subject")
   }
 
@@ -207,7 +228,7 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
     assert(provider.issuers === Set(ipIssuer, dnsIssuer, inClusterIssuer))
 
     def subjectFor(iss: String): String =
-      provider.authenticate(credential(signedToken(iss = iss))).getName
+      provider.authenticate(credential(signedToken(iss = iss, typ = "at+jwt"))).getName
 
     // Token with IP issuer passes
     assert(subjectFor(ipIssuer) === "alice")
@@ -266,11 +287,45 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
 
     // Right issuer but wrong aud
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(iss = dnsIssuer, aud = "wrong-aud")))
+      provider.authenticate(
+        credential(signedToken(iss = dnsIssuer, aud = "wrong-aud", typ = "at+jwt")))
     }
     // Right issuer but wrong signature
     intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(iss = dnsIssuer, signer = otherKey)))
+      provider.authenticate(
+        credential(signedToken(iss = dnsIssuer, signer = otherKey, typ = "at+jwt")))
     }
+  }
+
+  test("allowed.azp accepts a listed azp and rejects others / missing") {
+    val provider = new JwtTokenAuthenticationProvider(
+      baseConf(Map(JwtTokenAuthenticationProvider.ALLOWED_AZP -> "ssa-client, other-client")))
+
+    // Listed azp accepted
+    val p1 = provider.authenticate(credential(signedToken(typ = "at+jwt", azp = "ssa-client")))
+    assert(p1.getName === "alice")
+    val p2 = provider.authenticate(credential(signedToken(typ = "at+jwt", azp = "other-client")))
+    assert(p2.getName === "alice")
+
+    // Missing azp rejected
+    val e1 = intercept[AuthenticationException] {
+      provider.authenticate(credential(signedToken(typ = "at+jwt", azp = null)))
+    }
+    assert(e1.getMessage.contains("JWT 'azp' '<missing>' is not an allowed authorized party"))
+
+    // Other azp rejected
+    val e2 = intercept[AuthenticationException] {
+      provider.authenticate(credential(signedToken(typ = "at+jwt", azp = "unauthorized-client")))
+    }
+    assert(e2.getMessage.contains(
+      "JWT 'azp' 'unauthorized-client' is not an allowed authorized party"))
+  }
+
+  test("allowed.azp unset accepts any azp") {
+    val provider = new JwtTokenAuthenticationProvider(baseConf())
+    val p1 = provider.authenticate(credential(signedToken(typ = "at+jwt", azp = "any-client")))
+    assert(p1.getName === "alice")
+    val p2 = provider.authenticate(credential(signedToken(typ = "at+jwt", azp = null)))
+    assert(p2.getName === "alice")
   }
 }

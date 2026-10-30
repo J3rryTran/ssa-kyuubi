@@ -24,12 +24,9 @@ import javax.servlet.http.{HttpServletRequest, HttpServletResponse}
 
 import scala.collection.mutable
 
-import org.apache.commons.lang3.StringUtils
-
 import org.apache.kyuubi.Logging
 import org.apache.kyuubi.config.KyuubiConf
 import org.apache.kyuubi.config.KyuubiConf.{AUTHENTICATION_METHOD, FRONTEND_PROXY_HTTP_CLIENT_IP_HEADER}
-import org.apache.kyuubi.server.http.authentication.oidc.{BearerSessionRequest, OidcAuthFailure, OidcBffService, OidcBffUtils}
 import org.apache.kyuubi.server.http.util.HttpAuthUtils.AUTHORIZATION_HEADER
 import org.apache.kyuubi.service.authentication.{AuthTypes, InternalSecurityAccessor}
 import org.apache.kyuubi.service.authentication.AuthenticationProviderFactory
@@ -118,70 +115,6 @@ class AuthenticationFilter(conf: KyuubiConf) extends Filter with Logging {
     authSchemeHandlers.values.find(_.matchAuthScheme(authorization))
   }
 
-  /** `None` unless the Web UI is configured for the backend-for-frontend OIDC flow. */
-  private[authentication] lazy val oidcBff: Option[OidcBffService] = OidcBffService.get(conf)
-
-  /**
-   * Resolve the Web UI's session cookie into a Bearer credential.
-   *
-   * Returns the request to carry on with, or `None` when the response has already been
-   * completed with an error and the chain must stop.
-   *
-   * An `Authorization` header always wins: JDBC and REST clients authenticate that way and must
-   * behave exactly as before, cookie or no cookie.
-   */
-  private[authentication] def applyCookieSession(
-      request: HttpServletRequest,
-      response: HttpServletResponse): Option[HttpServletRequest] =
-    applyCookieSession(request, response, oidcBff)
-
-  private[authentication] def applyCookieSession(
-      request: HttpServletRequest,
-      response: HttpServletResponse,
-      bff: Option[OidcBffService]): Option[HttpServletRequest] = {
-    val service = bff.orNull
-    if (service == null || StringUtils.isNotBlank(request.getHeader(AUTHORIZATION_HEADER))) {
-      return Some(request)
-    }
-    service.sessionIdFrom(request) match {
-      case None => Some(request)
-      case Some(sessionId) if service.sessionFor(sessionId).isEmpty =>
-        // Unknown session: expired here, signed out, or the request reached another replica.
-        // Clearing the cookie stops the browser replaying it on every following request.
-        response.addHeader(
-          "Set-Cookie",
-          OidcBffUtils.expiredSessionCookie(service.cookieName, service.bffConf.cookieSecure))
-        unauthorized(response, "Session is unknown or has expired")
-        None
-      case Some(_) if !OidcBffUtils.csrfAllowed(request) =>
-        warn(s"Rejected cookie-authenticated ${request.getMethod} to ${request.getRequestURI}: " +
-          "the request did not come from this origin")
-        response.sendError(
-          HttpServletResponse.SC_FORBIDDEN,
-          "Cross-origin request rejected for a cookie-authenticated session")
-        None
-      case Some(sessionId) =>
-        service.authenticate(sessionId) match {
-          case Right(session) => Some(new BearerSessionRequest(request, session.accessToken))
-          case Left(failure) =>
-            val reason = failure match {
-              case OidcAuthFailure.UnknownSession => "session is unknown or has expired"
-              case OidcAuthFailure.RefreshFailed(error) => s"session could not be renewed ($error)"
-            }
-            response.addHeader(
-              "Set-Cookie",
-              OidcBffUtils.expiredSessionCookie(service.cookieName, service.bffConf.cookieSecure))
-            unauthorized(response, s"OIDC $reason")
-            None
-        }
-    }
-  }
-
-  private def unauthorized(response: HttpServletResponse, message: String): Unit = {
-    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED)
-    response.sendError(HttpServletResponse.SC_UNAUTHORIZED, message)
-  }
-
   /**
    * If the request has a valid authentication token it allows the request to continue to the
    * target resource, otherwise it triggers an authentication sequence using the configured
@@ -200,27 +133,11 @@ class AuthenticationFilter(conf: KyuubiConf) extends Filter with Logging {
     val incomingRequest = request.asInstanceOf[HttpServletRequest]
     val httpResponse = response.asInstanceOf[HttpServletResponse]
 
-    // The Web UI must be able to learn how to authenticate before it has any
-    // credential, so these endpoints are served without authentication. They only
-    // return public OIDC discovery inputs, or drive the login redirect itself.
-    if (UNAUTHENTICATED_PATHS.contains(incomingRequest.getRequestURI)) {
-      doFilter(filterChain, incomingRequest, httpResponse)
-      return
-    }
-
     HTTP_CLIENT_IP_ADDRESS.set(incomingRequest.getRemoteAddr)
     HTTP_PROXY_HEADER_CLIENT_IP_ADDRESS.set(
       incomingRequest.getHeader(conf.get(FRONTEND_PROXY_HTTP_CLIENT_IP_HEADER)))
 
-    // A Web UI session cookie stands in for a Bearer token from here on. Rejections are audited
-    // here rather than in the `finally` below, which this path never reaches.
-    val httpRequest = applyCookieSession(incomingRequest, httpResponse) match {
-      case Some(req) => req
-      case None =>
-        AuthenticationAuditLogger.audit(incomingRequest, httpResponse)
-        return
-    }
-
+    val httpRequest = incomingRequest
     val authorization = httpRequest.getHeader(AUTHORIZATION_HEADER)
     val matchedHandler = getMatchedHandler(authorization).orNull
 
@@ -264,8 +181,6 @@ class AuthenticationFilter(conf: KyuubiConf) extends Filter with Logging {
    * @throws IOException      thrown if an IO error occurred.
    * @throws ServletException thrown if a processing error occurred.
    */
-  @throws[IOException]
-  @throws[ServletException]
   protected def doFilter(
       filterChain: FilterChain,
       request: HttpServletRequest,
@@ -282,20 +197,6 @@ class AuthenticationFilter(conf: KyuubiConf) extends Filter with Logging {
 }
 
 object AuthenticationFilter {
-
-  /**
-   * Request URIs served without authentication; they must never expose secrets.
-   *
-   * The three BFF endpoints belong here because they are the way *in*: login and callback run
-   * before any session exists, and logout has to work for a session that has already expired.
-   * They are not unprotected - the callback is bound to a one-time `state`, and logout applies
-   * the same origin check the filter does.
-   */
-  final val UNAUTHENTICATED_PATHS: Set[String] = Set(
-    "/api/v1/authentication/config",
-    "/api/v1/authentication/login",
-    "/api/v1/authentication/callback",
-    "/api/v1/authentication/logout")
 
   final val HTTP_CLIENT_IP_ADDRESS = new ThreadLocal[String]() {
     override protected def initialValue: String = null
