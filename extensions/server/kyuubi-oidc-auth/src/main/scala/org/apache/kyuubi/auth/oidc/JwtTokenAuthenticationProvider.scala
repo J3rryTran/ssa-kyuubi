@@ -52,7 +52,7 @@ import org.apache.kyuubi.service.authentication.{TokenAuthenticationProvider, To
  *  - `kyuubi.authentication.jwt.jwks.url` (optional) JWKS URL; else discovered from the issuer
  *  - `kyuubi.authentication.jwt.username.claim` (default `preferred_username`)
  *  - `kyuubi.authentication.jwt.allowed.algorithms` (default `RS256`, comma-separated)
- *  - `kyuubi.authentication.jwt.expected.typ` (default `at+jwt`; set to empty to disable)
+ *  - `kyuubi.authentication.jwt.expected.typ` (optional) required JOSE `typ`, e.g. `at+jwt`
  *  - `kyuubi.authentication.jwt.allowed.azp` (optional) allowed authorized party (`azp`),
  *    comma-separated
  *  - `kyuubi.authentication.jwt.clock.skew.seconds` (default `30`)
@@ -88,15 +88,11 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
     raw.split(",").map(_.trim).filter(_.nonEmpty).map(JWSAlgorithm.parse).toSet
   }
   /**
-   * Required JOSE `typ`. Defaults to `at+jwt` (RFC 9068) so only access tokens are accepted
-   * and id_tokens are rejected. Set it explicitly to empty
-   * (`kyuubi.authentication.jwt.expected.typ=`) to disable the check, e.g. for an IdP that
-   * does not emit `typ`.
+   * Required JOSE `typ`. Unset or empty means no check, since Keycloak issues access tokens
+   * with `typ=JWT` by default. Set it to `at+jwt` only when the IdP emits RFC 9068 tokens.
    */
-  private val expectedTyp: Option[String] = conf.getOption(EXPECTED_TYP) match {
-    case None => Some(DEFAULT_EXPECTED_TYP)
-    case Some(raw) => Option(raw.trim).filter(_.nonEmpty)
-  }
+  private val expectedTyp: Option[String] =
+    conf.getOption(EXPECTED_TYP).map(_.trim).filter(_.nonEmpty)
   private val allowedAzp: Set[String] = conf.getOption(ALLOWED_AZP)
     .map(_.split(",").map(_.trim).filter(_.nonEmpty).toSet).getOrElse(Set.empty)
   private val clockSkewSeconds: Int =
@@ -118,9 +114,6 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
     s"allowedAlgorithms=${allowedAlgorithms.map(_.getName).mkString(",")}, " +
     s"expectedTyp=${expectedTyp.getOrElse("<disabled>")}, " +
     s"allowedAzp=${if (allowedAzp.isEmpty) "<any>" else allowedAzp.mkString(",")}")
-  if (expectedTyp.isEmpty) {
-    warn("JOSE typ check is disabled; id_tokens will be accepted as access tokens")
-  }
 
   override def authenticate(credential: TokenCredential): Principal = {
     val token = credential.token
@@ -264,7 +257,6 @@ object JwtTokenAuthenticationProvider {
   val USERNAME_CLAIM: String = PREFIX + "username.claim"
   val ALLOWED_ALGORITHMS: String = PREFIX + "allowed.algorithms"
   val EXPECTED_TYP: String = PREFIX + "expected.typ"
-  val DEFAULT_EXPECTED_TYP: String = "at+jwt"
   val ALLOWED_AZP: String = PREFIX + "allowed.azp"
   val CLOCK_SKEW_SECONDS: String = PREFIX + "clock.skew.seconds"
   val CONNECT_TIMEOUT_MS: String = PREFIX + "connect.timeout.ms"

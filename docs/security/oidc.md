@@ -49,7 +49,7 @@ kyuubi.frontend.thrift.http.request.header.size 32768
 | `jwt.jwks.url` | No | auto-discovered | JWKS URL |
 | `jwt.username.claim` | No | `preferred_username` | Claim for session user |
 | `jwt.allowed.algorithms` | No | `RS256` | Allowed signature algorithms |
-| `jwt.expected.typ` | No | `at+jwt` | Required JOSE typ header (set to empty to disable) |
+| `jwt.expected.typ` | No | - (no check) | Required JOSE typ header. Keycloak access tokens use `JWT` by default; set `at+jwt` only if the IdP emits RFC 9068 tokens |
 | `jwt.allowed.azp` | No | - | Allowed authorized party (`azp`) client ID(s), comma-separated. Dùng để giới hạn token chỉ từ client được cấp phép khi chưa tách riêng audience. |
 | `jwt.clock.skew.seconds` | No | `30` | Clock skew tolerance |
 | `jwt.connect.timeout.ms` | No | `5000` | JWKS connect timeout |

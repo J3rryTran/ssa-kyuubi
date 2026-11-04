@@ -231,26 +231,23 @@ class JwtPasswordAuthenticationProviderSuite extends KyuubiFunSuite {
     }
   }
 
-  test("default typ rejects an id_token (typ=JWT) and a token without typ") {
+  test("unset expected.typ accepts typ=JWT (Keycloak default) and a token without typ") {
     val provider = new JwtPasswordAuthenticationProvider(baseConf())
-    // ID token (typ=JWT)
-    intercept[AuthenticationException] {
-      provider.authenticate("alice", signedToken(typ = "JWT"))
-    }
-    // Token without typ
-    intercept[AuthenticationException] {
-      provider.authenticate("alice", signedToken(typ = null))
-    }
+    assert(provider.authenticateAndResolve("alice", signedToken(typ = "JWT")) === "alice")
+    assert(provider.authenticateAndResolve("alice", signedToken(typ = null)) === "alice")
   }
 
-  test("empty expected.typ disables the check") {
+  test("configured expected.typ rejects a mismatching token") {
     // The verifier is a JVM-wide singleton built from the first conf it sees; rebuild it so
-    // this conf takes effect, and reset afterwards so later tests get the default typ check.
+    // this conf takes effect, and reset afterwards so later tests get the default conf.
     JwtPasswordAuthenticationProvider.resetVerifier()
     try {
       val provider = new JwtPasswordAuthenticationProvider(
-        baseConf(Map(JwtTokenAuthenticationProvider.EXPECTED_TYP -> "")))
-      assert(provider.authenticateAndResolve("alice", signedToken(typ = null)) === "alice")
+        baseConf(Map(JwtTokenAuthenticationProvider.EXPECTED_TYP -> "at+jwt")))
+      intercept[AuthenticationException] {
+        provider.authenticate("alice", signedToken(typ = "JWT"))
+      }
+      assert(provider.authenticateAndResolve("alice", signedToken(typ = "at+jwt")) === "alice")
     } finally {
       JwtPasswordAuthenticationProvider.resetVerifier()
     }

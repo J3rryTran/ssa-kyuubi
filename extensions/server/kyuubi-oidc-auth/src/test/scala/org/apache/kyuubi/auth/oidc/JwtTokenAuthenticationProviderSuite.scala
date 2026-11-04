@@ -191,16 +191,10 @@ class JwtTokenAuthenticationProviderSuite extends KyuubiFunSuite {
     assert(principal.getName === "alice")
   }
 
-  test("default typ rejects an id_token (typ=JWT) and a token without typ") {
+  test("unset expected.typ accepts typ=JWT (Keycloak default) and a token without typ") {
     val provider = new JwtTokenAuthenticationProvider(baseConf())
-    // ID token (typ=JWT)
-    intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(typ = "JWT")))
-    }
-    // Token without typ
-    intercept[AuthenticationException] {
-      provider.authenticate(credential(signedToken(typ = null)))
-    }
+    assert(provider.authenticate(credential(signedToken(typ = "JWT"))).getName === "alice")
+    assert(provider.authenticate(credential(signedToken(typ = null))).getName === "alice")
   }
 
   test("empty expected.typ disables the check") {

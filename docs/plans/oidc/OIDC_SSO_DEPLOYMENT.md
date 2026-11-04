@@ -52,7 +52,7 @@ kyuubi.authentication.jwt.audience        kyuubi-jdbc          # accepted aud (c
 #kyuubi.authentication.jwt.jwks.url       https://keycloak.example.com/realms/prod/protocol/openid-connect/certs  # optional; auto-discovered from issuer
 kyuubi.authentication.jwt.username.claim  preferred_username    # claim used as the session user
 kyuubi.authentication.jwt.allowed.algorithms RS256              # allow-list; alg=none & unlisted algs rejected
-#kyuubi.authentication.jwt.expected.typ   at+jwt                # optional: require JOSE typ, rejecting ID tokens (Keycloak access tokens: "Bearer")
+#kyuubi.authentication.jwt.expected.typ   at+jwt                # optional: require JOSE typ header (unset = no check; Keycloak access tokens use "JWT")
 kyuubi.authentication.jwt.clock.skew.seconds 30
 
 # 4. Fat tokens: Keycloak access tokens with many roles/groups can exceed the 6 KB header default.
