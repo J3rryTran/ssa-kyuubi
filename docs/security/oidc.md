@@ -1,5 +1,7 @@
 # OIDC SSO Configuration
 
+> Web UI và BFF cookie flow đã bị gỡ khỏi fork này; Kyuubi chỉ nhận `Authorization: Bearer` (REST, Thrift HTTP) và access token trong ô password của SASL PLAIN (Thrift binary).
+
 ## 1. Keycloak Client Setup
 
 ### JDBC Client (public)
@@ -15,24 +17,6 @@
 | Audience | thêm client scope emit audience = `kyuubi-jdbc` |
 
 Discovery: `https://<keycloak-host>/realms/<realm>/.well-known/openid-configuration`
-
-### Web UI Client (public)
-| Setting | Value |
-|---------|-------|
-| Client ID | `kyuubi-ui` |
-| Client authentication | OFF |
-| Standard flow | ON |
-| Valid redirect URIs | `http://<kyuubi-host>:<rest-port>/ui/callback` |
-| Valid post logout redirect URIs | `http://<kyuubi-host>:<rest-port>/ui` |
-| Web origins | `http://<kyuubi-host>:<rest-port>` |
-
-### Web UI Client (BFF - confidential)
-| Setting | Value |
-|---------|-------|
-| Client ID | `kyuubi-ui` |
-| Client authentication | ON |
-| Standard flow | ON |
-| Valid redirect URIs | `http://<kyuubi-host>:<rest-port>/api/v1/authentication/callback` |
 
 ---
 
@@ -65,41 +49,43 @@ kyuubi.frontend.thrift.http.request.header.size 32768
 | `jwt.jwks.url` | No | auto-discovered | JWKS URL |
 | `jwt.username.claim` | No | `preferred_username` | Claim for session user |
 | `jwt.allowed.algorithms` | No | `RS256` | Allowed signature algorithms |
-| `jwt.expected.typ` | No | - | Required JOSE typ header |
+| `jwt.expected.typ` | No | - (no check) | Required JOSE typ header. Keycloak access tokens use `JWT` by default; set `at+jwt` only if the IdP emits RFC 9068 tokens |
+| `jwt.allowed.azp` | No | - | Allowed authorized party (`azp`) client ID(s), comma-separated. Dùng để giới hạn token chỉ từ client được cấp phép khi chưa tách riêng audience. |
 | `jwt.clock.skew.seconds` | No | `30` | Clock skew tolerance |
 | `jwt.connect.timeout.ms` | No | `5000` | JWKS connect timeout |
 | `jwt.read.timeout.ms` | No | `5000` | JWKS read timeout |
+| `jwt.password.enabled` | No | `true` | Cho phép xác thực token qua password (Thrift binary và HTTP Basic). Đặt false sẽ chỉ còn Bearer |
+| `jwt.password.user.aliases` | No | `token` | Danh sách alias người dùng phân cách bằng dấu phẩy. Khi username là alias, user thật lấy từ token |
 
 ---
 
-## 3. Web UI SSO Config
+## 3. Thrift binary
 
-### Public Flow
+### Cấu hình (không cần `custom.class`)
 ```properties
-kyuubi.authentication.oidc.ui.client.id     kyuubi-ui
-kyuubi.authentication.oidc.ui.scope         openid profile email
+kyuubi.frontend.protocols                         THRIFT_BINARY,THRIFT_HTTP,REST
+kyuubi.authentication                             OIDC
+# mặc định true; đặt false sẽ chặn CẢ binary lẫn HTTP Basic, chỉ còn Bearer
+kyuubi.authentication.jwt.password.enabled        true
+kyuubi.authentication.jwt.password.user.aliases   token
 ```
 
-### BFF Flow (confidential client)
-```properties
-kyuubi.authentication.oidc.ui.client.id       kyuubi-ui
-kyuubi.authentication.oidc.ui.client.secret   <client-secret>
-kyuubi.authentication.oidc.authorization.endpoint  https://keycloak.example.com/realms/lakehouse/protocol/openid-connect/auth
-kyuubi.authentication.oidc.token.endpoint    http://keycloak.internal:8080/realms/lakehouse/protocol/openid-connect/token
-kyuubi.authentication.oidc.end.session.endpoint    https://keycloak.example.com/realms/lakehouse/protocol/openid-connect/logout
+### URL JDBC
 ```
+jdbc:kyuubi://<host>:10009/default;auth=oidc;oidcIssuer=<issuer>;oidcClientId=<client>
+jdbc:kyuubi://<host>:10009/default;auth=jwt;jwt=<access-token>
+```
+PyHive / beeline: `username=token` (hoặc đúng `preferred_username`), `password=<access-token>`.
 
-### BFF Optional
-```properties
-#kyuubi.authentication.oidc.redirect.uri    http://<kyuubi-host>:<rest-port>/api/v1/authentication/callback
-#kyuubi.authentication.oidc.session.timeout PT4H
-#kyuubi.authentication.oidc.cookie.name     KYUUBI_SESSION
-#kyuubi.authentication.oidc.cookie.secure  false
-```
+### Quy tắc
+- `user` phải bằng claim username trong token, hoặc là một alias (`token`). Alias **không bao giờ** được trùng tên user thật.
+- Token chỉ kiểm lúc mở kết nối; pool kết nối phải lấy token còn hạn khi tạo kết nối mới.
+- Token đi dạng rõ trong SASL PLAIN nếu không bật `kyuubi.frontend.thrift.binary.ssl.enabled` — coi password như mật khẩu, không log URL/password.
+- Đổi bất kỳ `kyuubi.authentication.jwt.*` nào phải restart Kyuubi.
 
 ---
 
-## 4. JDBC URL
+## 4. Thrift HTTP JDBC URL
 
 ### Desktop SSO (Auth Code + PKCE)
 ```

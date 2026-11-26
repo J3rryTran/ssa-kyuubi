@@ -36,6 +36,8 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Minimal JSON-over-HTTP helper built on the JDK {@link HttpURLConnection} (no extra dependency).
@@ -63,6 +65,7 @@ public class HttpJsonClient {
     }
   }
 
+  private static final Logger LOG = LoggerFactory.getLogger(HttpJsonClient.class);
   private static final ObjectMapper MAPPER = new ObjectMapper();
   private final int connectTimeoutMs;
   private final int readTimeoutMs;
@@ -81,6 +84,11 @@ public class HttpJsonClient {
     this.connectTimeoutMs = connectTimeoutMs;
     this.readTimeoutMs = readTimeoutMs;
     this.insecureTls = insecureTls;
+    if (insecureTls) {
+      LOG.warn(
+          "OIDC insecure TLS is enabled: certificate and hostname verification are"
+              + " DISABLED for the token endpoint. Never use this outside development.");
+    }
   }
 
   /**

@@ -17,6 +17,7 @@
 
 package org.apache.kyuubi.service.authentication
 
+import java.nio.charset.StandardCharsets.UTF_8
 import java.util.Collections
 import javax.security.auth.callback.{Callback, CallbackHandler}
 import javax.security.sasl.{AuthorizeCallback, SaslException}
@@ -83,5 +84,66 @@ class PlainSASLServerSuite extends KyuubiFunSuite {
     val e6 = intercept[SaslException](server2.evaluateResponse(res4.map(_.toByte)))
     assert(e6.getMessage === "Error validating the login")
     assert(e6.getCause.getMessage === "Authentication failed")
+  }
+
+  test("handler resolves identity") {
+    val plainServerFactory = new SaslPlainServerFactory()
+    val ch = new CallbackHandler {
+      override def handle(callbacks: Array[Callback]): Unit = callbacks.foreach {
+        case ac: AuthorizeCallback =>
+          ac.setAuthorized(true)
+          ac.setAuthorizedID("alice")
+        case _ =>
+      }
+    }
+    val server = plainServerFactory.createSaslServer(
+      PlainSASLServer.PLAIN_METHOD,
+      AuthMethods.NONE.toString,
+      "KYUUBI",
+      Collections.emptyMap[String, String](),
+      ch)
+    server.evaluateResponse("\u0000token\u0000pw".getBytes(UTF_8))
+    assert(server.isComplete)
+    assert(server.getAuthorizationID === "alice")
+  }
+
+  test("client authzid is ignored") {
+    val plainServerFactory = new SaslPlainServerFactory()
+    val ch = new CallbackHandler {
+      override def handle(callbacks: Array[Callback]): Unit = callbacks.foreach {
+        case ac: AuthorizeCallback => ac.setAuthorized(true)
+        case _ =>
+      }
+    }
+    val server = plainServerFactory.createSaslServer(
+      PlainSASLServer.PLAIN_METHOD,
+      AuthMethods.NONE.toString,
+      "KYUUBI",
+      Collections.emptyMap[String, String](),
+      ch)
+    server.evaluateResponse("admin\u0000bob\u0000pw".getBytes(UTF_8))
+    assert(server.isComplete)
+    assert(server.getAuthorizationID === "bob")
+  }
+
+  test("empty resolved id falls back") {
+    val plainServerFactory = new SaslPlainServerFactory()
+    val ch = new CallbackHandler {
+      override def handle(callbacks: Array[Callback]): Unit = callbacks.foreach {
+        case ac: AuthorizeCallback =>
+          ac.setAuthorized(true)
+          ac.setAuthorizedID("")
+        case _ =>
+      }
+    }
+    val server = plainServerFactory.createSaslServer(
+      PlainSASLServer.PLAIN_METHOD,
+      AuthMethods.NONE.toString,
+      "KYUUBI",
+      Collections.emptyMap[String, String](),
+      ch)
+    server.evaluateResponse("\u0000bob\u0000pw".getBytes(UTF_8))
+    assert(server.isComplete)
+    assert(server.getAuthorizationID === "bob")
   }
 }

@@ -52,7 +52,9 @@ import org.apache.kyuubi.service.authentication.{TokenAuthenticationProvider, To
  *  - `kyuubi.authentication.jwt.jwks.url` (optional) JWKS URL; else discovered from the issuer
  *  - `kyuubi.authentication.jwt.username.claim` (default `preferred_username`)
  *  - `kyuubi.authentication.jwt.allowed.algorithms` (default `RS256`, comma-separated)
- *  - `kyuubi.authentication.jwt.expected.typ` (optional) required JOSE `typ`; rejects ID tokens
+ *  - `kyuubi.authentication.jwt.expected.typ` (optional) required JOSE `typ`, e.g. `at+jwt`
+ *  - `kyuubi.authentication.jwt.allowed.azp` (optional) allowed authorized party (`azp`),
+ *    comma-separated
  *  - `kyuubi.authentication.jwt.clock.skew.seconds` (default `30`)
  *  - `kyuubi.authentication.jwt.connect.timeout.ms` (default `5000`)
  *  - `kyuubi.authentication.jwt.read.timeout.ms` (default `5000`)
@@ -85,8 +87,14 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
     val raw = conf.getOption(ALLOWED_ALGORITHMS).map(_.trim).filter(_.nonEmpty).getOrElse("RS256")
     raw.split(",").map(_.trim).filter(_.nonEmpty).map(JWSAlgorithm.parse).toSet
   }
+  /**
+   * Required JOSE `typ`. Unset or empty means no check, since Keycloak issues access tokens
+   * with `typ=JWT` by default. Set it to `at+jwt` only when the IdP emits RFC 9068 tokens.
+   */
   private val expectedTyp: Option[String] =
     conf.getOption(EXPECTED_TYP).map(_.trim).filter(_.nonEmpty)
+  private val allowedAzp: Set[String] = conf.getOption(ALLOWED_AZP)
+    .map(_.split(",").map(_.trim).filter(_.nonEmpty).toSet).getOrElse(Set.empty)
   private val clockSkewSeconds: Int =
     conf.getOption(CLOCK_SKEW_SECONDS).map(_.trim.toInt).getOrElse(30)
   private val connectTimeoutMs: Int =
@@ -103,7 +111,9 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
 
   info(s"Initialized JWT authentication: issuers=${issuers.mkString(",")}, jwksUrl=$jwksUrl, " +
     s"audience=${audiences.mkString(",")}, usernameClaim=$usernameClaim, " +
-    s"allowedAlgorithms=${allowedAlgorithms.map(_.getName).mkString(",")}")
+    s"allowedAlgorithms=${allowedAlgorithms.map(_.getName).mkString(",")}, " +
+    s"expectedTyp=${expectedTyp.getOrElse("<disabled>")}, " +
+    s"allowedAzp=${if (allowedAzp.isEmpty) "<any>" else allowedAzp.mkString(",")}")
 
   override def authenticate(credential: TokenCredential): Principal = {
     val token = credential.token
@@ -120,6 +130,14 @@ class JwtTokenAuthenticationProvider(conf: KyuubiConf)
           // BadJOSEException (bad signature / claims), JOSEException (crypto), etc.
           throw new AuthenticationException("JWT validation failed: " + e.getMessage)
       }
+
+    if (allowedAzp.nonEmpty) {
+      val azp = claims.getStringClaim("azp")
+      if (azp == null || !allowedAzp.contains(azp)) {
+        throw new AuthenticationException(
+          s"JWT 'azp' '${Option(azp).getOrElse("<missing>")}' is not an allowed authorized party")
+      }
+    }
 
     // Manual issued-at sanity: reject tokens issued in the future (beyond the allowed skew).
     val iat: Date = claims.getIssueTime
@@ -239,6 +257,7 @@ object JwtTokenAuthenticationProvider {
   val USERNAME_CLAIM: String = PREFIX + "username.claim"
   val ALLOWED_ALGORITHMS: String = PREFIX + "allowed.algorithms"
   val EXPECTED_TYP: String = PREFIX + "expected.typ"
+  val ALLOWED_AZP: String = PREFIX + "allowed.azp"
   val CLOCK_SKEW_SECONDS: String = PREFIX + "clock.skew.seconds"
   val CONNECT_TIMEOUT_MS: String = PREFIX + "connect.timeout.ms"
   val READ_TIMEOUT_MS: String = PREFIX + "read.timeout.ms"

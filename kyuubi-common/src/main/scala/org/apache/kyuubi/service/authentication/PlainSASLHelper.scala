@@ -39,7 +39,7 @@ object PlainSASLHelper {
       new TSetIpAddressProcessor[Iface](service)
   }
 
-  private class PlainServerCallbackHandler private (
+  private[authentication] class PlainServerCallbackHandler private[authentication] (
       authMethod: AuthMethod,
       conf: KyuubiConf,
       isServer: Boolean)
